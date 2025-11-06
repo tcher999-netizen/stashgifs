@@ -88,7 +88,7 @@ export class FeedContainer {
     header.style.top = '0';
     header.style.left = '0';
     header.style.right = '0';
-    header.style.height = '56px';
+    header.style.height = '72px';
     header.style.zIndex = '220';
     header.style.display = 'grid';
     header.style.gridTemplateColumns = 'auto 1fr';
@@ -98,7 +98,7 @@ export class FeedContainer {
     header.style.background = 'rgba(18,18,18,0.75)';
     header.style.backdropFilter = 'blur(10px)';
     header.style.borderBottom = '1px solid rgba(255,255,255,0.06)';
-    header.style.transition = 'transform .24s ease, opacity .2s ease';
+    header.style.transition = 'transform .24s ease, opacity .24s ease';
 
     const brand = document.createElement('div');
     brand.textContent = 'stashgifs';
@@ -150,7 +150,7 @@ export class FeedContainer {
     this.container.appendChild(header);
 
     // Add top padding to scroll container so content is not hidden under header
-    this.scrollContainer.style.paddingTop = '64px';
+    this.scrollContainer.style.paddingTop = '80px';
 
     const apply = () => {
       const q = queryInput.value.trim();
@@ -995,14 +995,18 @@ export class FeedContainer {
     const handleScroll = throttle(() => {
       const top = this.scrollContainer.scrollTop;
       if (!this.headerBar) return;
-      const scrollingDown = top > lastTop;
-      if (scrollingDown && top > 0) {
+      const delta = top - lastTop;
+      const scrollingDown = delta > 2;
+      const scrollingUp = delta < -2;
+      if (scrollingDown && top > 8) {
         this.headerBar.style.opacity = '0';
-      } else {
+        this.headerBar.style.transform = 'translateY(-100%)';
+      } else if (scrollingUp || top <= 8) {
         this.headerBar.style.opacity = '1';
+        this.headerBar.style.transform = 'translateY(0)';
       }
       lastTop = top;
-    }, 80);
+    }, 70);
 
     this.scrollContainer.addEventListener('scroll', handleScroll);
   }
