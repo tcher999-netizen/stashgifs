@@ -3,8 +3,8 @@
  * Replaces VideoJS with native video element and custom controls
  */
 
-import { VideoPlayerState } from './types';
-import { formatDuration } from './utils';
+import { VideoPlayerState } from './types.js';
+import { formatDuration } from './utils.js';
 
 export class NativeVideoPlayer {
   private container: HTMLElement;

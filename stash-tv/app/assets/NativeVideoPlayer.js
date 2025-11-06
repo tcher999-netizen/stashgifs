@@ -2,7 +2,7 @@
  * Native HTML5 Video Player
  * Replaces VideoJS with native video element and custom controls
  */
-import { formatDuration } from './utils';
+import { formatDuration } from './utils.js';
 export class NativeVideoPlayer {
     constructor(container, videoUrl, options) {
         this.container = container;

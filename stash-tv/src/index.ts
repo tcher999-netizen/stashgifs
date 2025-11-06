@@ -2,12 +2,14 @@
  * Main entry point for Stash TV Feed UI
  */
 
-import { FeedContainer } from './FeedContainer';
-import { StashAPI } from './StashAPI';
-import { FeedSettings } from './types';
+import { FeedContainer } from './FeedContainer.js';
+import { StashAPI } from './StashAPI.js';
+import { FeedSettings } from './types.js';
 
 // Initialize when DOM is ready
 function init(): void {
+  console.log('Stash TV Feed UI: Initializing...');
+  
   const appContainer = document.getElementById('app');
   if (!appContainer) {
     console.error('App container not found');
@@ -17,25 +19,50 @@ function init(): void {
   // Create feed container
   appContainer.className = 'feed-container';
 
-  // Initialize API (will use window.stash if available)
-  const api = new StashAPI();
+  // Show loading message
+  appContainer.innerHTML = '<div style="padding: 2rem; text-align: center; color: #fff;">Loading Stash TV Feed...</div>';
 
-  // Get settings from localStorage or use defaults
-  const savedSettings = localStorage.getItem('stash-tv-settings');
-  const settings: Partial<FeedSettings> = savedSettings
-    ? JSON.parse(savedSettings)
-    : {};
+  try {
+    // Initialize API (will use window.stash if available)
+    console.log('Stash TV Feed UI: Creating API instance...');
+    const api = new StashAPI();
+    console.log('Stash TV Feed UI: API created', { baseUrl: (api as any).baseUrl });
 
-  // Create feed
-  const feed = new FeedContainer(appContainer, api, settings);
+    // Get settings from localStorage or use defaults
+    const savedSettings = localStorage.getItem('stash-tv-settings');
+    const settings: Partial<FeedSettings> = savedSettings
+      ? JSON.parse(savedSettings)
+      : {};
 
-  // Initialize feed
-  feed.init().catch((error) => {
-    console.error('Failed to initialize feed:', error);
-  });
+    // Create feed
+    console.log('Stash TV Feed UI: Creating feed container...');
+    const feed = new FeedContainer(appContainer, api, settings);
 
-  // Expose feed to window for debugging/extension
-  (window as any).stashTVFeed = feed;
+    // Initialize feed
+    feed.init().catch((error) => {
+      console.error('Failed to initialize feed:', error);
+      appContainer.innerHTML = `
+        <div style="padding: 2rem; text-align: center; color: #fff;">
+          <h2>Error Loading Feed</h2>
+          <p>${error.message || 'Unknown error'}</p>
+          <p style="font-size: 0.875rem; color: #999;">Check browser console for details</p>
+        </div>
+      `;
+    });
+
+    // Expose feed to window for debugging/extension
+    (window as any).stashTVFeed = feed;
+    console.log('Stash TV Feed UI: Initialization complete');
+  } catch (error: any) {
+    console.error('Stash TV Feed UI: Fatal error during initialization:', error);
+    appContainer.innerHTML = `
+      <div style="padding: 2rem; text-align: center; color: #fff;">
+        <h2>Fatal Error</h2>
+        <p>${error.message || 'Unknown error'}</p>
+        <p style="font-size: 0.875rem; color: #999;">Check browser console for details</p>
+      </div>
+    `;
+  }
 }
 
 // Wait for DOM to be ready

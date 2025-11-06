@@ -119,10 +119,17 @@ export class StashAPI {
     getVideoUrl(scene) {
         // Use stream path if available, otherwise use file path
         if (scene.paths?.stream) {
-            return `${this.baseUrl}${scene.paths.stream}`;
+            const url = scene.paths.stream.startsWith('http')
+                ? scene.paths.stream
+                : `${this.baseUrl}${scene.paths.stream}`;
+            return url;
         }
         if (scene.files && scene.files.length > 0) {
-            return `${this.baseUrl}${scene.files[0].path}`;
+            const filePath = scene.files[0].path;
+            const url = filePath.startsWith('http')
+                ? filePath
+                : `${this.baseUrl}${filePath}`;
+            return url;
         }
         return undefined;
     }
@@ -131,13 +138,22 @@ export class StashAPI {
      */
     getThumbnailUrl(scene) {
         if (scene.paths?.screenshot) {
-            return `${this.baseUrl}${scene.paths.screenshot}`;
+            const url = scene.paths.screenshot.startsWith('http')
+                ? scene.paths.screenshot
+                : `${this.baseUrl}${scene.paths.screenshot}`;
+            return url;
         }
         if (scene.paths?.preview) {
-            return `${this.baseUrl}${scene.paths.preview}`;
+            const url = scene.paths.preview.startsWith('http')
+                ? scene.paths.preview
+                : `${this.baseUrl}${scene.paths.preview}`;
+            return url;
         }
         if (scene.paths?.webp) {
-            return `${this.baseUrl}${scene.paths.webp}`;
+            const url = scene.paths.webp.startsWith('http')
+                ? scene.paths.webp
+                : `${this.baseUrl}${scene.paths.webp}`;
+            return url;
         }
         return undefined;
     }
@@ -146,7 +162,10 @@ export class StashAPI {
      */
     getPreviewUrl(scene) {
         if (scene.paths?.preview) {
-            return `${this.baseUrl}${scene.paths.preview}`;
+            const url = scene.paths.preview.startsWith('http')
+                ? scene.paths.preview
+                : `${this.baseUrl}${scene.paths.preview}`;
+            return url;
         }
         return this.getThumbnailUrl(scene);
     }

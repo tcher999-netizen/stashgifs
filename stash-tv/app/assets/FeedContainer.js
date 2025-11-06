@@ -2,10 +2,10 @@
  * Feed Container
  * Main application container managing the feed
  */
-import { StashAPI } from './StashAPI';
-import { VideoPost } from './VideoPost';
-import { VisibilityManager } from './VisibilityManager';
-import { throttle } from './utils';
+import { StashAPI } from './StashAPI.js';
+import { VideoPost } from './VideoPost.js';
+import { VisibilityManager } from './VisibilityManager.js';
+import { throttle } from './utils.js';
 const DEFAULT_SETTINGS = {
     autoPlay: false,
     autoPlayThreshold: 0.5,
@@ -54,8 +54,15 @@ export class FeedContainer {
         this.isLoading = true;
         this.showLoading();
         try {
+            console.log('FeedContainer: Fetching scenes...', filters || this.currentFilters);
             const scenes = await this.api.fetchScenes(filters || this.currentFilters);
+            console.log('FeedContainer: Received scenes', scenes.length);
             this.scenes = scenes;
+            if (scenes.length === 0) {
+                this.showError('No videos found. Try adjusting your filters.');
+                this.hideLoading();
+                return;
+            }
             // Clear existing posts
             this.clearPosts();
             // Create posts for each scene
@@ -66,7 +73,8 @@ export class FeedContainer {
         }
         catch (error) {
             console.error('Error loading videos:', error);
-            this.showError('Failed to load videos');
+            this.showError(`Failed to load videos: ${error.message || 'Unknown error'}`);
+            this.hideLoading();
         }
         finally {
             this.isLoading = false;

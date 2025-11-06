@@ -3,11 +3,11 @@
  * Main application container managing the feed
  */
 
-import { Scene, FilterOptions, FeedSettings, VideoPostData } from './types';
-import { StashAPI } from './StashAPI';
-import { VideoPost } from './VideoPost';
-import { VisibilityManager } from './VisibilityManager';
-import { throttle } from './utils';
+import { Scene, FilterOptions, FeedSettings, VideoPostData } from './types.js';
+import { StashAPI } from './StashAPI.js';
+import { VideoPost } from './VideoPost.js';
+import { VisibilityManager } from './VisibilityManager.js';
+import { throttle } from './utils.js';
 
 const DEFAULT_SETTINGS: FeedSettings = {
   autoPlay: false,
@@ -74,8 +74,16 @@ export class FeedContainer {
     this.showLoading();
 
     try {
+      console.log('FeedContainer: Fetching scenes...', filters || this.currentFilters);
       const scenes = await this.api.fetchScenes(filters || this.currentFilters);
+      console.log('FeedContainer: Received scenes', scenes.length);
       this.scenes = scenes;
+
+      if (scenes.length === 0) {
+        this.showError('No videos found. Try adjusting your filters.');
+        this.hideLoading();
+        return;
+      }
 
       // Clear existing posts
       this.clearPosts();
@@ -86,9 +94,10 @@ export class FeedContainer {
       }
 
       this.hideLoading();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error loading videos:', error);
-      this.showError('Failed to load videos');
+      this.showError(`Failed to load videos: ${error.message || 'Unknown error'}`);
+      this.hideLoading();
     } finally {
       this.isLoading = false;
     }

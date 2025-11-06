@@ -2,8 +2,8 @@
  * Video Post Component
  * Individual video post card in the feed
  */
-import { NativeVideoPlayer } from './NativeVideoPlayer';
-import { escapeHtml, formatDuration, calculateAspectRatio, getAspectRatioClass } from './utils';
+import { NativeVideoPlayer } from './NativeVideoPlayer.js';
+import { escapeHtml, formatDuration, calculateAspectRatio, getAspectRatioClass } from './utils.js';
 export class VideoPost {
     constructor(container, data) {
         this.isLoaded = false;

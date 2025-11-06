@@ -3,7 +3,7 @@
  * Handles video playback based on viewport visibility using Intersection Observer
  */
 
-import { NativeVideoPlayer } from './NativeVideoPlayer';
+import { NativeVideoPlayer } from './NativeVideoPlayer.js';
 
 interface VisibilityEntry {
   element: HTMLElement;

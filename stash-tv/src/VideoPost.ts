@@ -3,9 +3,9 @@
  * Individual video post card in the feed
  */
 
-import { VideoPostData, Scene } from './types';
-import { NativeVideoPlayer } from './NativeVideoPlayer';
-import { escapeHtml, formatDuration, calculateAspectRatio, getAspectRatioClass } from './utils';
+import { VideoPostData, Scene } from './types.js';
+import { NativeVideoPlayer } from './NativeVideoPlayer.js';
+import { escapeHtml, formatDuration, calculateAspectRatio, getAspectRatioClass } from './utils.js';
 
 export class VideoPost {
   private container: HTMLElement;
