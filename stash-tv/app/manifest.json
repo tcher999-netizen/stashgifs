@@ -1,7 +1,7 @@
 {
-  "short_name": "Stash TV",
-  "name": "Stash TV: Stash Browser",
-  "description": "Stash TV provides a simplified browsing experience for your Stash instance.",
+  "short_name": "StashGifs",
+  "name": "StashGifs: Stash Browser",
+  "description": "StashGifs provides a simplified browsing experience for your Stash instance.",
   "icons": [
     {
       "src": "stash-tv-icon.svg",

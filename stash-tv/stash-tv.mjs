@@ -3322,7 +3322,7 @@ ve.propTypes = {
   widthAuto: y.bool
 };
 var Po = Yn.bind(null, Un.createElement);
-const Hn = "stash-tv", { PluginApi: se } = window, { React: at } = se;
+const Hn = "stashgifs", { PluginApi: se } = window, { React: at } = se;
 se.patch.instead(
   "MainNavBar.MenuItems",
   function({ children: t, ...e }, n, r) {
@@ -3355,7 +3355,7 @@ const ko = () => {
           icon: Xn
         }
       ),
-      /* @__PURE__ */ at.createElement("span", null, "TV")
+      /* @__PURE__ */ at.createElement("span", null, "GIFs")
     )
   );
 };
