@@ -1,6 +1,6 @@
-# Stash TV Feed UI
+# StashGifs Feed UI
 
-Modern feed interface for Stash TV - transforming from full-screen scroller to card-based feed.
+Modern feed interface for StashGifs - transforming from full-screen scroller to card-based feed.
 
 ## Building
 
@@ -22,10 +22,10 @@ Modern feed interface for Stash TV - transforming from full-screen scroller to c
    
    Or use the build script:
    ```bash
-   ./build.ps1  # Windows PowerShell
+   ./stash-tv/build.ps1  # Windows PowerShell
    ```
 
-3. The compiled JavaScript will be in `app/assets/` directory.
+3. The compiled JavaScript will be in `stash-tv/app/assets/` directory.
 
 ## Development
 
@@ -55,7 +55,7 @@ stash-tv/
 To use the new feed UI instead of the old scroller:
 
 1. Compile TypeScript: `npx tsc`
-2. Update `app/index.html` to include:
+2. Update `stash-tv/app/index.html` to include:
    ```html
    <link rel="stylesheet" href="./assets/feed.css">
    <script type="module" src="./assets/index.js"></script>
@@ -91,4 +91,3 @@ Phase 4: Advanced Features - ⏳ Pending
 - Infinite scroll
 - Search/filter UI
 - Keyboard shortcuts
-
