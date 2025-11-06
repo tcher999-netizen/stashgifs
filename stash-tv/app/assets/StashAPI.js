@@ -100,10 +100,58 @@ export class StashAPI {
             filter.q = term.trim();
         }
         const variables = { filter };
+        // Helper: check if a tag has at least one scene marker
+        const hasMarkersForTag = async (tagId) => {
+            const countQuery = `query GetMarkerCount($scene_marker_filter: SceneMarkerFilterType) {
+        findSceneMarkers(scene_marker_filter: $scene_marker_filter) { count }
+      }`;
+            const sceneMarkerFilter = { tags: { value: [tagId], modifier: 'INCLUDES' } };
+            const variables = { scene_marker_filter: sceneMarkerFilter };
+            try {
+                if (this.pluginApi?.GQL?.client) {
+                    const res = await this.pluginApi.GQL.client.query({ query: countQuery, variables });
+                    return (res.data?.findSceneMarkers?.count || 0) > 0;
+                }
+                const response = await fetch(`${this.baseUrl}/graphql`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(this.apiKey && { 'ApiKey': this.apiKey }),
+                    },
+                    body: JSON.stringify({ query: countQuery, variables }),
+                });
+                if (!response.ok)
+                    return false;
+                const data = await response.json();
+                return (data.data?.findSceneMarkers?.count || 0) > 0;
+            }
+            catch {
+                return false;
+            }
+        };
+        // Simple concurrency limiter
+        const filterByHasMarkers = async (tags) => {
+            const concurrency = 5;
+            const result = [];
+            let index = 0;
+            const workers = Array.from({ length: Math.min(concurrency, tags.length) }, async () => {
+                while (index < tags.length) {
+                    const i = index++;
+                    const t = tags[i];
+                    const ok = await hasMarkersForTag(parseInt(t.id, 10));
+                    if (ok)
+                        result.push(t);
+                }
+            });
+            await Promise.all(workers);
+            return result;
+        };
         try {
             if (this.pluginApi?.GQL?.client) {
                 const result = await this.pluginApi.GQL.client.query({ query: query, variables });
-                return result.data?.findTags?.tags ?? [];
+                const tags = result.data?.findTags?.tags ?? [];
+                const filtered = await filterByHasMarkers(tags.slice(0, limit * 2));
+                return filtered.slice(0, limit);
             }
             const response = await fetch(`${this.baseUrl}/graphql`, {
                 method: 'POST',
@@ -116,7 +164,9 @@ export class StashAPI {
             if (!response.ok)
                 return [];
             const data = await response.json();
-            return data.data?.findTags?.tags ?? [];
+            const tags = data.data?.findTags?.tags ?? [];
+            const filtered = await filterByHasMarkers(tags.slice(0, limit * 2));
+            return filtered.slice(0, limit);
         }
         catch (e) {
             console.warn('searchMarkerTags failed', e);
