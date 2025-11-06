@@ -18,8 +18,9 @@ function init() {
     try {
         // Initialize API (will use window.stash if available)
         console.log('Stash TV Feed UI: Creating API instance...');
+        console.log('Stash TV Feed UI: window.PluginApi =', window.PluginApi);
+        console.log('Stash TV Feed UI: window.stash =', window.stash);
         const api = new StashAPI();
-        console.log('Stash TV Feed UI: API created', { baseUrl: api.baseUrl });
         // Get settings from localStorage or use defaults
         const savedSettings = localStorage.getItem('stash-tv-settings');
         const settings = savedSettings

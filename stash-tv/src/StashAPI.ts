@@ -25,8 +25,24 @@ export class StashAPI {
     // Get from window if available (Stash plugin context)
     const windowAny = window as any;
     this.pluginApi = windowAny.PluginApi || windowAny.stash;
-    this.baseUrl = baseUrl || this.pluginApi?.baseURL || '';
+    
+    // Try to get base URL from various sources
+    if (baseUrl) {
+      this.baseUrl = baseUrl;
+    } else if (this.pluginApi?.baseURL) {
+      this.baseUrl = this.pluginApi.baseURL;
+    } else {
+      // Fallback: use current origin (for plugin context)
+      this.baseUrl = window.location.origin;
+    }
+    
     this.apiKey = apiKey || this.pluginApi?.apiKey;
+    
+    console.log('StashAPI initialized', { 
+      baseUrl: this.baseUrl, 
+      hasPluginApi: !!this.pluginApi,
+      hasGQLClient: !!this.pluginApi?.GQL?.client 
+    });
   }
 
   /**
@@ -103,6 +119,42 @@ export class StashAPI {
       }
 
       // Fallback to direct fetch
+      // Build filter object - only include non-empty values
+      const filter: any = {
+        per_page: filters?.limit || 20,
+        page: filters?.offset ? Math.floor(filters.offset / (filters.limit || 20)) + 1 : 1,
+      };
+      if (filters?.query) {
+        filter.q = filters.query;
+      }
+
+      // Build scene_filter object - only include non-empty values
+      const sceneFilter: any = {};
+      if (filters?.studios && filters.studios.length > 0) {
+        sceneFilter.studios = { value: filters.studios, modifier: 'INCLUDES' };
+      }
+      if (filters?.performers && filters.performers.length > 0) {
+        sceneFilter.performers = { value: filters.performers, modifier: 'INCLUDES' };
+      }
+      if (filters?.tags && filters.tags.length > 0) {
+        sceneFilter.tags = { value: filters.tags, modifier: 'INCLUDES' };
+      }
+      if (filters?.rating !== undefined && filters.rating !== null) {
+        sceneFilter.rating = { value: filters.rating, modifier: 'GREATER_THAN' };
+      }
+
+      const variables: any = { filter };
+      // Only include scene_filter if it has properties
+      if (Object.keys(sceneFilter).length > 0) {
+        variables.scene_filter = sceneFilter;
+      }
+
+      console.log('StashAPI: Sending GraphQL request', { 
+        baseUrl: this.baseUrl, 
+        variables,
+        queryLength: query.length 
+      });
+
       const response = await fetch(`${this.baseUrl}/graphql`, {
         method: 'POST',
         headers: {
@@ -110,24 +162,28 @@ export class StashAPI {
           ...(this.apiKey && { 'ApiKey': this.apiKey }),
         },
         body: JSON.stringify({
-          query,
-          variables: {
-            filter: {
-              q: filters?.query,
-              per_page: filters?.limit || 20,
-              page: filters?.offset ? Math.floor(filters.offset / (filters.limit || 20)) + 1 : 1,
-            },
-            scene_filter: {
-              ...(filters?.studios && { studios: { value: filters.studios, modifier: 'INCLUDES' } }),
-              ...(filters?.performers && { performers: { value: filters.performers, modifier: 'INCLUDES' } }),
-              ...(filters?.tags && { tags: { value: filters.tags, modifier: 'INCLUDES' } }),
-              ...(filters?.rating && { rating: { value: filters.rating, modifier: 'GREATER_THAN' } }),
-            },
-          },
+          query: query.trim(),
+          variables,
         }),
       });
 
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('GraphQL request failed', {
+          status: response.status,
+          statusText: response.statusText,
+          error: errorText
+        });
+        throw new Error(`GraphQL request failed: ${response.status} ${response.statusText}`);
+      }
+
       const data = await response.json();
+      
+      if (data.errors) {
+        console.error('GraphQL errors:', data.errors);
+        throw new Error(`GraphQL errors: ${JSON.stringify(data.errors)}`);
+      }
+      
       return data.data?.findScenes?.scenes || [];
     } catch (error) {
       console.error('Error fetching scenes:', error);
