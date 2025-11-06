@@ -6,7 +6,7 @@ metadata:
 version: 1.8.0-64f4d9f
 date: "2025-11-04 06:18:30"
 requires: []
-source_repository: https://github.com/evolite/stashgifs
+source_repository: https://raw.githubusercontent.com/evolite/stashgifs/master/index.yml
 files:
 - stash-tv.mjs
 - app\favicon.ico
