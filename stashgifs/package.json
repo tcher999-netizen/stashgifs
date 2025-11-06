@@ -1,7 +1,7 @@
 {
-  "name": "stash-tv-feed",
+  "name": "stashgifs",
   "version": "1.0.0",
-  "description": "Feed UI for Stash TV",
+  "description": "StashGifs - TikTok-like vertical scroller interface for Stash.",
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
