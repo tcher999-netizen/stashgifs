@@ -103,6 +103,13 @@ export class FeedContainer {
         searchArea.style.justifySelf = 'center';
         headerInner.appendChild(searchArea);
         header.appendChild(headerInner);
+        // Chips container to visualize active filters
+        const chips = document.createElement('div');
+        chips.className = 'feed-filters__chips';
+        chips.style.display = 'flex';
+        chips.style.flexWrap = 'wrap';
+        chips.style.gap = '6px';
+        chips.style.marginBottom = '6px';
         const queryInput = document.createElement('input');
         queryInput.type = 'text';
         queryInput.placeholder = 'Search tags or apply saved filters…';
@@ -132,11 +139,74 @@ export class FeedContainer {
         suggestions.style.display = 'none';
         suggestions.style.flexWrap = 'wrap';
         suggestions.style.gap = '8px';
+        searchArea.appendChild(chips);
         searchArea.appendChild(queryInput);
         searchArea.appendChild(suggestions);
         this.container.appendChild(header);
         // Add top padding to scroll container so content is not hidden under header
         this.scrollContainer.style.paddingTop = '90px';
+        const renderChips = () => {
+            chips.innerHTML = '';
+            // Saved filter chip first (if any)
+            if (this.selectedSavedFilter) {
+                const chip = document.createElement('button');
+                chip.type = 'button';
+                chip.textContent = this.selectedSavedFilter.name;
+                chip.className = 'feed-chip';
+                chip.style.padding = '4px 10px';
+                chip.style.borderRadius = '999px';
+                chip.style.border = '1px solid rgba(255,255,255,0.12)';
+                chip.style.background = 'rgba(255,255,255,0.06)';
+                chip.style.fontSize = '12px';
+                chip.style.display = 'inline-flex';
+                chip.style.alignItems = 'center';
+                chip.style.gap = '6px';
+                const x = document.createElement('button');
+                x.textContent = '×';
+                x.style.background = 'transparent';
+                x.style.border = 'none';
+                x.style.color = 'inherit';
+                x.style.cursor = 'pointer';
+                x.style.fontSize = '14px';
+                x.addEventListener('click', () => {
+                    this.selectedSavedFilter = undefined;
+                    // ensure dropdown (if any) is cleared via shared state; header has no select
+                    renderChips();
+                    apply();
+                });
+                chip.appendChild(x);
+                chips.appendChild(chip);
+            }
+            this.selectedTagNames.forEach((name, idx) => {
+                const chip = document.createElement('button');
+                chip.type = 'button';
+                chip.textContent = name;
+                chip.className = 'feed-chip';
+                chip.style.padding = '4px 10px';
+                chip.style.borderRadius = '999px';
+                chip.style.border = '1px solid rgba(255,255,255,0.12)';
+                chip.style.background = 'rgba(255,255,255,0.06)';
+                chip.style.fontSize = '12px';
+                chip.style.display = 'inline-flex';
+                chip.style.alignItems = 'center';
+                chip.style.gap = '6px';
+                const x = document.createElement('button');
+                x.textContent = '×';
+                x.style.background = 'transparent';
+                x.style.border = 'none';
+                x.style.color = 'inherit';
+                x.style.cursor = 'pointer';
+                x.style.fontSize = '14px';
+                x.addEventListener('click', () => {
+                    this.selectedTagIds.splice(idx, 1);
+                    this.selectedTagNames.splice(idx, 1);
+                    renderChips();
+                    apply();
+                });
+                chip.appendChild(x);
+                chips.appendChild(chip);
+            });
+        };
         const apply = () => {
             const q = queryInput.value.trim();
             const newFilters = {
@@ -185,6 +255,7 @@ export class FeedContainer {
                         this.selectedTagNames.push(tag.name);
                         suggestions.style.display = 'none';
                         suggestions.innerHTML = '';
+                        renderChips();
                         apply();
                     });
                     suggestions.appendChild(btn);
@@ -213,10 +284,16 @@ export class FeedContainer {
                         btn.style.cursor = 'pointer';
                         btn.addEventListener('click', () => {
                             // Apply saved filter by name match
+                            this.selectedSavedFilter = { id: f.id, name: f.name };
+                            // Clear tag selections when a saved filter is chosen
+                            this.selectedTagIds = [];
+                            this.selectedTagNames = [];
+                            queryInput.value = '';
                             this.currentFilters = { savedFilterId: f.id, limit: 20, offset: 0 };
                             this.loadVideos(this.currentFilters, false).catch((e) => console.error('Apply saved filter failed', e));
                             suggestions.style.display = 'none';
                             suggestions.innerHTML = '';
+                            renderChips();
                         });
                         suggestions.appendChild(btn);
                     });
@@ -228,6 +305,8 @@ export class FeedContainer {
             if (!searchArea.contains(e.target))
                 suggestions.style.display = 'none';
         });
+        // Initial render of chips (in case defaults are provided)
+        renderChips();
     }
     renderFilterSheet() {
         // Inject a one-time utility style to hide scrollbars while preserving scroll
