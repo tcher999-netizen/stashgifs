@@ -19,16 +19,172 @@ export class StashAPI {
             this.baseUrl = window.location.origin;
         }
         this.apiKey = apiKey || this.pluginApi?.apiKey;
-        console.log('StashAPI initialized', {
-            baseUrl: this.baseUrl,
-            hasPluginApi: !!this.pluginApi,
-            hasGQLClient: !!this.pluginApi?.GQL?.client
-        });
+    }
+    /**
+     * Normalize a scene_marker_filter coming from a saved filter
+     * Ensures fields like tags/scene_tags have numeric ID arrays
+     */
+    normalizeMarkerFilter(input) {
+        if (!input || typeof input !== 'object')
+            return {};
+        const out = { ...input };
+        const normalizeIdArray = (val) => {
+            if (!val)
+                return undefined;
+            const arr = Array.isArray(val) ? val : [val];
+            const ids = arr
+                .map((x) => (typeof x === 'object' && x !== null ? (x.id ?? x.value ?? x) : x))
+                .map((x) => parseInt(String(x), 10))
+                .filter((n) => !Number.isNaN(n));
+            return ids.length ? ids : undefined;
+        };
+        // Handle tags shapes: either { value, modifier } OR an array of objects/ids
+        if (out.tags) {
+            if (Array.isArray(out.tags)) {
+                const ids = normalizeIdArray(out.tags);
+                if (ids)
+                    out.tags = { value: ids, modifier: 'INCLUDES' };
+                else
+                    delete out.tags;
+            }
+            else if (typeof out.tags === 'object') {
+                const ids = normalizeIdArray(out.tags.value);
+                if (ids)
+                    out.tags = { value: ids, modifier: out.tags.modifier ?? 'INCLUDES' };
+                else
+                    delete out.tags;
+            }
+        }
+        // Handle scene_tags similarly
+        if (out.scene_tags) {
+            if (Array.isArray(out.scene_tags)) {
+                const ids = normalizeIdArray(out.scene_tags);
+                if (ids)
+                    out.scene_tags = { value: ids, modifier: 'INCLUDES' };
+                else
+                    delete out.scene_tags;
+            }
+            else if (typeof out.scene_tags === 'object') {
+                const ids = normalizeIdArray(out.scene_tags.value);
+                if (ids)
+                    out.scene_tags = { value: ids, modifier: out.scene_tags.modifier ?? 'INCLUDES' };
+                else
+                    delete out.scene_tags;
+            }
+        }
+        return out;
+    }
+    /**
+     * Search marker tags (by name) for autocomplete
+     */
+    async searchMarkerTags(term, limit = 10) {
+        if (!term || term.trim() === '')
+            return [];
+        const query = `query FindTags($filter: FindFilterType) {
+      findTags(filter: $filter) {
+        tags { id name }
+      }
+    }`;
+        const variables = { filter: { q: term, per_page: limit, page: 1 } };
+        try {
+            if (this.pluginApi?.GQL?.client) {
+                const result = await this.pluginApi.GQL.client.query({ query: query, variables });
+                return result.data?.findTags?.tags ?? [];
+            }
+            const response = await fetch(`${this.baseUrl}/graphql`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(this.apiKey && { 'ApiKey': this.apiKey }),
+                },
+                body: JSON.stringify({ query, variables }),
+            });
+            if (!response.ok)
+                return [];
+            const data = await response.json();
+            return data.data?.findTags?.tags ?? [];
+        }
+        catch (e) {
+            console.warn('searchMarkerTags failed', e);
+            return [];
+        }
+    }
+    /**
+     * Fetch saved marker filters from Stash
+     */
+    async fetchSavedMarkerFilters() {
+        const query = `query GetSavedMarkerFilters { findSavedFilters(mode: SCENE_MARKERS) { id name } }`;
+        try {
+            if (this.pluginApi?.GQL?.client) {
+                const result = await this.pluginApi.GQL.client.query({ query: query });
+                return result.data?.findSavedFilters || [];
+            }
+            const response = await fetch(`${this.baseUrl}/graphql`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(this.apiKey && { 'ApiKey': this.apiKey }),
+                },
+                body: JSON.stringify({ query }),
+            });
+            const data = await response.json();
+            return data.data?.findSavedFilters || [];
+        }
+        catch (e) {
+            console.error('Error fetching saved marker filters:', e);
+            return [];
+        }
+    }
+    /**
+     * Get a saved filter's criteria
+     */
+    async getSavedFilter(id) {
+        const query = `query GetSavedFilter($id: ID!) {
+      findSavedFilter(id: $id) {
+        id
+        name
+        mode
+        find_filter {
+          q
+          per_page
+          page
+        }
+        object_filter
+      }
+    }`;
+        try {
+            if (this.pluginApi?.GQL?.client) {
+                const result = await this.pluginApi.GQL.client.query({
+                    query: query,
+                    variables: { id }
+                });
+                return result.data?.findSavedFilter;
+            }
+            const response = await fetch(`${this.baseUrl}/graphql`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(this.apiKey && { 'ApiKey': this.apiKey }),
+                },
+                body: JSON.stringify({ query, variables: { id } }),
+            });
+            const data = await response.json();
+            return data.data?.findSavedFilter;
+        }
+        catch (e) {
+            console.error('Error fetching saved filter:', e);
+            return null;
+        }
     }
     /**
      * Fetch scene markers from Stash
      */
     async fetchSceneMarkers(filters) {
+        // If a saved filter is specified, fetch its criteria first
+        let savedFilterCriteria = null;
+        if (filters?.savedFilterId) {
+            savedFilterCriteria = await this.getSavedFilter(filters.savedFilterId);
+        }
         // Query for scene markers based on FindSceneMarkersForTv
         const query = `query FindSceneMarkers($filter: FindFilterType, $scene_marker_filter: SceneMarkerFilterType) {
   findSceneMarkers(filter: $filter, scene_marker_filter: $scene_marker_filter) {
@@ -95,24 +251,125 @@ export class StashAPI {
   }
 }`;
         try {
+            // Calculate random page if no offset specified
+            let page = filters?.offset ? Math.floor(filters.offset / (filters.limit || 20)) + 1 : 1;
+            const limit = filters?.limit || 20;
+            // If we want random and no offset, get count first to calculate random page
+            if (!filters?.offset) {
+                const countQuery = `query GetMarkerCount($filter: FindFilterType, $scene_marker_filter: SceneMarkerFilterType) {
+          findSceneMarkers(filter: $filter, scene_marker_filter: $scene_marker_filter) {
+            count
+          }
+        }`;
+                const countFilter = { per_page: 1, page: 1 };
+                if (filters?.query)
+                    countFilter.q = filters.query;
+                if (savedFilterCriteria?.find_filter) {
+                    Object.assign(countFilter, savedFilterCriteria.find_filter);
+                }
+                // Normalize saved filter object_filter before using in variables
+                const countSceneFilterRaw = savedFilterCriteria?.object_filter || {};
+                const countSceneFilter = this.normalizeMarkerFilter(countSceneFilterRaw);
+                if (filters?.primary_tags && filters.primary_tags.length > 0) {
+                    const tagIds = filters.primary_tags
+                        .map((v) => parseInt(String(v), 10))
+                        .filter((n) => !Number.isNaN(n));
+                    if (tagIds.length > 0) {
+                        countSceneFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
+                    }
+                }
+                if (filters?.tags && filters.tags.length > 0) {
+                    const tagIds = filters.tags
+                        .map((v) => parseInt(String(v), 10))
+                        .filter((n) => !Number.isNaN(n));
+                    if (tagIds.length > 0) {
+                        countSceneFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
+                    }
+                }
+                try {
+                    if (this.pluginApi?.GQL?.client) {
+                        const countResult = await this.pluginApi.GQL.client.query({
+                            query: countQuery,
+                            variables: {
+                                filter: countFilter,
+                                scene_marker_filter: Object.keys(countSceneFilter).length > 0 ? countSceneFilter : {},
+                            },
+                        });
+                        const totalCount = countResult.data?.findSceneMarkers?.count || 0;
+                        if (totalCount > 0) {
+                            const totalPages = Math.ceil(totalCount / limit);
+                            page = Math.floor(Math.random() * totalPages) + 1;
+                        }
+                    }
+                    else {
+                        const countResponse = await fetch(`${this.baseUrl}/graphql`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                ...(this.apiKey && { 'ApiKey': this.apiKey }),
+                            },
+                            body: JSON.stringify({
+                                query: countQuery,
+                                variables: {
+                                    filter: countFilter,
+                                    scene_marker_filter: Object.keys(countSceneFilter).length > 0 ? countSceneFilter : {},
+                                },
+                            }),
+                        });
+                        const countData = await countResponse.json();
+                        const totalCount = countData.data?.findSceneMarkers?.count || 0;
+                        if (totalCount > 0) {
+                            const totalPages = Math.ceil(totalCount / limit);
+                            page = Math.floor(Math.random() * totalPages) + 1;
+                        }
+                    }
+                }
+                catch (e) {
+                    console.warn('Failed to get count for random page, using page 1', e);
+                }
+            }
             // Try using PluginApi GraphQL client if available
             if (this.pluginApi?.GQL?.client) {
-                // Build filter and scene_marker_filter
+                // Build filter - merge saved filter criteria if available
                 const filter = {
-                    per_page: filters?.limit || 20,
-                    page: filters?.offset ? Math.floor(filters.offset / (filters.limit || 20)) + 1 : 1,
+                    per_page: limit,
+                    page: page,
                 };
                 if (filters?.query) {
                     filter.q = filters.query;
                 }
-                const sceneMarkerFilter = {};
+                // Merge saved filter criteria
+                if (savedFilterCriteria?.find_filter) {
+                    Object.assign(filter, savedFilterCriteria.find_filter);
+                    // Override page with our calculated random page
+                    filter.page = page;
+                    filter.per_page = limit;
+                }
+                // Build scene_marker_filter - merge saved filter object_filter if available
+                const sceneMarkerFilterRaw = savedFilterCriteria?.object_filter ? { ...savedFilterCriteria.object_filter } : {};
+                const sceneMarkerFilter = this.normalizeMarkerFilter(sceneMarkerFilterRaw);
                 if (filters?.primary_tags && filters.primary_tags.length > 0) {
-                    sceneMarkerFilter.tags = { value: filters.primary_tags, modifier: 'INCLUDES' };
+                    const tagIds = filters.primary_tags
+                        .map((v) => parseInt(String(v), 10))
+                        .filter((n) => !Number.isNaN(n));
+                    if (tagIds.length > 0) {
+                        sceneMarkerFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
+                    }
+                    else {
+                        console.warn('Scene marker primary_tags must be numeric IDs; ignoring provided values');
+                    }
                 }
                 if (filters?.tags && filters.tags.length > 0) {
-                    sceneMarkerFilter.tags = { value: filters.tags, modifier: 'INCLUDES' };
+                    const tagIds = filters.tags
+                        .map((v) => parseInt(String(v), 10))
+                        .filter((n) => !Number.isNaN(n));
+                    if (tagIds.length > 0) {
+                        sceneMarkerFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
+                    }
+                    else {
+                        console.warn('Scene marker tags must be numeric IDs; ignoring provided values');
+                    }
                 }
-                // Scene marker filters can also filter by scene properties
                 if (filters?.studios && filters.studios.length > 0) {
                     sceneMarkerFilter.scene_tags = { value: filters.studios, modifier: 'INCLUDES' };
                 }
@@ -126,31 +383,50 @@ export class StashAPI {
                 return result.data?.findSceneMarkers?.scene_markers || [];
             }
             // Fallback to direct fetch
-            // Build filter object - only include non-empty values
+            // Build filter - merge saved filter criteria if available
             const filter = {
-                per_page: filters?.limit || 20,
-                page: filters?.offset ? Math.floor(filters.offset / (filters.limit || 20)) + 1 : 1,
+                per_page: limit,
+                page: page,
             };
             if (filters?.query) {
                 filter.q = filters.query;
             }
-            // Build scene_marker_filter object - only include non-empty values
-            const sceneMarkerFilter = {};
+            // Merge saved filter criteria
+            if (savedFilterCriteria?.find_filter) {
+                Object.assign(filter, savedFilterCriteria.find_filter);
+                // Override page with our calculated random page
+                filter.page = page;
+                filter.per_page = limit;
+            }
+            // Build scene_marker_filter - merge saved filter object_filter if available
+            const sceneMarkerFilterRaw = savedFilterCriteria?.object_filter ? { ...savedFilterCriteria.object_filter } : {};
+            const sceneMarkerFilter = this.normalizeMarkerFilter(sceneMarkerFilterRaw);
             if (filters?.primary_tags && filters.primary_tags.length > 0) {
-                sceneMarkerFilter.tags = { value: filters.primary_tags, modifier: 'INCLUDES' };
+                const tagIds = filters.primary_tags
+                    .map((v) => parseInt(String(v), 10))
+                    .filter((n) => !Number.isNaN(n));
+                if (tagIds.length > 0) {
+                    sceneMarkerFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
+                }
+                else {
+                    console.warn('Scene marker primary_tags must be numeric IDs; ignoring provided values');
+                }
             }
             if (filters?.tags && filters.tags.length > 0) {
-                sceneMarkerFilter.tags = { value: filters.tags, modifier: 'INCLUDES' };
+                const tagIds = filters.tags
+                    .map((v) => parseInt(String(v), 10))
+                    .filter((n) => !Number.isNaN(n));
+                if (tagIds.length > 0) {
+                    sceneMarkerFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
+                }
+                else {
+                    console.warn('Scene marker tags must be numeric IDs; ignoring provided values');
+                }
             }
             const variables = {
                 filter,
                 scene_marker_filter: Object.keys(sceneMarkerFilter).length > 0 ? sceneMarkerFilter : {}
             };
-            console.log('StashAPI: Sending GraphQL request for scene markers', {
-                baseUrl: this.baseUrl,
-                variables,
-                queryLength: query.length
-            });
             const response = await fetch(`${this.baseUrl}/graphql`, {
                 method: 'POST',
                 headers: {
@@ -192,7 +468,7 @@ export class StashAPI {
             const url = marker.stream.startsWith('http')
                 ? marker.stream
                 : `${this.baseUrl}${marker.stream}`;
-            return url;
+            return url && url !== this.baseUrl ? url : undefined;
         }
         // Fallback to scene stream
         return this.getVideoUrl(marker.scene);
@@ -205,7 +481,7 @@ export class StashAPI {
         if (scene.sceneStreams && scene.sceneStreams.length > 0) {
             const streamUrl = scene.sceneStreams[0].url;
             const url = streamUrl.startsWith('http') ? streamUrl : `${this.baseUrl}${streamUrl}`;
-            return url;
+            return url && url !== this.baseUrl ? url : undefined;
         }
         // Use stream path if available, otherwise use file path
         if (scene.paths?.stream) {

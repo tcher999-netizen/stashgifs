@@ -5,7 +5,7 @@
 
 import { VideoPostData } from './types.js';
 import { NativeVideoPlayer } from './NativeVideoPlayer.js';
-import { escapeHtml, formatDuration, calculateAspectRatio, getAspectRatioClass } from './utils.js';
+import { escapeHtml, formatDuration, calculateAspectRatio, getAspectRatioClass, isValidMediaUrl } from './utils.js';
 
 export class VideoPost {
   private container: HTMLElement;
@@ -27,10 +27,6 @@ export class VideoPost {
     this.container.dataset.postId = this.data.marker.id;
     this.container.innerHTML = '';
 
-    // Header
-    const header = this.createHeader();
-    this.container.appendChild(header);
-
     // Player container
     const playerContainer = this.createPlayerContainer();
     this.container.appendChild(playerContainer);
@@ -38,37 +34,6 @@ export class VideoPost {
     // Footer
     const footer = this.createFooter();
     this.container.appendChild(footer);
-  }
-
-  private createHeader(): HTMLElement {
-    const header = document.createElement('div');
-    header.className = 'video-post__header';
-
-    // Marker title
-    if (this.data.marker.title) {
-      const title = document.createElement('h3');
-      title.className = 'video-post__title';
-      title.textContent = this.data.marker.title;
-      header.appendChild(title);
-    }
-
-    // Scene title
-    if (this.data.marker.scene.title) {
-      const sceneTitle = document.createElement('div');
-      sceneTitle.className = 'video-post__scene-title';
-      sceneTitle.textContent = this.data.marker.scene.title;
-      header.appendChild(sceneTitle);
-    }
-
-    // Scene date
-    if (this.data.marker.scene.date) {
-      const date = document.createElement('span');
-      date.className = 'video-post__date';
-      date.textContent = new Date(this.data.marker.scene.date).toLocaleDateString();
-      header.appendChild(date);
-    }
-
-    return header;
   }
 
   private createPlayerContainer(): HTMLElement {
@@ -110,57 +75,59 @@ export class VideoPost {
     const footer = document.createElement('div');
     footer.className = 'video-post__footer';
 
-    // Scene info
     const info = document.createElement('div');
     info.className = 'video-post__info';
 
-    // Primary tag (marker-specific)
-    if (this.data.marker.primary_tag) {
-      const primaryTag = document.createElement('div');
-      primaryTag.className = 'video-post__primary-tag';
-      primaryTag.innerHTML = `<strong>Category:</strong> ${escapeHtml(this.data.marker.primary_tag.name)}`;
-      info.appendChild(primaryTag);
-    }
+    // Row: performers chips + icon button link (inline)
+    const row = document.createElement('div');
+    row.className = 'video-post__row';
 
-    // Marker time range
-    if (this.data.startTime !== undefined) {
-      const timeRange = document.createElement('div');
-      timeRange.className = 'video-post__time-range';
-      const startTime = formatDuration(this.data.startTime);
-      const endTime = this.data.endTime ? formatDuration(this.data.endTime) : '';
-      timeRange.textContent = `Time: ${startTime}${endTime ? ` - ${endTime}` : ''}`;
-      info.appendChild(timeRange);
-    }
-
-    // Performers (from scene)
+    const chips = document.createElement('div');
+    chips.className = 'chips';
     if (this.data.marker.scene.performers && this.data.marker.scene.performers.length > 0) {
-      const performers = document.createElement('div');
-      performers.className = 'video-post__performers';
-      const performerNames = this.data.marker.scene.performers.map(p => escapeHtml(p.name)).join(', ');
-      performers.innerHTML = `<strong>Performers:</strong> ${performerNames}`;
-      info.appendChild(performers);
+      for (const performer of this.data.marker.scene.performers) {
+        const chip = document.createElement('a');
+        chip.className = 'chip';
+        chip.href = this.getPerformerLink(performer.id);
+        chip.target = '_blank';
+        chip.rel = 'noopener noreferrer';
+        if (performer.image_path) {
+          const avatar = document.createElement('img');
+          avatar.className = 'chip__avatar';
+          avatar.src = performer.image_path.startsWith('http') ? performer.image_path : `${window.location.origin}${performer.image_path}`;
+          avatar.alt = performer.name;
+          chip.appendChild(avatar);
+        }
+        chip.appendChild(document.createTextNode(performer.name));
+        chips.appendChild(chip);
+      }
     }
+    row.appendChild(chips);
 
-    // Studio
-    if (this.data.marker.scene.studio) {
-      const studio = document.createElement('div');
-      studio.className = 'video-post__studio';
-      studio.innerHTML = `<strong>Studio:</strong> ${escapeHtml(this.data.marker.scene.studio.name)}`;
-      info.appendChild(studio);
-    }
+    // Icon-only button to open full scene in Stash
+    const sceneLink = this.getSceneLink();
+    const iconBtn = document.createElement('a');
+    iconBtn.className = 'icon-btn icon-btn--primary';
+    iconBtn.href = sceneLink;
+    iconBtn.target = '_blank';
+    iconBtn.rel = 'noopener noreferrer';
+    iconBtn.setAttribute('aria-label', 'View full scene');
+    iconBtn.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
+    row.appendChild(iconBtn);
 
-    // Tags (from marker)
-    if (this.data.marker.tags && this.data.marker.tags.length > 0) {
-      const tags = document.createElement('div');
-      tags.className = 'video-post__tags';
-      const tagNames = this.data.marker.tags.slice(0, 5).map(t => escapeHtml(t.name)).join(', ');
-      tags.innerHTML = `<strong>Tags:</strong> ${tagNames}${this.data.marker.tags.length > 5 ? '...' : ''}`;
-      info.appendChild(tags);
-    }
-
+    info.appendChild(row);
     footer.appendChild(info);
-
     return footer;
+  }
+
+  private getSceneLink(): string {
+    const s = this.data.marker.scene;
+    // Always link to the local Stash scene route
+    return `${window.location.origin}/scenes/${s.id}`;
+  }
+
+  private getPerformerLink(performerId: string): string {
+    return `${window.location.origin}/performers/${performerId}`;
   }
 
   /**
@@ -173,6 +140,11 @@ export class VideoPost {
 
     const playerContainer = this.container.querySelector('.video-post__player') as HTMLElement;
     if (!playerContainer) {
+      return;
+    }
+
+    if (!isValidMediaUrl(videoUrl)) {
+      console.warn('VideoPost: Invalid media URL, skipping player creation', { videoUrl });
       return;
     }
 

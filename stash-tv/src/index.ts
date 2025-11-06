@@ -8,7 +8,6 @@ import { FeedSettings } from './types.js';
 
 // Initialize when DOM is ready
 function init(): void {
-  console.log('Stash TV Feed UI: Initializing...');
   
   const appContainer = document.getElementById('app');
   if (!appContainer) {
@@ -19,14 +18,11 @@ function init(): void {
   // Create feed container
   appContainer.className = 'feed-container';
 
-  // Show loading message
-  appContainer.innerHTML = '<div style="padding: 2rem; text-align: center; color: #fff;">Loading Stash TV Feed...</div>';
+  // Clear any existing content
+  appContainer.innerHTML = '';
 
   try {
     // Initialize API (will use window.stash if available)
-    console.log('Stash TV Feed UI: Creating API instance...');
-    console.log('Stash TV Feed UI: window.PluginApi =', (window as any).PluginApi);
-    console.log('Stash TV Feed UI: window.stash =', (window as any).stash);
     const api = new StashAPI();
 
     // Get settings from localStorage or use defaults
@@ -36,7 +32,6 @@ function init(): void {
       : {};
 
     // Create feed
-    console.log('Stash TV Feed UI: Creating feed container...');
     const feed = new FeedContainer(appContainer, api, settings);
 
     // Initialize feed
@@ -53,7 +48,6 @@ function init(): void {
 
     // Expose feed to window for debugging/extension
     (window as any).stashTVFeed = feed;
-    console.log('Stash TV Feed UI: Initialization complete');
   } catch (error: any) {
     console.error('Stash TV Feed UI: Fatal error during initialization:', error);
     appContainer.innerHTML = `

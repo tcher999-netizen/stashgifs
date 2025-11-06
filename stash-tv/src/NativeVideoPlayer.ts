@@ -17,6 +17,8 @@ export class NativeVideoPlayer {
   private fullscreenButton!: HTMLElement;
   private state: VideoPlayerState;
   private onStateChange?: (state: VideoPlayerState) => void;
+  private readyResolver?: () => void;
+  private readyPromise: Promise<void>;
 
   constructor(container: HTMLElement, videoUrl: string, options?: {
     autoplay?: boolean;
@@ -37,6 +39,8 @@ export class NativeVideoPlayer {
       isFullscreen: false,
     };
 
+    this.readyPromise = new Promise<void>((resolve) => { this.readyResolver = resolve; });
+
     this.createVideoElement(videoUrl, {
       autoplay: options?.autoplay,
       muted: options?.muted,
@@ -55,17 +59,10 @@ export class NativeVideoPlayer {
     this.videoElement.muted = options?.muted ?? true; // Default to muted for autoplay
     this.videoElement.className = 'video-player__element';
     
-    console.log('NativeVideoPlayer: Creating video element', { 
-      videoUrl, 
-      muted: this.videoElement.muted,
-      startTime: options?.startTime,
-      endTime: options?.endTime 
-    });
     
     // Set start time if provided
     if (options?.startTime !== undefined) {
       const setStartTime = () => {
-        console.log('NativeVideoPlayer: Setting start time', options.startTime);
         this.videoElement.currentTime = options.startTime!;
       };
       this.videoElement.addEventListener('loadedmetadata', setStartTime, { once: true });
@@ -77,10 +74,6 @@ export class NativeVideoPlayer {
     if (options?.endTime !== undefined && (options.startTime === undefined || options.endTime > options.startTime + 0.25)) {
       this.videoElement.addEventListener('timeupdate', () => {
         if (this.videoElement.currentTime >= options.endTime!) {
-          console.log('NativeVideoPlayer: Reached end time, looping', { 
-            current: this.videoElement.currentTime, 
-            end: options.endTime 
-          });
           this.videoElement.pause();
           this.videoElement.currentTime = options.startTime || 0;
         }
@@ -97,13 +90,9 @@ export class NativeVideoPlayer {
       });
     });
     
-    // Log when video can play
+    // Resolve ready promise when video can play
     this.videoElement.addEventListener('canplay', () => {
-      console.log('NativeVideoPlayer: Video can play', {
-        readyState: this.videoElement.readyState,
-        paused: this.videoElement.paused,
-        muted: this.videoElement.muted
-      });
+      if (this.readyResolver) this.readyResolver();
     });
 
     const playerWrapper = document.createElement('div');
@@ -241,13 +230,8 @@ export class NativeVideoPlayer {
   }
 
   play(): Promise<void> {
-    console.log('NativeVideoPlayer: play() called', {
-      readyState: this.videoElement.readyState,
-      paused: this.videoElement.paused,
-      muted: this.videoElement.muted,
-      src: this.videoElement.src
-    });
-    
+    // Hint browser to allow autoplay of muted content
+    this.videoElement.autoplay = true;
     // Ensure video is muted for autoplay policies
     if (!this.videoElement.muted) {
       this.videoElement.muted = true;
@@ -307,6 +291,17 @@ export class NativeVideoPlayer {
 
   getState(): VideoPlayerState {
     return { ...this.state };
+  }
+
+  /**
+   * Wait until the video can play (canplay fired or readyState >= 3)
+   */
+  async waitUntilCanPlay(timeoutMs: number = 3000): Promise<void> {
+    if (this.videoElement.readyState >= 3) {
+      return;
+    }
+    const to = new Promise<void>((resolve) => setTimeout(resolve, timeoutMs));
+    await Promise.race([this.readyPromise, to]);
   }
 
   destroy(): void {

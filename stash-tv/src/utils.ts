@@ -99,3 +99,32 @@ export function escapeHtml(text: string): string {
   return div.innerHTML;
 }
 
+/**
+ * Shuffle array in-place using Fisher–Yates
+ */
+export function shuffleInPlace<T>(arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/**
+ * Basic media URL sanity check to avoid assigning the app root as a video src
+ */
+export function isValidMediaUrl(url?: string): boolean {
+  if (!url) return false;
+  try {
+    const absolute = url.startsWith('http') ? url : `${window.location.origin}${url}`;
+    const appRoot = `${window.location.origin}/plugin/stash-tv/assets/app/`;
+    if (absolute === window.location.origin) return false;
+    if (absolute === appRoot) return false;
+    // Very short paths are suspicious
+    if (absolute.length < window.location.origin.length + 4) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+

@@ -78,6 +78,7 @@ export interface FilterOptions {
   query?: string;
   limit?: number;
   offset?: number;
+  savedFilterId?: string; // Saved filter id from Stash (scene markers)
 }
 
 export interface FeedSettings {

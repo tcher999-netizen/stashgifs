@@ -112,12 +112,10 @@ export class VisibilityManager {
   }
 
   private handlePostEnteredViewport(postId: string, entry: VisibilityEntry): void {
-    console.log('VisibilityManager: Post entered viewport', { postId, hasPlayer: !!entry.player, autoPlay: this.options.autoPlay });
     
     if (this.activeVideos.size >= this.options.maxConcurrent) {
       // Pause the oldest video
       const oldestId = Array.from(this.activeVideos)[0];
-      console.log('VisibilityManager: Pausing oldest video', oldestId);
       this.pauseVideo(oldestId);
       this.activeVideos.delete(oldestId);
     }
@@ -126,9 +124,8 @@ export class VisibilityManager {
       if (this.options.autoPlay) {
         // Wait for video to be ready before playing
         const tryPlay = () => {
-          console.log('VisibilityManager: Attempting to play', postId);
           entry.player!.play().then(() => {
-            console.log('VisibilityManager: Successfully started playing', postId);
+            // Successfully started playing
           }).catch((err: any) => {
             console.error('VisibilityManager: Failed to play', { postId, error: err });
             // Retry after a short delay if video wasn't ready

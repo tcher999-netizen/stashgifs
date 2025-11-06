@@ -15,6 +15,7 @@ export class NativeVideoPlayer {
             volume: 1,
             isFullscreen: false,
         };
+        this.readyPromise = new Promise((resolve) => { this.readyResolver = resolve; });
         this.createVideoElement(videoUrl, {
             autoplay: options?.autoplay,
             muted: options?.muted,
@@ -31,16 +32,9 @@ export class NativeVideoPlayer {
         this.videoElement.playsInline = true;
         this.videoElement.muted = options?.muted ?? true; // Default to muted for autoplay
         this.videoElement.className = 'video-player__element';
-        console.log('NativeVideoPlayer: Creating video element', {
-            videoUrl,
-            muted: this.videoElement.muted,
-            startTime: options?.startTime,
-            endTime: options?.endTime
-        });
         // Set start time if provided
         if (options?.startTime !== undefined) {
             const setStartTime = () => {
-                console.log('NativeVideoPlayer: Setting start time', options.startTime);
                 this.videoElement.currentTime = options.startTime;
             };
             this.videoElement.addEventListener('loadedmetadata', setStartTime, { once: true });
@@ -51,10 +45,6 @@ export class NativeVideoPlayer {
         if (options?.endTime !== undefined && (options.startTime === undefined || options.endTime > options.startTime + 0.25)) {
             this.videoElement.addEventListener('timeupdate', () => {
                 if (this.videoElement.currentTime >= options.endTime) {
-                    console.log('NativeVideoPlayer: Reached end time, looping', {
-                        current: this.videoElement.currentTime,
-                        end: options.endTime
-                    });
                     this.videoElement.pause();
                     this.videoElement.currentTime = options.startTime || 0;
                 }
@@ -69,13 +59,10 @@ export class NativeVideoPlayer {
                 src: this.videoElement.src
             });
         });
-        // Log when video can play
+        // Resolve ready promise when video can play
         this.videoElement.addEventListener('canplay', () => {
-            console.log('NativeVideoPlayer: Video can play', {
-                readyState: this.videoElement.readyState,
-                paused: this.videoElement.paused,
-                muted: this.videoElement.muted
-            });
+            if (this.readyResolver)
+                this.readyResolver();
         });
         const playerWrapper = document.createElement('div');
         playerWrapper.className = 'video-player';
@@ -194,12 +181,8 @@ export class NativeVideoPlayer {
         }
     }
     play() {
-        console.log('NativeVideoPlayer: play() called', {
-            readyState: this.videoElement.readyState,
-            paused: this.videoElement.paused,
-            muted: this.videoElement.muted,
-            src: this.videoElement.src
-        });
+        // Hint browser to allow autoplay of muted content
+        this.videoElement.autoplay = true;
         // Ensure video is muted for autoplay policies
         if (!this.videoElement.muted) {
             this.videoElement.muted = true;
@@ -254,6 +237,16 @@ export class NativeVideoPlayer {
     }
     getState() {
         return { ...this.state };
+    }
+    /**
+     * Wait until the video can play (canplay fired or readyState >= 3)
+     */
+    async waitUntilCanPlay(timeoutMs = 3000) {
+        if (this.videoElement.readyState >= 3) {
+            return;
+        }
+        const to = new Promise((resolve) => setTimeout(resolve, timeoutMs));
+        await Promise.race([this.readyPromise, to]);
     }
     destroy() {
         this.videoElement.pause();
