@@ -757,56 +757,6 @@ export class FeedContainer {
       backdrop.style.pointerEvents = 'none';
       unlockScroll();
     };
-    const togglePanel = () => { sheetOpen ? closePanel() : openPanel(); };
-
-    // Floating action buttons stack (right side)
-    const fab = document.createElement('div');
-    fab.style.position = 'fixed';
-    // move to bottom-right
-    fab.style.right = '16px';
-    fab.style.bottom = '56px';
-    fab.style.transform = 'none';
-    fab.style.display = 'flex';
-    fab.style.flexDirection = 'column';
-    fab.style.gap = '10px';
-    fab.style.zIndex = '210';
-
-    const makeIconBtn = (svgPath: string, aria: string) => {
-      const btn = document.createElement('button');
-      btn.setAttribute('aria-label', aria);
-      btn.style.width = '42px';
-      btn.style.height = '42px';
-      btn.style.borderRadius = '999px';
-      btn.style.border = '1px solid rgba(0,0,0,0.15)';
-      btn.style.background = '#F5C518';
-      btn.style.backdropFilter = 'blur(6px)';
-      btn.style.display = 'inline-flex';
-      btn.style.alignItems = 'center';
-      btn.style.justifyContent = 'center';
-      btn.style.cursor = 'pointer';
-      btn.style.color = '#111';
-      btn.style.boxShadow = '0 8px 24px rgba(0,0,0,0.35)';
-      btn.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="#111" aria-hidden="true"><path d="${svgPath}"/></svg>`;
-      btn.onmouseenter = () => { btn.style.filter = 'brightness(1.05)'; };
-      btn.onmouseleave = () => { btn.style.filter = 'none'; };
-      return btn;
-    };
-
-    // Filter panel toggle button (sliders icon)
-    const toggleBtn = makeIconBtn('M10 6h10v2H10V6zM4 6h2v2H4V6zm6 10h10v2H10v-2zM4 16h2v2H4v-2zm6-5h10v2H10v-2zM4 11h2v2H4v-2z', 'Open filters');
-    toggleBtn.addEventListener('click', togglePanel);
-
-    // Clear filters floating button (eraser icon)
-    const fabClearBtn = makeIconBtn('M16 3l5 5-9.5 9.5H6.5L3 14.5 16 3zm-9.5 13.5h4l7.5-7.5-4-4L3.5 13l3 3.5z', 'Clear filters');
-    fabClearBtn.addEventListener('click', () => {
-      // Reuse clear handler
-      (clearBtn as HTMLButtonElement).click();
-    });
-
-    fab.appendChild(toggleBtn);
-    fab.appendChild(fabClearBtn);
-    this.container.appendChild(fab);
-
     // Backdrop/keyboard close and responsive resize
     backdrop.addEventListener('click', closePanel);
     window.addEventListener('keydown', (e) => {
