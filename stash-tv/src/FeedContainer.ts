@@ -108,6 +108,7 @@ export class FeedContainer {
     headerInner.style.width = '100%';
     headerInner.style.maxWidth = `${this.settings.cardMaxWidth}px`;
     headerInner.style.margin = '0 auto';
+    headerInner.style.height = '100%';
 
     const brand = document.createElement('div');
     brand.textContent = 'stashgifs';
