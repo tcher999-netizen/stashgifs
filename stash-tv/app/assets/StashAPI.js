@@ -85,6 +85,11 @@ export class StashAPI {
           webp
           vtt
         }
+        sceneStreams {
+          url
+          mime_type
+          label
+        }
       }
     }
   }
@@ -196,6 +201,12 @@ export class StashAPI {
      * Get video URL for a scene
      */
     getVideoUrl(scene) {
+        // Prefer sceneStreams if available (often provides mp4)
+        if (scene.sceneStreams && scene.sceneStreams.length > 0) {
+            const streamUrl = scene.sceneStreams[0].url;
+            const url = streamUrl.startsWith('http') ? streamUrl : `${this.baseUrl}${streamUrl}`;
+            return url;
+        }
         // Use stream path if available, otherwise use file path
         if (scene.paths?.stream) {
             const url = scene.paths.stream.startsWith('http')

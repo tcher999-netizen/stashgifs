@@ -171,19 +171,21 @@ export class FeedContainer {
 
     // Load video when it becomes visible (lazy loading)
     if (videoUrl) {
+      console.log('FeedContainer: Setting up video load observer', { markerId: marker.id, videoUrl });
       // Use Intersection Observer to load video when near viewport
       const loadObserver = new IntersectionObserver(
         (entries) => {
           for (const entry of entries) {
             if (entry.isIntersecting) {
+              console.log('FeedContainer: Loading video player', { markerId: marker.id });
               post.loadPlayer(videoUrl, marker.seconds, marker.end_seconds);
               const player = post.getPlayer();
               if (player) {
+                console.log('FeedContainer: Registering player with VisibilityManager', { markerId: marker.id });
                 this.visibilityManager.registerPlayer(marker.id, player);
-                // Autoplay if enabled
-                if (this.settings.autoPlay) {
-                  player.play();
-                }
+                // Don't play here - let VisibilityManager handle it based on visibility
+              } else {
+                console.warn('FeedContainer: Player not created', { markerId: marker.id });
               }
               loadObserver.disconnect();
             }
@@ -192,6 +194,8 @@ export class FeedContainer {
         { rootMargin: '200px' }
       );
       loadObserver.observe(postContainer);
+    } else {
+      console.warn('FeedContainer: No video URL for marker', { markerId: marker.id });
     }
   }
 

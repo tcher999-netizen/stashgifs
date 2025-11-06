@@ -74,17 +74,47 @@ export class VisibilityManager {
         return null;
     }
     handlePostEnteredViewport(postId, entry) {
+        console.log('VisibilityManager: Post entered viewport', { postId, hasPlayer: !!entry.player, autoPlay: this.options.autoPlay });
         if (this.activeVideos.size >= this.options.maxConcurrent) {
             // Pause the oldest video
             const oldestId = Array.from(this.activeVideos)[0];
+            console.log('VisibilityManager: Pausing oldest video', oldestId);
             this.pauseVideo(oldestId);
             this.activeVideos.delete(oldestId);
         }
         if (entry.player) {
             if (this.options.autoPlay) {
-                entry.player.play();
+                // Wait for video to be ready before playing
+                const tryPlay = () => {
+                    console.log('VisibilityManager: Attempting to play', postId);
+                    entry.player.play().then(() => {
+                        console.log('VisibilityManager: Successfully started playing', postId);
+                    }).catch((err) => {
+                        console.error('VisibilityManager: Failed to play', { postId, error: err });
+                        // Retry after a short delay if video wasn't ready
+                        if (entry.player) {
+                            setTimeout(() => {
+                                entry.player.play().catch((e) => {
+                                    console.error('VisibilityManager: Retry play failed', { postId, error: e });
+                                });
+                            }, 500);
+                        }
+                    });
+                };
+                // If video is already loaded, play immediately
+                const state = entry.player.getState();
+                if (state.duration > 0) {
+                    tryPlay();
+                }
+                else {
+                    // Wait for video to load
+                    setTimeout(tryPlay, 100);
+                }
             }
             this.activeVideos.add(postId);
+        }
+        else {
+            console.warn('VisibilityManager: No player registered for post', postId);
         }
     }
     handlePostExitedViewport(postId, entry) {

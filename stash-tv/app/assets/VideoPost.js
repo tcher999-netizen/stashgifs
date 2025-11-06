@@ -142,8 +142,8 @@ export class VideoPost {
             return;
         }
         this.player = new NativeVideoPlayer(playerContainer, videoUrl, {
-            muted: false,
-            autoplay: false,
+            muted: true, // Always muted for autoplay
+            autoplay: false, // Will be controlled by VisibilityManager
             startTime: startTime || this.data.startTime,
             endTime: endTime || this.data.endTime,
         });

@@ -7,7 +7,7 @@ import { VideoPost } from './VideoPost.js';
 import { VisibilityManager } from './VisibilityManager.js';
 import { throttle } from './utils.js';
 const DEFAULT_SETTINGS = {
-    autoPlay: false,
+    autoPlay: true, // Enable autoplay for markers
     autoPlayThreshold: 0.5,
     maxConcurrentVideos: 3,
     unloadDistance: 1000,
@@ -135,17 +135,30 @@ export class FeedContainer {
         this.visibilityManager.observePost(postContainer, marker.id);
         // Load video when it becomes visible (lazy loading)
         if (videoUrl) {
+            console.log('FeedContainer: Setting up video load observer', { markerId: marker.id, videoUrl });
             // Use Intersection Observer to load video when near viewport
             const loadObserver = new IntersectionObserver((entries) => {
                 for (const entry of entries) {
                     if (entry.isIntersecting) {
+                        console.log('FeedContainer: Loading video player', { markerId: marker.id });
                         post.loadPlayer(videoUrl, marker.seconds, marker.end_seconds);
-                        this.visibilityManager.registerPlayer(marker.id, post.getPlayer());
+                        const player = post.getPlayer();
+                        if (player) {
+                            console.log('FeedContainer: Registering player with VisibilityManager', { markerId: marker.id });
+                            this.visibilityManager.registerPlayer(marker.id, player);
+                            // Don't play here - let VisibilityManager handle it based on visibility
+                        }
+                        else {
+                            console.warn('FeedContainer: Player not created', { markerId: marker.id });
+                        }
                         loadObserver.disconnect();
                     }
                 }
             }, { rootMargin: '200px' });
             loadObserver.observe(postContainer);
+        }
+        else {
+            console.warn('FeedContainer: No video URL for marker', { markerId: marker.id });
         }
     }
     /**

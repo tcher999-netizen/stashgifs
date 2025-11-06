@@ -14,6 +14,11 @@ export interface Scene {
   tags?: Tag[];
   files?: SceneFile[];
   paths?: ScenePaths;
+  sceneStreams?: Array<{
+    url: string;
+    mime_type?: string;
+    label?: string;
+  }>;
 }
 
 export interface SceneMarker {

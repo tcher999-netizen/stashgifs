@@ -27,25 +27,56 @@ export class NativeVideoPlayer {
     createVideoElement(videoUrl, options) {
         this.videoElement = document.createElement('video');
         this.videoElement.src = videoUrl;
-        this.videoElement.preload = 'metadata';
+        this.videoElement.preload = 'auto'; // Changed from 'metadata' to 'auto' for better loading
         this.videoElement.playsInline = true;
-        this.videoElement.muted = options?.muted ?? false;
+        this.videoElement.muted = options?.muted ?? true; // Default to muted for autoplay
         this.videoElement.className = 'video-player__element';
+        console.log('NativeVideoPlayer: Creating video element', {
+            videoUrl,
+            muted: this.videoElement.muted,
+            startTime: options?.startTime,
+            endTime: options?.endTime
+        });
         // Set start time if provided
         if (options?.startTime !== undefined) {
-            this.videoElement.addEventListener('loadedmetadata', () => {
+            const setStartTime = () => {
+                console.log('NativeVideoPlayer: Setting start time', options.startTime);
                 this.videoElement.currentTime = options.startTime;
-            }, { once: true });
+            };
+            this.videoElement.addEventListener('loadedmetadata', setStartTime, { once: true });
+            // Also try when canplay is ready
+            this.videoElement.addEventListener('canplay', setStartTime, { once: true });
         }
-        // Handle end time if provided
-        if (options?.endTime !== undefined) {
+        // Handle end time if provided (only if endTime > startTime + small tolerance)
+        if (options?.endTime !== undefined && (options.startTime === undefined || options.endTime > options.startTime + 0.25)) {
             this.videoElement.addEventListener('timeupdate', () => {
                 if (this.videoElement.currentTime >= options.endTime) {
+                    console.log('NativeVideoPlayer: Reached end time, looping', {
+                        current: this.videoElement.currentTime,
+                        end: options.endTime
+                    });
                     this.videoElement.pause();
                     this.videoElement.currentTime = options.startTime || 0;
                 }
             });
         }
+        // Add error handler
+        this.videoElement.addEventListener('error', (e) => {
+            console.error('NativeVideoPlayer: Video error', {
+                error: e,
+                errorCode: this.videoElement.error?.code,
+                errorMessage: this.videoElement.error?.message,
+                src: this.videoElement.src
+            });
+        });
+        // Log when video can play
+        this.videoElement.addEventListener('canplay', () => {
+            console.log('NativeVideoPlayer: Video can play', {
+                readyState: this.videoElement.readyState,
+                paused: this.videoElement.paused,
+                muted: this.videoElement.muted
+            });
+        });
         const playerWrapper = document.createElement('div');
         playerWrapper.className = 'video-player';
         playerWrapper.appendChild(this.videoElement);
@@ -163,7 +194,32 @@ export class NativeVideoPlayer {
         }
     }
     play() {
-        this.videoElement.play();
+        console.log('NativeVideoPlayer: play() called', {
+            readyState: this.videoElement.readyState,
+            paused: this.videoElement.paused,
+            muted: this.videoElement.muted,
+            src: this.videoElement.src
+        });
+        // Ensure video is muted for autoplay policies
+        if (!this.videoElement.muted) {
+            this.videoElement.muted = true;
+            this.state.isMuted = true;
+            this.updateMuteButton();
+        }
+        const playPromise = this.videoElement.play();
+        if (playPromise !== undefined) {
+            return playPromise.catch((err) => {
+                console.error('NativeVideoPlayer: play() failed', {
+                    error: err,
+                    readyState: this.videoElement.readyState,
+                    paused: this.videoElement.paused,
+                    muted: this.videoElement.muted,
+                    src: this.videoElement.src
+                });
+                throw err;
+            });
+        }
+        return Promise.resolve();
     }
     pause() {
         this.videoElement.pause();
