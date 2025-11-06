@@ -76,7 +76,7 @@ export class FeedContainer {
         header.style.background = 'rgba(18,18,18,0.75)';
         header.style.backdropFilter = 'blur(10px)';
         header.style.borderBottom = '1px solid rgba(255,255,255,0.06)';
-        header.style.transition = 'transform .24s ease';
+        header.style.transition = 'transform .24s ease, opacity .2s ease';
         const brand = document.createElement('div');
         brand.textContent = 'stashgifs';
         brand.style.fontWeight = '700';
@@ -925,16 +925,19 @@ export class FeedContainer {
      * Setup scroll handler
      */
     setupScrollHandler() {
+        let lastTop = 0;
         const handleScroll = throttle(() => {
             const top = this.scrollContainer.scrollTop;
-            if (this.headerBar) {
-                if (top > 8) {
-                    this.headerBar.style.transform = 'translateY(-100%)';
-                }
-                else {
-                    this.headerBar.style.transform = 'translateY(0)';
-                }
+            if (!this.headerBar)
+                return;
+            const scrollingDown = top > lastTop;
+            if (scrollingDown && top > 0) {
+                this.headerBar.style.opacity = '0';
             }
+            else {
+                this.headerBar.style.opacity = '1';
+            }
+            lastTop = top;
         }, 80);
         this.scrollContainer.addEventListener('scroll', handleScroll);
     }
