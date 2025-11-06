@@ -326,7 +326,7 @@ interface StashAPI {
 ## File Structure
 
 ```
-stash-tv/
+stashgifs/
 ├── app/
 │   ├── index.html
 │   ├── assets/

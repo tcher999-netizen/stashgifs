@@ -18,7 +18,7 @@ function init() {
         // Initialize API (will use window.stash if available)
         const api = new StashAPI();
         // Get settings from localStorage or use defaults
-        const savedSettings = localStorage.getItem('stash-tv-settings');
+        const savedSettings = localStorage.getItem('stashgifs-settings');
         const settings = savedSettings
             ? JSON.parse(savedSettings)
             : {};

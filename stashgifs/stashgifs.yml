@@ -6,7 +6,7 @@ ui:
   assets:
     /: .
   javascript:
-    - stash-tv.mjs
+    - stashgifs.mjs
 settings:
   hideNavButton:
     displayName: Hide navigation button

@@ -22,16 +22,16 @@ Modern feed interface for StashGifs - transforming from full-screen scroller to 
    
    Or use the build script:
    ```bash
-   ./stash-tv/build.ps1  # Windows PowerShell
+   .\stashgifs\build.ps1  # Windows PowerShell
    ```
 
-3. The compiled JavaScript will be in `stash-tv/app/assets/` directory.
+3. The compiled JavaScript will be in `stashgifs/app/assets/` directory.
 
 ## Development
 
 ### File Structure
 ```
-stash-tv/
+stashgifs/
 ├── src/              # TypeScript source files
 │   ├── index.ts     # Main entry point
 │   ├── FeedContainer.ts
@@ -55,7 +55,7 @@ stash-tv/
 To use the new feed UI instead of the old scroller:
 
 1. Compile TypeScript: `npx tsc`
-2. Update `stash-tv/app/index.html` to include:
+2. Update `stashgifs/app/index.html` to include:
    ```html
    <link rel="stylesheet" href="./assets/feed.css">
    <script type="module" src="./assets/index.js"></script>

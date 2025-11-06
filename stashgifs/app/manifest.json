@@ -4,13 +4,13 @@
   "description": "StashGifs provides a simplified browsing experience for your Stash instance.",
   "icons": [
     {
-      "src": "stash-tv-icon.svg",
+      "src": "stashgifs-icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "maskable any"
     },
     {
-      "src": "stash-tv-icon.png",
+      "src": "stashgifs-icon.png",
       "sizes": "256x256 64x64 32x32 24x24 16x16",
       "type": "image/png",
       "purpose": "maskable any"

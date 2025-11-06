@@ -8,7 +8,9 @@ date: "2025-11-04 06:18:30"
 requires: []
 source_repository: https://raw.githubusercontent.com/evolite/stashgifs/master/main/index.yml
 files:
-- stash-tv.mjs
+- manifest
+- stashgifs.yml
+- stashgifs.mjs
 - app\favicon.ico
 - app\assets\gb-wls-lLp_JivI.svg
 - app\assets\sa-BNDoOU2S.svg
@@ -158,12 +160,10 @@ files:
 - app\assets\gs-WWyyj-hg.svg
 - app\assets\rs-BMsKFqbR.svg
 - app\assets\mx-OjePrkg2.svg
-- app\stash-tv-icon.svg
+- app\stashgifs-icon.svg
 - app\favicon.png
 - app\apple-touch-icon.png
-- app\stash-tv-icon.png
+- app\stashgifs-icon.png
 - app\manifest.json
 - app\index.html
 - app\favicon.svg
-- stash-tv.yml
-- stash-tv.umd.js

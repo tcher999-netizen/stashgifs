@@ -26,7 +26,7 @@ function init(): void {
     const api = new StashAPI();
 
     // Get settings from localStorage or use defaults
-    const savedSettings = localStorage.getItem('stash-tv-settings');
+    const savedSettings = localStorage.getItem('stashgifs-settings');
     const settings: Partial<FeedSettings> = savedSettings
       ? JSON.parse(savedSettings)
       : {};
