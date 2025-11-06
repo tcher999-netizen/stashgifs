@@ -29,7 +29,8 @@ export class StashAPI {
      * Fetch scenes from Stash
      */
     async fetchScenes(filters) {
-        // Use a simpler query that matches Stash's expected format
+        // Use a query that matches Stash's expected format
+        // Based on the existing TvSceneData fragment structure
         const query = `query FindScenes($filter: FindFilterType, $scene_filter: SceneFilterType) {
   findScenes(filter: $filter, scene_filter: $scene_filter) {
     count
@@ -39,7 +40,7 @@ export class StashAPI {
       date
       details
       url
-      rating
+      rating100
       studio {
         id
         name
@@ -115,8 +116,14 @@ export class StashAPI {
             if (filters?.tags && filters.tags.length > 0) {
                 sceneFilter.tags = { value: filters.tags, modifier: 'INCLUDES' };
             }
-            if (filters?.rating !== undefined && filters.rating !== null) {
-                sceneFilter.rating = { value: filters.rating, modifier: 'GREATER_THAN' };
+            // Handle rating - Stash uses rating100 (0-100 scale)
+            if (filters?.rating100 !== undefined && filters.rating100 !== null) {
+                sceneFilter.rating100 = { value: filters.rating100, modifier: 'GREATER_THAN' };
+            }
+            else if (filters?.rating !== undefined && filters.rating !== null) {
+                // Convert 0-5 rating to 0-100 scale if needed
+                const rating100 = filters.rating * 20;
+                sceneFilter.rating100 = { value: rating100, modifier: 'GREATER_THAN' };
             }
             const variables = {
                 filter,

@@ -8,7 +8,7 @@ export interface Scene {
   date?: string;
   details?: string;
   url?: string;
-  rating?: number;
+  rating100?: number; // Stash uses rating100 (0-100) instead of rating
   studio?: Studio;
   performers?: Performer[];
   tags?: Tag[];
@@ -56,7 +56,8 @@ export interface FilterOptions {
   studios?: string[];
   performers?: string[];
   tags?: string[];
-  rating?: number;
+  rating?: number; // User-facing, will be converted to rating100 in query
+  rating100?: number; // Direct rating100 filter (0-100)
   query?: string;
   limit?: number;
   offset?: number;
