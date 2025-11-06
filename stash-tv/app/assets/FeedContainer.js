@@ -83,6 +83,8 @@ export class FeedContainer {
         brand.style.letterSpacing = '0.5px';
         brand.style.color = '#F5C518';
         brand.style.fontSize = '16px';
+        // ensure smoother animation
+        header.style.willChange = 'transform, opacity';
         header.appendChild(brand);
         // Search area
         const searchArea = document.createElement('div');
@@ -927,7 +929,9 @@ export class FeedContainer {
     setupScrollHandler() {
         let lastTop = 0;
         const handleScroll = throttle(() => {
-            const top = this.scrollContainer.scrollTop;
+            const top = (typeof window !== 'undefined' && typeof window.scrollY === 'number')
+                ? window.scrollY
+                : this.scrollContainer.scrollTop;
             if (!this.headerBar)
                 return;
             const delta = top - lastTop;
@@ -943,7 +947,9 @@ export class FeedContainer {
             }
             lastTop = top;
         }, 70);
-        this.scrollContainer.addEventListener('scroll', handleScroll);
+        // Listen to both window and container scrolling to cover all layouts
+        window.addEventListener('scroll', handleScroll, { passive: true });
+        this.scrollContainer.addEventListener('scroll', handleScroll, { passive: true });
     }
     /**
      * Show loading indicator
