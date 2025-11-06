@@ -60,12 +60,19 @@ export class StashAPI {
 
     // Handle tags shapes: either { value, modifier } OR an array of objects/ids
     if (out.tags) {
+      // Case 1: array of ids/objects
       if (Array.isArray(out.tags)) {
         const ids = normalizeIdArray(out.tags);
         if (ids) out.tags = { value: ids, modifier: 'INCLUDES' };
         else delete out.tags;
       } else if (typeof out.tags === 'object') {
-        const ids = normalizeIdArray(out.tags.value);
+        // Case 2: { value: number[] | { items:[{id,label}], ... }, modifier? }
+        let raw = out.tags.value;
+        // Stash saved filter format: value: { items: [{id,label},...], excluded:[], depth:-1 }
+        if (raw && typeof raw === 'object' && Array.isArray(raw.items)) {
+          raw = raw.items;
+        }
+        const ids = normalizeIdArray(raw);
         if (ids) out.tags = { value: ids, modifier: out.tags.modifier ?? 'INCLUDES' };
         else delete out.tags;
       }
@@ -78,7 +85,11 @@ export class StashAPI {
         if (ids) out.scene_tags = { value: ids, modifier: 'INCLUDES' };
         else delete out.scene_tags;
       } else if (typeof out.scene_tags === 'object') {
-        const ids = normalizeIdArray(out.scene_tags.value);
+        let raw = out.scene_tags.value;
+        if (raw && typeof raw === 'object' && Array.isArray(raw.items)) {
+          raw = raw.items;
+        }
+        const ids = normalizeIdArray(raw);
         if (ids) out.scene_tags = { value: ids, modifier: out.scene_tags.modifier ?? 'INCLUDES' };
         else delete out.scene_tags;
       }
