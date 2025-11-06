@@ -578,7 +578,15 @@ export class StashAPI {
             const url = marker.stream.startsWith('http')
                 ? marker.stream
                 : `${this.baseUrl}${marker.stream}`;
-            return url && url !== this.baseUrl ? url : undefined;
+            // Sanity check against app root or empty
+            try {
+                const absolute = url.startsWith('http') ? url : `${window.location.origin}${url}`;
+                const appRoot = `${window.location.origin}/plugin/stashgifs/assets/app/`;
+                if (!absolute || absolute === this.baseUrl || absolute === window.location.origin || absolute === appRoot)
+                    return undefined;
+            }
+            catch { }
+            return url;
         }
         // Fallback to scene stream
         return this.getVideoUrl(marker.scene);
@@ -591,13 +599,27 @@ export class StashAPI {
         if (scene.sceneStreams && scene.sceneStreams.length > 0) {
             const streamUrl = scene.sceneStreams[0].url;
             const url = streamUrl.startsWith('http') ? streamUrl : `${this.baseUrl}${streamUrl}`;
-            return url && url !== this.baseUrl ? url : undefined;
+            try {
+                const absolute = url.startsWith('http') ? url : `${window.location.origin}${url}`;
+                const appRoot = `${window.location.origin}/plugin/stashgifs/assets/app/`;
+                if (!absolute || absolute === this.baseUrl || absolute === window.location.origin || absolute === appRoot)
+                    return undefined;
+            }
+            catch { }
+            return url;
         }
         // Use stream path if available, otherwise use file path
         if (scene.paths?.stream) {
             const url = scene.paths.stream.startsWith('http')
                 ? scene.paths.stream
                 : `${this.baseUrl}${scene.paths.stream}`;
+            try {
+                const absolute = url.startsWith('http') ? url : `${window.location.origin}${url}`;
+                const appRoot = `${window.location.origin}/plugin/stashgifs/assets/app/`;
+                if (!absolute || absolute === this.baseUrl || absolute === window.location.origin || absolute === appRoot)
+                    return undefined;
+            }
+            catch { }
             return url;
         }
         if (scene.files && scene.files.length > 0) {
@@ -605,6 +627,13 @@ export class StashAPI {
             const url = filePath.startsWith('http')
                 ? filePath
                 : `${this.baseUrl}${filePath}`;
+            try {
+                const absolute = url.startsWith('http') ? url : `${window.location.origin}${url}`;
+                const appRoot = `${window.location.origin}/plugin/stash-tv/assets/app/`;
+                if (!absolute || absolute === this.baseUrl || absolute === window.location.origin || absolute === appRoot)
+                    return undefined;
+            }
+            catch { }
             return url;
         }
         return undefined;

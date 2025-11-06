@@ -52,28 +52,6 @@ export class VideoPost {
         loading.innerHTML = '<div class="spinner"></div>';
         loading.style.display = this.isLoaded ? 'none' : 'flex';
         container.appendChild(loading);
-        // Tag badge (primary tag or first tag)
-        const primaryTagName = (this.data.marker.primary_tag && this.data.marker.primary_tag.name)
-            ? this.data.marker.primary_tag.name
-            : (this.data.marker.tags && this.data.marker.tags.length > 0 ? this.data.marker.tags[0].name : undefined);
-        if (primaryTagName) {
-            const badge = document.createElement('div');
-            badge.className = 'video-post__tag-badge';
-            badge.textContent = primaryTagName;
-            badge.style.position = 'absolute';
-            badge.style.left = '8px';
-            badge.style.top = '8px';
-            badge.style.padding = '4px 8px';
-            badge.style.borderRadius = '999px';
-            badge.style.border = '1px solid rgba(255,255,255,0.25)';
-            badge.style.background = 'rgba(0,0,0,0.5)';
-            badge.style.backdropFilter = 'blur(6px)';
-            badge.style.fontSize = '12px';
-            badge.style.lineHeight = '1';
-            badge.style.color = 'inherit';
-            badge.style.pointerEvents = 'none';
-            container.appendChild(badge);
-        }
         return container;
     }
     createFooter() {
@@ -104,9 +82,11 @@ export class VideoPost {
                 chips.appendChild(chip);
             }
         }
-        // Tag chips (marker tags) next to performers
+        // Tag chips (marker tags only) next to performers
         if (this.data.marker.tags && this.data.marker.tags.length > 0) {
             for (const tag of this.data.marker.tags) {
+                if (!tag || !tag.id || !tag.name)
+                    continue;
                 const chip = document.createElement('a');
                 chip.className = 'chip chip--tag';
                 chip.href = this.getTagLink(tag.id);

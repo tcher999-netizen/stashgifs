@@ -1,5 +1,5 @@
-id: stash-tv
-name: Stash TV
+id: stashgifs
+name: StashGifs
 metadata:
   description: A TikTok-like vertical scroller interface for Stash. Forked from Stash
     Reels.

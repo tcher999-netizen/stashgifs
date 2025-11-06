@@ -117,7 +117,7 @@ export function isValidMediaUrl(url?: string): boolean {
   if (!url) return false;
   try {
     const absolute = url.startsWith('http') ? url : `${window.location.origin}${url}`;
-    const appRoot = `${window.location.origin}/plugin/stash-tv/assets/app/`;
+    const appRoot = `${window.location.origin}/plugin/stashgifs/assets/app/`;
     if (absolute === window.location.origin) return false;
     if (absolute === appRoot) return false;
     // Very short paths are suspicious

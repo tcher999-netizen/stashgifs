@@ -265,10 +265,10 @@ export class FeedContainer {
       // Show suggestions if we have text (2+ chars) OR if forced (on focus with empty/minimal text)
       if (!trimmedText || trimmedText.length < 2) {
         if (forceShow) {
-          // On focus with empty text, show some popular/default tags
+          suggestions.innerHTML = '';
+          // On focus with empty text, show some tags first
           const pageSize = 24;
           const items = await this.api.searchMarkerTags('', pageSize);
-          suggestions.innerHTML = '';
           items.forEach((tag) => {
             if (this.selectedTagIds.includes(parseInt(tag.id, 10))) return;
             const btn = document.createElement('button');
@@ -288,12 +288,27 @@ export class FeedContainer {
                 this.selectedTagNames.push(tag.name);
                 renderChips();
                 apply();
-                queryInput.dispatchEvent(new Event('input'));
+                fetchAndShowSuggestions('', true);
               }
             });
             suggestions.appendChild(btn);
           });
-          // Show saved filters too
+          if (items.length) {
+            const divider = document.createElement('div');
+            divider.style.width = '100%';
+            divider.style.height = '1px';
+            divider.style.background = 'rgba(255,255,255,0.08)';
+            divider.style.margin = '6px 0';
+            suggestions.appendChild(divider);
+          }
+          // Then show ALL saved filters
+          const label = document.createElement('div');
+          label.textContent = 'Saved Filters';
+          label.style.width = '100%';
+          label.style.opacity = '0.75';
+          label.style.fontSize = '12px';
+          label.style.marginBottom = '6px';
+          suggestions.appendChild(label);
           savedFiltersCache.forEach((f) => {
             const btn = document.createElement('button');
             btn.textContent = f.name;
@@ -664,11 +679,11 @@ export class FeedContainer {
       // Show suggestions if we have text (2+ chars) OR if forced (on focus)
       if (!trimmedText || trimmedText.length < 2) {
         if (forceShow) {
-          // On focus with empty text, show tags and saved filters
+          // On focus with empty text, show some tags and all saved filters
           suggestions.innerHTML = '';
           const pageSize = 24;
-          const items = await this.api.searchMarkerTags('', pageSize);
-          items.forEach((tag) => {
+          const tags = await this.api.searchMarkerTags('', pageSize);
+          tags.forEach((tag) => {
             if (this.selectedTagIds.includes(parseInt(tag.id, 10))) return;
             const chip = document.createElement('button');
             chip.textContent = tag.name;
@@ -696,7 +711,22 @@ export class FeedContainer {
             });
             suggestions.appendChild(chip);
           });
-          // Show all saved filters
+          if (tags.length) {
+            const divider = document.createElement('div');
+            divider.style.width = '100%';
+            divider.style.height = '1px';
+            divider.style.background = 'rgba(255,255,255,0.08)';
+            divider.style.margin = '6px 0';
+            suggestions.appendChild(divider);
+          }
+          // Saved filters label
+          const label = document.createElement('div');
+          label.textContent = 'Saved Filters';
+          label.style.opacity = '0.75';
+          label.style.fontSize = '12px';
+          label.style.width = '100%';
+          label.style.marginBottom = '6px';
+          suggestions.appendChild(label);
           savedFiltersCache.forEach((f) => {
             const chip = document.createElement('button');
             chip.textContent = f.name;
@@ -713,6 +743,7 @@ export class FeedContainer {
             chip.addEventListener('click', () => {
               savedSelect.value = f.id;
               this.selectedSavedFilter = { id: f.id, name: f.name };
+              // Clear tag selections when applying a saved filter
               this.selectedTagIds = [];
               this.selectedTagNames = [];
               queryInput.value = '';
