@@ -8,13 +8,13 @@ import { formatDuration } from './utils';
 
 export class NativeVideoPlayer {
   private container: HTMLElement;
-  private videoElement: HTMLVideoElement;
-  private controlsContainer: HTMLElement;
-  private playButton: HTMLElement;
-  private muteButton: HTMLElement;
-  private progressBar: HTMLInputElement;
-  private timeDisplay: HTMLElement;
-  private fullscreenButton: HTMLElement;
+  private videoElement!: HTMLVideoElement;
+  private controlsContainer!: HTMLElement;
+  private playButton!: HTMLElement;
+  private muteButton!: HTMLElement;
+  private progressBar!: HTMLInputElement;
+  private timeDisplay!: HTMLElement;
+  private fullscreenButton!: HTMLElement;
   private state: VideoPlayerState;
   private onStateChange?: (state: VideoPlayerState) => void;
 

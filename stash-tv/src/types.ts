@@ -13,7 +13,7 @@ export interface Scene {
   performers?: Performer[];
   tags?: Tag[];
   files?: SceneFile[];
-  paths?: ScenePath[];
+  paths?: ScenePaths;
 }
 
 export interface Studio {
@@ -44,7 +44,7 @@ export interface SceneFile {
   bit_rate?: number;
 }
 
-export interface ScenePath {
+export interface ScenePaths {
   screenshot?: string;
   preview?: string;
   stream?: string;
