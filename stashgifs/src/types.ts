@@ -1,5 +1,5 @@
 /**
- * Type definitions for Stash TV Feed UI
+ * Type definitions for Stashgifs Feed UI
  */
 
 export interface Scene {

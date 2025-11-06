@@ -1,5 +1,5 @@
 /**
- * Main entry point for Stash TV Feed UI
+ * Main entry point for Stashgifs Feed UI
  */
 import { FeedContainer } from './FeedContainer.js';
 import { StashAPI } from './StashAPI.js';
@@ -39,7 +39,7 @@ function init() {
         window.stashTVFeed = feed;
     }
     catch (error) {
-        console.error('Stash TV Feed UI: Fatal error during initialization:', error);
+        console.error('Stashgifs Feed UI: Fatal error during initialization:', error);
         appContainer.innerHTML = `
       <div style="padding: 2rem; text-align: center; color: #fff;">
         <h2>Fatal Error</h2>

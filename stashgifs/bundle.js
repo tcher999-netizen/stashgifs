@@ -22,7 +22,7 @@ const modules = [
 ];
 
 let bundle = `/**
- * Stash TV Feed UI - Bundled
+ * Stashgifs Feed UI - Bundled
  * Generated bundle combining all ES modules
  */
 

@@ -12,3 +12,4 @@ settings:
     displayName: Hide navigation button
     description: Hide the main navigation link to StashGifs.
     type: BOOLEAN
+

@@ -3339,7 +3339,7 @@ const ko = () => {
     {
       "data-rb-event-key": t,
       className: "col-4 col-sm-3 col-md-2 col-lg-auto nav-link",
-      id: "StashTVButton"
+      id: "StashGifsButton"
     },
     /* @__PURE__ */ at.createElement(
       "a",

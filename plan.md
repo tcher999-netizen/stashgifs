@@ -1,4 +1,4 @@
-# Plan: Modern Feed UI for Stash TV
+# Plan: Modern Feed UI for Stashgifs
 
 ## Overview
 Transform the current full-screen vertical scroller into a modern social media feed interface where videos appear as individual "posts" in a scrollable feed, similar to Instagram or TikTok's feed view (not the full-screen vertical scroller).

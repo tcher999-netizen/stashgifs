@@ -1,7 +1,7 @@
-# Build script for Stash TV Feed UI
+# Build script for Stashgifs Feed UI
 # Compiles TypeScript to JavaScript
 
-Write-Host "Building Stash TV Feed UI..."
+Write-Host "Building Stashgifs Feed UI..."
 
 # Check if TypeScript is available
 $tscVersion = npx --yes typescript@latest tsc --version 2>&1
