@@ -183,7 +183,9 @@ export class StashAPI {
         // If a saved filter is specified, fetch its criteria first
         let savedFilterCriteria = null;
         if (filters?.savedFilterId) {
+            console.log('[StashAPI] Fetching saved filter:', filters.savedFilterId);
             savedFilterCriteria = await this.getSavedFilter(filters.savedFilterId);
+            console.log('[StashAPI] Saved filter criteria:', savedFilterCriteria);
         }
         // Query for scene markers based on FindSceneMarkersForTv
         const query = `query FindSceneMarkers($filter: FindFilterType, $scene_marker_filter: SceneMarkerFilterType) {
@@ -262,28 +264,45 @@ export class StashAPI {
           }
         }`;
                 const countFilter = { per_page: 1, page: 1 };
-                if (filters?.query)
-                    countFilter.q = filters.query;
+                // Start with saved filter criteria if available
                 if (savedFilterCriteria?.find_filter) {
                     Object.assign(countFilter, savedFilterCriteria.find_filter);
+                }
+                // Manual query only if no saved filter OR if explicitly provided
+                if (filters?.query && filters.query.trim() !== '') {
+                    countFilter.q = filters.query;
                 }
                 // Normalize saved filter object_filter before using in variables
                 const countSceneFilterRaw = savedFilterCriteria?.object_filter || {};
                 const countSceneFilter = this.normalizeMarkerFilter(countSceneFilterRaw);
-                if (filters?.primary_tags && filters.primary_tags.length > 0) {
-                    const tagIds = filters.primary_tags
-                        .map((v) => parseInt(String(v), 10))
-                        .filter((n) => !Number.isNaN(n));
-                    if (tagIds.length > 0) {
-                        countSceneFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
+                // If a saved filter is active, ONLY use its criteria (don't combine with manual filters)
+                // Otherwise, apply manual tag filters
+                if (!filters?.savedFilterId) {
+                    if (filters?.primary_tags && filters.primary_tags.length > 0) {
+                        const tagIds = filters.primary_tags
+                            .map((v) => parseInt(String(v), 10))
+                            .filter((n) => !Number.isNaN(n));
+                        if (tagIds.length > 0) {
+                            countSceneFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
+                        }
                     }
-                }
-                if (filters?.tags && filters.tags.length > 0) {
-                    const tagIds = filters.tags
-                        .map((v) => parseInt(String(v), 10))
-                        .filter((n) => !Number.isNaN(n));
-                    if (tagIds.length > 0) {
-                        countSceneFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
+                    if (filters?.tags && filters.tags.length > 0) {
+                        const tagIds = filters.tags
+                            .map((v) => parseInt(String(v), 10))
+                            .filter((n) => !Number.isNaN(n));
+                        if (tagIds.length > 0) {
+                            // If we already have tags from primary_tags, combine them
+                            if (countSceneFilter.tags?.value) {
+                                const existingIds = Array.isArray(countSceneFilter.tags.value) ? countSceneFilter.tags.value : [countSceneFilter.tags.value];
+                                countSceneFilter.tags = {
+                                    value: [...new Set([...existingIds, ...tagIds])],
+                                    modifier: countSceneFilter.tags.modifier || 'INCLUDES'
+                                };
+                            }
+                            else {
+                                countSceneFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
+                            }
+                        }
                     }
                 }
                 try {
@@ -330,24 +349,93 @@ export class StashAPI {
             }
             // Try using PluginApi GraphQL client if available
             if (this.pluginApi?.GQL?.client) {
-                // Build filter - merge saved filter criteria if available
+                // Build filter - start with saved filter criteria if available, then allow manual overrides
                 const filter = {
                     per_page: limit,
                     page: page,
                 };
-                if (filters?.query) {
-                    filter.q = filters.query;
-                }
-                // Merge saved filter criteria
+                // If saved filter exists, start with its find_filter criteria
                 if (savedFilterCriteria?.find_filter) {
                     Object.assign(filter, savedFilterCriteria.find_filter);
-                    // Override page with our calculated random page
-                    filter.page = page;
-                    filter.per_page = limit;
                 }
-                // Build scene_marker_filter - merge saved filter object_filter if available
+                // Manual query overrides saved filter query (if user typed something)
+                if (filters?.query && filters.query.trim() !== '') {
+                    filter.q = filters.query;
+                }
+                // Override page with our calculated random page
+                filter.page = page;
+                filter.per_page = limit;
+                // Build scene_marker_filter - start with saved filter object_filter if available
                 const sceneMarkerFilterRaw = savedFilterCriteria?.object_filter ? { ...savedFilterCriteria.object_filter } : {};
                 const sceneMarkerFilter = this.normalizeMarkerFilter(sceneMarkerFilterRaw);
+                // If a saved filter is active, ONLY use its criteria (don't combine with manual filters)
+                // Otherwise, apply manual tag filters
+                if (!filters?.savedFilterId) {
+                    if (filters?.primary_tags && filters.primary_tags.length > 0) {
+                        const tagIds = filters.primary_tags
+                            .map((v) => parseInt(String(v), 10))
+                            .filter((n) => !Number.isNaN(n));
+                        if (tagIds.length > 0) {
+                            sceneMarkerFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
+                        }
+                    }
+                    if (filters?.tags && filters.tags.length > 0) {
+                        const tagIds = filters.tags
+                            .map((v) => parseInt(String(v), 10))
+                            .filter((n) => !Number.isNaN(n));
+                        if (tagIds.length > 0) {
+                            // If we already have tags from primary_tags, combine them
+                            if (sceneMarkerFilter.tags?.value) {
+                                const existingIds = Array.isArray(sceneMarkerFilter.tags.value) ? sceneMarkerFilter.tags.value : [sceneMarkerFilter.tags.value];
+                                sceneMarkerFilter.tags = {
+                                    value: [...new Set([...existingIds, ...tagIds])],
+                                    modifier: sceneMarkerFilter.tags.modifier || 'INCLUDES'
+                                };
+                            }
+                            else {
+                                sceneMarkerFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
+                            }
+                        }
+                        else {
+                            console.warn('Scene marker tags must be numeric IDs; ignoring provided values');
+                        }
+                    }
+                }
+                if (filters?.studios && filters.studios.length > 0) {
+                    sceneMarkerFilter.scene_tags = { value: filters.studios, modifier: 'INCLUDES' };
+                }
+                const result = await this.pluginApi.GQL.client.query({
+                    query: query,
+                    variables: {
+                        filter,
+                        scene_marker_filter: Object.keys(sceneMarkerFilter).length > 0 ? sceneMarkerFilter : {},
+                    },
+                });
+                return result.data?.findSceneMarkers?.scene_markers || [];
+            }
+            // Fallback to direct fetch
+            // Build filter - start with saved filter criteria if available, then allow manual overrides
+            const filter = {
+                per_page: limit,
+                page: page,
+            };
+            // If saved filter exists, start with its find_filter criteria
+            if (savedFilterCriteria?.find_filter) {
+                Object.assign(filter, savedFilterCriteria.find_filter);
+            }
+            // Manual query overrides saved filter query (if user typed something)
+            if (filters?.query && filters.query.trim() !== '') {
+                filter.q = filters.query;
+            }
+            // Override page with our calculated random page
+            filter.page = page;
+            filter.per_page = limit;
+            // Build scene_marker_filter - start with saved filter object_filter if available
+            const sceneMarkerFilterRaw = savedFilterCriteria?.object_filter ? { ...savedFilterCriteria.object_filter } : {};
+            const sceneMarkerFilter = this.normalizeMarkerFilter(sceneMarkerFilterRaw);
+            // If a saved filter is active, ONLY use its criteria (don't combine with manual filters)
+            // Otherwise, apply manual tag filters
+            if (!filters?.savedFilterId) {
                 if (filters?.primary_tags && filters.primary_tags.length > 0) {
                     const tagIds = filters.primary_tags
                         .map((v) => parseInt(String(v), 10))
@@ -364,63 +452,21 @@ export class StashAPI {
                         .map((v) => parseInt(String(v), 10))
                         .filter((n) => !Number.isNaN(n));
                     if (tagIds.length > 0) {
-                        sceneMarkerFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
+                        // If we already have tags from primary_tags, combine them
+                        if (sceneMarkerFilter.tags?.value) {
+                            const existingIds = Array.isArray(sceneMarkerFilter.tags.value) ? sceneMarkerFilter.tags.value : [sceneMarkerFilter.tags.value];
+                            sceneMarkerFilter.tags = {
+                                value: [...new Set([...existingIds, ...tagIds])],
+                                modifier: sceneMarkerFilter.tags.modifier || 'INCLUDES'
+                            };
+                        }
+                        else {
+                            sceneMarkerFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
+                        }
                     }
                     else {
                         console.warn('Scene marker tags must be numeric IDs; ignoring provided values');
                     }
-                }
-                if (filters?.studios && filters.studios.length > 0) {
-                    sceneMarkerFilter.scene_tags = { value: filters.studios, modifier: 'INCLUDES' };
-                }
-                const result = await this.pluginApi.GQL.client.query({
-                    query: query,
-                    variables: {
-                        filter,
-                        scene_marker_filter: Object.keys(sceneMarkerFilter).length > 0 ? sceneMarkerFilter : {},
-                    },
-                });
-                return result.data?.findSceneMarkers?.scene_markers || [];
-            }
-            // Fallback to direct fetch
-            // Build filter - merge saved filter criteria if available
-            const filter = {
-                per_page: limit,
-                page: page,
-            };
-            if (filters?.query) {
-                filter.q = filters.query;
-            }
-            // Merge saved filter criteria
-            if (savedFilterCriteria?.find_filter) {
-                Object.assign(filter, savedFilterCriteria.find_filter);
-                // Override page with our calculated random page
-                filter.page = page;
-                filter.per_page = limit;
-            }
-            // Build scene_marker_filter - merge saved filter object_filter if available
-            const sceneMarkerFilterRaw = savedFilterCriteria?.object_filter ? { ...savedFilterCriteria.object_filter } : {};
-            const sceneMarkerFilter = this.normalizeMarkerFilter(sceneMarkerFilterRaw);
-            if (filters?.primary_tags && filters.primary_tags.length > 0) {
-                const tagIds = filters.primary_tags
-                    .map((v) => parseInt(String(v), 10))
-                    .filter((n) => !Number.isNaN(n));
-                if (tagIds.length > 0) {
-                    sceneMarkerFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
-                }
-                else {
-                    console.warn('Scene marker primary_tags must be numeric IDs; ignoring provided values');
-                }
-            }
-            if (filters?.tags && filters.tags.length > 0) {
-                const tagIds = filters.tags
-                    .map((v) => parseInt(String(v), 10))
-                    .filter((n) => !Number.isNaN(n));
-                if (tagIds.length > 0) {
-                    sceneMarkerFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
-                }
-                else {
-                    console.warn('Scene marker tags must be numeric IDs; ignoring provided values');
                 }
             }
             const variables = {
