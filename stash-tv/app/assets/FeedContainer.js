@@ -377,6 +377,7 @@ export class FeedContainer {
                 // Clear tag selections when a saved filter is chosen
                 this.selectedTagIds = [];
                 this.selectedTagNames = [];
+                queryInput.value = '';
                 renderChips();
             }
             else {
@@ -396,7 +397,8 @@ export class FeedContainer {
             chips.innerHTML = '';
             // Saved filter chip first (if any)
             if (this.selectedSavedFilter) {
-                const chip = document.createElement('span');
+                const chip = document.createElement('button');
+                chip.type = 'button';
                 chip.textContent = this.selectedSavedFilter.name;
                 chip.className = 'feed-chip';
                 chip.style.padding = '4px 10px';
@@ -424,7 +426,8 @@ export class FeedContainer {
                 chips.appendChild(chip);
             }
             this.selectedTagNames.forEach((name, idx) => {
-                const chip = document.createElement('span');
+                const chip = document.createElement('button');
+                chip.type = 'button';
                 chip.textContent = name;
                 chip.className = 'feed-chip';
                 chip.style.padding = '4px 10px';
