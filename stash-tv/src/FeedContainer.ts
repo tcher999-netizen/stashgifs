@@ -247,7 +247,7 @@ export class FeedContainer {
       const newFilters: FilterOptions = {
         query: q || undefined,
         tags: this.selectedTagIds.length ? this.selectedTagIds.map(String) : undefined,
-        savedFilterId: undefined,
+        savedFilterId: this.selectedSavedFilter?.id || undefined,
         limit: 20,
         offset: 0,
       };
