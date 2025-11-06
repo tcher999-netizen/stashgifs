@@ -29,52 +29,51 @@ export class StashAPI {
      * Fetch scenes from Stash
      */
     async fetchScenes(filters) {
-        const query = `
-      query FindScenes($filter: FindFilterType, $scene_filter: SceneFilterType) {
-        findScenes(filter: $filter, scene_filter: $scene_filter) {
-          count
-          scenes {
-            id
-            title
-            date
-            details
-            url
-            rating
-            studio {
-              id
-              name
-            }
-            performers {
-              id
-              name
-              image_path
-            }
-            tags {
-              id
-              name
-            }
-            files {
-              id
-              path
-              size
-              duration
-              video_codec
-              audio_codec
-              width
-              height
-              bit_rate
-            }
-            paths {
-              screenshot
-              preview
-              stream
-              webp
-              vtt
-            }
-          }
-        }
+        // Use a simpler query that matches Stash's expected format
+        const query = `query FindScenes($filter: FindFilterType, $scene_filter: SceneFilterType) {
+  findScenes(filter: $filter, scene_filter: $scene_filter) {
+    count
+    scenes {
+      id
+      title
+      date
+      details
+      url
+      rating
+      studio {
+        id
+        name
       }
-    `;
+      performers {
+        id
+        name
+        image_path
+      }
+      tags {
+        id
+        name
+      }
+      files {
+        id
+        path
+        size
+        duration
+        video_codec
+        audio_codec
+        width
+        height
+        bit_rate
+      }
+      paths {
+        screenshot
+        preview
+        stream
+        webp
+        vtt
+      }
+    }
+  }
+}`;
         try {
             // Try using PluginApi GraphQL client if available
             if (this.pluginApi?.GQL?.client) {
@@ -119,11 +118,10 @@ export class StashAPI {
             if (filters?.rating !== undefined && filters.rating !== null) {
                 sceneFilter.rating = { value: filters.rating, modifier: 'GREATER_THAN' };
             }
-            const variables = { filter };
-            // Only include scene_filter if it has properties
-            if (Object.keys(sceneFilter).length > 0) {
-                variables.scene_filter = sceneFilter;
-            }
+            const variables = {
+                filter,
+                scene_filter: Object.keys(sceneFilter).length > 0 ? sceneFilter : {}
+            };
             console.log('StashAPI: Sending GraphQL request', {
                 baseUrl: this.baseUrl,
                 variables,
