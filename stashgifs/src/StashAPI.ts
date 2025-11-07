@@ -253,6 +253,63 @@ export class StashAPI {
   }
 
   /**
+   * Shuffle array and try to separate similar items (same scene, same primary tag, same performers)
+   */
+  private shuffleAndSeparateSimilar(markers: SceneMarker[]): SceneMarker[] {
+    if (markers.length <= 1) return markers;
+    
+    // First, do a Fisher-Yates shuffle for full randomization
+    const shuffled = [...markers];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    
+    // Then do a smart pass to try to separate similar items
+    // Check if two items are similar (same scene, same primary tag, or overlapping performers)
+    const areSimilar = (a: SceneMarker, b: SceneMarker): boolean => {
+      // Same scene
+      if (a.scene?.id === b.scene?.id) return true;
+      
+      // Same primary tag
+      if (a.primary_tag?.id === b.primary_tag?.id) return true;
+      
+      // Overlapping performers (at least one in common)
+      if (a.scene?.performers && b.scene?.performers) {
+        const aPerformerIds = new Set(a.scene.performers.map(p => p.id));
+        const bPerformerIds = b.scene.performers.map(p => p.id);
+        if (bPerformerIds.some(id => aPerformerIds.has(id))) return true;
+      }
+      
+      return false;
+    };
+    
+    // Try to separate similar items by swapping with non-similar ones
+    for (let i = 1; i < shuffled.length; i++) {
+      if (areSimilar(shuffled[i - 1], shuffled[i])) {
+        // Find a non-similar item to swap with
+        for (let j = i + 1; j < shuffled.length; j++) {
+          if (!areSimilar(shuffled[i - 1], shuffled[j])) {
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+            break;
+          }
+        }
+        // If we couldn't find a good swap, try looking backwards
+        if (areSimilar(shuffled[i - 1], shuffled[i])) {
+          for (let j = i - 2; j >= 0; j--) {
+            if (!areSimilar(shuffled[j], shuffled[i]) && !areSimilar(shuffled[i], shuffled[j + 1])) {
+              [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+              break;
+            }
+          }
+        }
+      }
+    }
+    
+    return shuffled;
+  }
+
+  /**
    * Fetch scene markers from Stash
    */
   async fetchSceneMarkers(filters?: FilterOptions): Promise<SceneMarker[]> {
@@ -493,7 +550,8 @@ export class StashAPI {
             scene_marker_filter: Object.keys(sceneMarkerFilter).length > 0 ? sceneMarkerFilter : {},
           },
         });
-        return result.data?.findSceneMarkers?.scene_markers || [];
+        const markers = result.data?.findSceneMarkers?.scene_markers || [];
+        return this.shuffleAndSeparateSimilar(markers);
       }
 
       // Fallback to direct fetch
@@ -587,7 +645,8 @@ export class StashAPI {
         throw new Error(`GraphQL errors: ${JSON.stringify(data.errors)}`);
       }
       
-      return data.data?.findSceneMarkers?.scene_markers || [];
+      const markers = data.data?.findSceneMarkers?.scene_markers || [];
+      return this.shuffleAndSeparateSimilar(markers);
     } catch (error) {
       console.error('Error fetching scene markers:', error);
       return [];

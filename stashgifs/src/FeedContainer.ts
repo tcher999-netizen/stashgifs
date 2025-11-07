@@ -1073,7 +1073,7 @@ export class FeedContainer {
         offset: append ? (page - 1) * (currentFilters.limit || 20) : 0,
       });
       
-      // Don't shuffle - we're already fetching random pages
+      // Markers are already shuffled and separated by similarity in fetchSceneMarkers
 
       
       if (!append) {
