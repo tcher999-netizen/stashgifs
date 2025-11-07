@@ -10,6 +10,14 @@ export class VideoPost {
         this.isFavorite = false;
         this.oCount = 0;
         this.isHQMode = false;
+        this.ratingValue = 0;
+        this.hasRating = false;
+        this.ratingStarButtons = [];
+        this.isRatingDialogOpen = false;
+        this.isSavingRating = false;
+        this.ratingOutsideClickHandler = (event) => this.onRatingOutsideClick(event);
+        this.ratingKeydownHandler = (event) => this.onRatingKeydown(event);
+        this.ratingResizeHandler = () => this.syncRatingDialogLayout();
         this.container = container;
         this.data = data;
         this.thumbnailUrl = data.thumbnailUrl;
@@ -17,6 +25,8 @@ export class VideoPost {
         this.api = api;
         this.visibilityManager = visibilityManager;
         this.oCount = this.data.marker.scene.o_counter || 0;
+        this.ratingValue = this.convertRating100ToStars(this.data.marker.scene.rating100);
+        this.hasRating = typeof this.data.marker.scene.rating100 === 'number' && !Number.isNaN(this.data.marker.scene.rating100);
         this.render();
         this.checkFavoriteStatus();
     }
@@ -115,11 +125,14 @@ export class VideoPost {
             const heartBtn = this.createHeartButton();
             buttonGroup.appendChild(heartBtn);
         }
-        // O count button with splashing emoji - placed before play button
+        // O count button with splashing emoji - placed before rating button
         if (this.api) {
             const oCountBtn = this.createOCountButton();
             buttonGroup.appendChild(oCountBtn);
         }
+        // Rating control - star icon with dialog
+        const ratingControl = this.createRatingSection();
+        buttonGroup.appendChild(ratingControl);
         // High-quality scene video button - placed before play button
         if (this.api) {
             const hqBtn = this.createHQButton();
@@ -391,6 +404,278 @@ export class VideoPost {
             button.style.color = 'rgba(255, 255, 255, 0.7)';
         }
     }
+    createRatingSection() {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'rating-control';
+        wrapper.setAttribute('data-role', 'rating');
+        this.ratingWrapper = wrapper;
+        const displayButton = document.createElement('button');
+        displayButton.type = 'button';
+        displayButton.className = 'icon-btn icon-btn--rating';
+        displayButton.setAttribute('aria-haspopup', 'dialog');
+        displayButton.setAttribute('aria-expanded', 'false');
+        displayButton.style.background = 'transparent';
+        displayButton.style.border = 'none';
+        displayButton.style.cursor = 'pointer';
+        displayButton.style.padding = '4px 10px';
+        displayButton.style.display = 'flex';
+        displayButton.style.alignItems = 'center';
+        displayButton.style.justifyContent = 'center';
+        displayButton.style.gap = '6px';
+        displayButton.style.color = 'rgba(255, 255, 255, 0.7)';
+        displayButton.style.transition = 'color 0.2s ease, transform 0.2s ease';
+        displayButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (this.isSavingRating)
+                return;
+            this.toggleRatingDialog();
+        });
+        displayButton.addEventListener('mouseenter', () => {
+            if (!displayButton.disabled) {
+                displayButton.style.transform = 'scale(1.1)';
+            }
+        });
+        displayButton.addEventListener('mouseleave', () => {
+            displayButton.style.transform = 'scale(1)';
+        });
+        this.ratingDisplayButton = displayButton;
+        const iconSpan = document.createElement('span');
+        iconSpan.className = 'rating-display__icon';
+        iconSpan.innerHTML = this.getDisplayStarSvg();
+        const valueSpan = document.createElement('span');
+        valueSpan.className = 'rating-display__value';
+        this.ratingDisplayValue = valueSpan;
+        displayButton.appendChild(iconSpan);
+        displayButton.appendChild(valueSpan);
+        wrapper.appendChild(displayButton);
+        const dialog = document.createElement('div');
+        dialog.className = 'rating-dialog';
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('aria-modal', 'false');
+        dialog.setAttribute('aria-hidden', 'true');
+        dialog.hidden = true;
+        this.ratingDialog = dialog;
+        const dialogHeader = document.createElement('div');
+        dialogHeader.className = 'rating-dialog__header';
+        dialog.appendChild(dialogHeader);
+        const starsContainer = document.createElement('div');
+        starsContainer.className = 'rating-dialog__stars';
+        starsContainer.setAttribute('role', 'radiogroup');
+        starsContainer.setAttribute('aria-label', 'Rate this scene from 0 to 10 stars');
+        this.ratingStarButtons = [];
+        for (let i = 1; i <= 10; i++) {
+            const starBtn = document.createElement('button');
+            starBtn.type = 'button';
+            starBtn.className = 'rating-dialog__star';
+            starBtn.setAttribute('role', 'radio');
+            starBtn.setAttribute('aria-label', `${i} star${i === 1 ? '' : 's'}`);
+            starBtn.dataset.value = i.toString();
+            starBtn.textContent = '☆';
+            starBtn.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                void this.onRatingStarSelect(i);
+            });
+            this.ratingStarButtons.push(starBtn);
+            starsContainer.appendChild(starBtn);
+        }
+        dialog.appendChild(starsContainer);
+        wrapper.appendChild(dialog);
+        this.updateRatingDisplay();
+        this.updateRatingStarButtons();
+        return wrapper;
+    }
+    toggleRatingDialog(force) {
+        const shouldOpen = typeof force === 'boolean' ? force : !this.isRatingDialogOpen;
+        if (shouldOpen) {
+            this.openRatingDialog();
+        }
+        else {
+            this.closeRatingDialog();
+        }
+    }
+    openRatingDialog() {
+        if (!this.ratingDialog || this.isRatingDialogOpen)
+            return;
+        this.isRatingDialogOpen = true;
+        this.ratingDialog.hidden = false;
+        this.ratingDialog.setAttribute('aria-hidden', 'false');
+        this.ratingDialog.classList.add('rating-dialog--open');
+        this.ratingDisplayButton?.setAttribute('aria-expanded', 'true');
+        this.ratingWrapper?.classList.add('rating-control--open');
+        this.syncRatingDialogLayout();
+        document.addEventListener('mousedown', this.ratingOutsideClickHandler);
+        document.addEventListener('touchstart', this.ratingOutsideClickHandler);
+        document.addEventListener('keydown', this.ratingKeydownHandler);
+        window.addEventListener('resize', this.ratingResizeHandler);
+        this.updateRatingStarButtons();
+    }
+    closeRatingDialog() {
+        if (!this.ratingDialog || !this.isRatingDialogOpen)
+            return;
+        this.isRatingDialogOpen = false;
+        this.ratingDialog.classList.remove('rating-dialog--open');
+        this.ratingDialog.setAttribute('aria-hidden', 'true');
+        this.ratingDialog.hidden = true;
+        this.ratingDisplayButton?.setAttribute('aria-expanded', 'false');
+        this.ratingWrapper?.classList.remove('rating-control--open');
+        this.detachRatingGlobalListeners();
+    }
+    detachRatingGlobalListeners() {
+        document.removeEventListener('mousedown', this.ratingOutsideClickHandler);
+        document.removeEventListener('touchstart', this.ratingOutsideClickHandler);
+        document.removeEventListener('keydown', this.ratingKeydownHandler);
+        window.removeEventListener('resize', this.ratingResizeHandler);
+    }
+    onRatingOutsideClick(event) {
+        if (!this.isRatingDialogOpen || !this.ratingWrapper)
+            return;
+        const target = event.target;
+        if (target && this.ratingWrapper.contains(target)) {
+            return;
+        }
+        this.closeRatingDialog();
+    }
+    onRatingKeydown(event) {
+        if (!this.isRatingDialogOpen)
+            return;
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            this.closeRatingDialog();
+        }
+    }
+    updateRatingDisplay() {
+        if (this.ratingDisplayButton) {
+            const ariaLabel = this.hasRating
+                ? `Scene rating ${this.ratingValue} out of 10`
+                : 'Rate this scene';
+            this.ratingDisplayButton.setAttribute('aria-label', ariaLabel);
+            this.ratingDisplayButton.classList.toggle('icon-btn--rating-active', this.hasRating);
+        }
+        if (this.ratingDisplayValue) {
+            this.ratingDisplayValue.textContent = this.hasRating ? this.ratingValue.toString() : '0';
+        }
+    }
+    updateRatingStarButtons() {
+        if (!this.ratingStarButtons || this.ratingStarButtons.length === 0)
+            return;
+        this.ratingStarButtons.forEach((button, index) => {
+            const value = Number(button.dataset.value || '0');
+            const isActive = this.hasRating && value <= this.ratingValue;
+            const isChecked = this.hasRating && value === this.ratingValue;
+            button.classList.toggle('rating-dialog__star--active', isActive);
+            button.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+            button.tabIndex = isChecked || (!this.hasRating && index === 0) ? 0 : -1;
+            button.textContent = isActive ? '★' : '☆';
+            button.disabled = this.isSavingRating;
+        });
+    }
+    async onRatingStarSelect(value) {
+        if (this.isSavingRating)
+            return;
+        const nextValue = this.clampRatingValue(value);
+        const previousValue = this.ratingValue;
+        const previousRating100 = this.data.marker.scene.rating100;
+        const previousHasRating = this.hasRating;
+        this.ratingValue = nextValue;
+        this.hasRating = true;
+        this.updateRatingDisplay();
+        this.updateRatingStarButtons();
+        this.closeRatingDialog();
+        if (!this.api) {
+            this.data.marker.scene.rating100 = this.ratingValue * 10;
+            return;
+        }
+        this.isSavingRating = true;
+        this.setRatingSavingState(true);
+        this.updateRatingStarButtons();
+        try {
+            const updatedRating100 = await this.api.updateSceneRating(this.data.marker.scene.id, this.ratingValue);
+            this.data.marker.scene.rating100 = updatedRating100;
+            this.ratingValue = this.convertRating100ToStars(updatedRating100);
+            this.hasRating = true;
+            this.updateRatingDisplay();
+            this.updateRatingStarButtons();
+        }
+        catch (error) {
+            console.error('Failed to update scene rating', error);
+            this.ratingValue = previousValue;
+            this.hasRating = previousHasRating;
+            this.data.marker.scene.rating100 = previousRating100;
+            this.updateRatingDisplay();
+            this.updateRatingStarButtons();
+        }
+        finally {
+            this.isSavingRating = false;
+            this.setRatingSavingState(false);
+            this.updateRatingStarButtons();
+        }
+    }
+    setRatingSavingState(isSaving) {
+        if (!this.ratingDisplayButton)
+            return;
+        if (isSaving) {
+            this.ratingDisplayButton.classList.add('icon-btn--rating-saving');
+            this.ratingDisplayButton.setAttribute('aria-busy', 'true');
+            this.ratingDisplayButton.disabled = true;
+            this.ratingDisplayButton.style.transform = 'scale(1)';
+        }
+        else {
+            this.ratingDisplayButton.classList.remove('icon-btn--rating-saving');
+            this.ratingDisplayButton.removeAttribute('aria-busy');
+            this.ratingDisplayButton.disabled = false;
+        }
+        this.ratingStarButtons.forEach((button) => {
+            button.disabled = isSaving;
+        });
+    }
+    syncRatingDialogLayout() {
+        if (!this.ratingWrapper)
+            return;
+        const dialog = this.ratingDialog;
+        if (!dialog)
+            return;
+        const cardRect = this.container.getBoundingClientRect();
+        const wrapperRect = this.ratingWrapper.getBoundingClientRect();
+        if (!cardRect.width || !wrapperRect.width)
+            return;
+        const footer = this.container.querySelector('.video-post__footer');
+        let horizontalPadding = 32;
+        if (footer) {
+            const footerStyles = window.getComputedStyle(footer);
+            const paddingLeft = parseFloat(footerStyles.paddingLeft || '0');
+            const paddingRight = parseFloat(footerStyles.paddingRight || '0');
+            horizontalPadding = Math.max(16, Math.round(paddingLeft + paddingRight));
+        }
+        const availableWidth = Math.max(200, Math.floor(cardRect.width - horizontalPadding));
+        const clampedWidth = Math.min(availableWidth, 900);
+        this.ratingWrapper.style.setProperty('--rating-dialog-width', `${clampedWidth}px`);
+        const diffRight = cardRect.right - wrapperRect.right;
+        this.ratingWrapper.style.setProperty('--rating-dialog-right', `${-diffRight}px`);
+    }
+    getDisplayStarSvg() {
+        return `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true" focusable="false">
+      <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.62L12 2 9.19 8.62 2 9.24l5.46 4.73L5.82 21z"/>
+    </svg>`;
+    }
+    getCloseSvg() {
+        return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <line x1="18" y1="6" x2="6" y2="18"/>
+      <line x1="6" y1="6" x2="18" y2="18"/>
+    </svg>`;
+    }
+    clampRatingValue(value) {
+        if (!Number.isFinite(value))
+            return 0;
+        return Math.min(10, Math.max(0, Math.round(value)));
+    }
+    convertRating100ToStars(rating100) {
+        if (typeof rating100 !== 'number' || Number.isNaN(rating100)) {
+            return 0;
+        }
+        return this.clampRatingValue(rating100 / 10);
+    }
     /**
      * Upgrade from marker video to full scene video with audio
      */
@@ -554,6 +839,7 @@ export class VideoPost {
         if (this.player) {
             this.player.destroy();
         }
+        this.detachRatingGlobalListeners();
         this.container.remove();
     }
 }

@@ -358,7 +358,7 @@ export class FeedContainer {
       const q = queryInput.value.trim();
       const newFilters: FilterOptions = {
         query: q || undefined,
-        tags: this.selectedTagIds.length ? this.selectedTagIds.map(String) : undefined,
+        primary_tags: this.selectedTagIds.length ? this.selectedTagIds.map(String) : undefined,
         savedFilterId: this.selectedSavedFilter?.id || undefined,
         limit: 20,
         offset: 0,
@@ -692,7 +692,7 @@ export class FeedContainer {
       const savedId = (this.selectedSavedFilter?.id) || (savedSelect.value || undefined);
       const newFilters: FilterOptions = {
         query: q || undefined,
-        tags: this.selectedTagIds.length ? this.selectedTagIds.map(String) : undefined,
+        primary_tags: this.selectedTagIds.length ? this.selectedTagIds.map(String) : undefined,
         savedFilterId: savedId,
         limit: 20,
         offset: 0,

@@ -362,7 +362,7 @@ export class StashAPI {
         const countSceneFilter: any = this.normalizeMarkerFilter(countSceneFilterRaw);
         
         // If a saved filter is active, ONLY use its criteria (don't combine with manual filters)
-        // Otherwise, apply manual tag filters
+        // Otherwise, apply manual primary tag filters
         if (!filters?.savedFilterId) {
           if (filters?.primary_tags && filters.primary_tags.length > 0) {
             const tagIds = filters.primary_tags
@@ -370,23 +370,6 @@ export class StashAPI {
               .filter((n) => !Number.isNaN(n));
             if (tagIds.length > 0) {
               countSceneFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
-            }
-          }
-          if (filters?.tags && filters.tags.length > 0) {
-            const tagIds = filters.tags
-              .map((v) => parseInt(String(v), 10))
-              .filter((n) => !Number.isNaN(n));
-            if (tagIds.length > 0) {
-              // If we already have tags from primary_tags, combine them
-              if (countSceneFilter.tags?.value) {
-                const existingIds = Array.isArray(countSceneFilter.tags.value) ? countSceneFilter.tags.value : [countSceneFilter.tags.value];
-                countSceneFilter.tags = { 
-                  value: [...new Set([...existingIds, ...tagIds])], 
-                  modifier: countSceneFilter.tags.modifier || 'INCLUDES' 
-                };
-              } else {
-                countSceneFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
-              }
             }
           }
         }
@@ -458,10 +441,7 @@ export class StashAPI {
         const sceneMarkerFilter: any = this.normalizeMarkerFilter(sceneMarkerFilterRaw);
         
         // If a saved filter is active, ONLY use its criteria (don't combine with manual filters)
-        // Otherwise, apply manual tag filters
-        // NOTE: Stash's SceneMarkerFilterType only supports filtering by primary_tag, not tags array.
-        // For non-primary tags, we'll filter client-side after fetching.
-        const nonPrimaryTagIds: number[] = [];
+        // Otherwise, apply manual primary tag filters
         if (!filters?.savedFilterId) {
           if (filters?.primary_tags && filters.primary_tags.length > 0) {
             const tagIds = filters.primary_tags
@@ -470,18 +450,6 @@ export class StashAPI {
             if (tagIds.length > 0) {
               // Primary tags can be filtered server-side
               sceneMarkerFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
-            }
-          }
-          if (filters?.tags && filters.tags.length > 0) {
-            const tagIds = filters.tags
-              .map((v) => parseInt(String(v), 10))
-              .filter((n) => !Number.isNaN(n));
-            if (tagIds.length > 0) {
-              // Store non-primary tag IDs for client-side filtering
-              nonPrimaryTagIds.push(...tagIds);
-              console.log('[StashAPI] Will filter by non-primary marker tags client-side:', tagIds);
-            } else {
-              console.warn('Scene marker tags must be numeric IDs; ignoring provided values', filters.tags);
             }
           }
         }
@@ -523,16 +491,6 @@ export class StashAPI {
           }
         }
         
-        // Filter by non-primary tags client-side (Stash doesn't support this server-side)
-        if (nonPrimaryTagIds.length > 0 && markers.length > 0) {
-          const beforeCount = markers.length;
-          markers = markers.filter((marker: SceneMarker) => {
-            const markerTagIds = (marker.tags || []).map((t: { id: string }) => parseInt(t.id, 10));
-            return nonPrimaryTagIds.some(tagId => markerTagIds.includes(tagId));
-          });
-          console.log('[StashAPI] Client-side filtered from', beforeCount, 'to', markers.length, 'markers by non-primary tags:', nonPrimaryTagIds);
-        }
-        
         return markers;
       }
 
@@ -560,36 +518,21 @@ export class StashAPI {
       const sceneMarkerFilterRaw: any = savedFilterCriteria?.object_filter ? { ...savedFilterCriteria.object_filter } : {};
       const sceneMarkerFilter: any = this.normalizeMarkerFilter(sceneMarkerFilterRaw);
       
-      // If a saved filter is active, ONLY use its criteria (don't combine with manual filters)
-      // Otherwise, apply manual tag filters
-      // NOTE: Stash's SceneMarkerFilterType only supports filtering by primary_tag, not tags array.
-      // For non-primary tags, we'll filter client-side after fetching.
-      const nonPrimaryTagIds: number[] = [];
-      if (!filters?.savedFilterId) {
-        if (filters?.primary_tags && filters.primary_tags.length > 0) {
-          const tagIds = filters.primary_tags
-            .map((v) => parseInt(String(v), 10))
-            .filter((n) => !Number.isNaN(n));
-          if (tagIds.length > 0) {
-            // Primary tags can be filtered server-side
-            sceneMarkerFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
-          } else {
-            console.warn('Scene marker primary_tags must be numeric IDs; ignoring provided values');
+        // If a saved filter is active, ONLY use its criteria (don't combine with manual filters)
+        // Otherwise, apply manual primary tag filters
+        if (!filters?.savedFilterId) {
+          if (filters?.primary_tags && filters.primary_tags.length > 0) {
+            const tagIds = filters.primary_tags
+              .map((v) => parseInt(String(v), 10))
+              .filter((n) => !Number.isNaN(n));
+            if (tagIds.length > 0) {
+              // Primary tags can be filtered server-side
+              sceneMarkerFilter.tags = { value: tagIds, modifier: 'INCLUDES' };
+            } else {
+              console.warn('Scene marker primary_tags must be numeric IDs; ignoring provided values');
+            }
           }
         }
-        if (filters?.tags && filters.tags.length > 0) {
-          const tagIds = filters.tags
-            .map((v) => parseInt(String(v), 10))
-            .filter((n) => !Number.isNaN(n));
-          if (tagIds.length > 0) {
-            // Store non-primary tag IDs for client-side filtering
-            nonPrimaryTagIds.push(...tagIds);
-            console.log('[StashAPI] Will filter by non-primary marker tags client-side:', tagIds);
-          } else {
-            console.warn('Scene marker tags must be numeric IDs; ignoring provided values');
-          }
-        }
-      }
 
       const variables: any = { 
         filter,
@@ -663,16 +606,6 @@ export class StashAPI {
             }
           }
         }
-      }
-      
-      // Filter by non-primary tags client-side (Stash doesn't support this server-side)
-      if (nonPrimaryTagIds.length > 0 && markers.length > 0) {
-        const beforeCount = markers.length;
-        markers = markers.filter((marker: SceneMarker) => {
-          const markerTagIds = (marker.tags || []).map((t: { id: string }) => parseInt(t.id, 10));
-          return nonPrimaryTagIds.some(tagId => markerTagIds.includes(tagId));
-        });
-        console.log('[StashAPI] Client-side filtered from', beforeCount, 'to', markers.length, 'markers by non-primary tags:', nonPrimaryTagIds);
       }
       
       return markers;
@@ -1462,6 +1395,83 @@ export class StashAPI {
       }
     } catch (error) {
       console.error('StashAPI: Failed to increment o count', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update the rating for a scene (0-10 scale → rating100)
+   * @param sceneId Scene identifier
+   * @param rating10 Rating on a 0-10 scale (can include decimals)
+   * @returns Updated rating100 value from Stash
+   */
+  async updateSceneRating(sceneId: string, rating10: number): Promise<number> {
+    const mutation = `mutation SceneUpdate($input: SceneUpdateInput!) {
+      sceneUpdate(input: $input) {
+        id
+        rating100
+      }
+    }`;
+
+    const normalized = Number.isFinite(rating10) ? rating10 : 0;
+    const clamped = Math.min(10, Math.max(0, normalized));
+    const rating100 = Math.round(clamped * 10);
+
+    const variables = {
+      input: {
+        id: sceneId,
+        rating100,
+      },
+    };
+
+    try {
+      if (this.pluginApi?.GQL?.client) {
+        const client = this.pluginApi.GQL.client;
+        let result;
+        try {
+          if (client.mutate) {
+            result = await client.mutate({ mutation: mutation as any, variables });
+          } else {
+            result = await client.query({ query: mutation as any, variables });
+          }
+        } catch (err: any) {
+          console.error('StashAPI: Failed to update scene rating', {
+            error: err,
+            message: err?.message,
+            graphQLErrors: err?.graphQLErrors,
+            networkError: err?.networkError,
+            sceneId,
+            rating10,
+          });
+          throw err;
+        }
+
+        const updated = result.data?.sceneUpdate?.rating100;
+        return typeof updated === 'number' ? updated : rating100;
+      }
+
+      const response = await fetch(`${this.baseUrl}/graphql`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(this.apiKey && { ApiKey: this.apiKey }),
+        },
+        body: JSON.stringify({ query: mutation, variables }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`GraphQL request failed: ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (data.errors) {
+        throw new Error(`GraphQL errors: ${JSON.stringify(data.errors)}`);
+      }
+
+      const updated = data.data?.sceneUpdate?.rating100;
+      return typeof updated === 'number' ? updated : rating100;
+    } catch (error) {
+      console.error('StashAPI: Failed to save scene rating', error);
       throw error;
     }
   }

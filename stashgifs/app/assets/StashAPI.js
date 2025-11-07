@@ -1375,5 +1375,76 @@ export class StashAPI {
             throw error;
         }
     }
+    /**
+     * Update the rating for a scene (0-10 scale → rating100)
+     * @param sceneId Scene identifier
+     * @param rating10 Rating on a 0-10 scale (can include decimals)
+     * @returns Updated rating100 value from Stash
+     */
+    async updateSceneRating(sceneId, rating10) {
+        const mutation = `mutation SceneUpdate($input: SceneUpdateInput!) {
+      sceneUpdate(input: $input) {
+        id
+        rating100
+      }
+    }`;
+        const normalized = Number.isFinite(rating10) ? rating10 : 0;
+        const clamped = Math.min(10, Math.max(0, normalized));
+        const rating100 = Math.round(clamped * 10);
+        const variables = {
+            input: {
+                id: sceneId,
+                rating100,
+            },
+        };
+        try {
+            if (this.pluginApi?.GQL?.client) {
+                const client = this.pluginApi.GQL.client;
+                let result;
+                try {
+                    if (client.mutate) {
+                        result = await client.mutate({ mutation: mutation, variables });
+                    }
+                    else {
+                        result = await client.query({ query: mutation, variables });
+                    }
+                }
+                catch (err) {
+                    console.error('StashAPI: Failed to update scene rating', {
+                        error: err,
+                        message: err?.message,
+                        graphQLErrors: err?.graphQLErrors,
+                        networkError: err?.networkError,
+                        sceneId,
+                        rating10,
+                    });
+                    throw err;
+                }
+                const updated = result.data?.sceneUpdate?.rating100;
+                return typeof updated === 'number' ? updated : rating100;
+            }
+            const response = await fetch(`${this.baseUrl}/graphql`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(this.apiKey && { ApiKey: this.apiKey }),
+                },
+                body: JSON.stringify({ query: mutation, variables }),
+            });
+            if (!response.ok) {
+                throw new Error(`GraphQL request failed: ${response.status}`);
+            }
+            const data = await response.json();
+            if (data.errors) {
+                throw new Error(`GraphQL errors: ${JSON.stringify(data.errors)}`);
+            }
+            const updated = data.data?.sceneUpdate?.rating100;
+            return typeof updated === 'number' ? updated : rating100;
+        }
+        catch (error) {
+            console.error('StashAPI: Failed to save scene rating', error);
+            throw error;
+        }
+    }
 }
 //# sourceMappingURL=StashAPI.js.map
