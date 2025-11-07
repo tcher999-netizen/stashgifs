@@ -400,16 +400,17 @@ export class VideoPost {
     hqBtn.style.color = 'rgba(255, 255, 255, 0.7)';
     hqBtn.style.transition = 'color 0.2s ease, transform 0.2s ease';
     
-    // HD/Quality icon - outline version (using audio waves to indicate quality/audio)
-    const hqSvgOutline = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M11 5L6 9H2v6h4l5 4V5z"/>
-      <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>
+    // HD badge icon - outline version
+    const hqSvgOutline = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="4" y="6" width="16" height="12" rx="2"/>
+      <path d="M8 10h8M8 14h8" stroke-width="1.5"/>
+      <text x="12" y="15" font-size="7" font-weight="bold" fill="currentColor" text-anchor="middle" font-family="Arial, sans-serif">HD</text>
     </svg>`;
     
-    // HD/Quality icon - filled version (active state)
+    // HD badge icon - filled version (active state)
     const hqSvgFilled = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
-      <path d="M11 5L6 9H2v6h4l5 4V5z"/>
-      <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="4" y="6" width="16" height="12" rx="2"/>
+      <text x="12" y="15" font-size="7" font-weight="bold" fill="white" text-anchor="middle" font-family="Arial, sans-serif">HD</text>
     </svg>`;
     
     this.updateHQButton(hqBtn, hqSvgOutline, hqSvgFilled);

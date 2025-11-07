@@ -168,6 +168,22 @@ export class NativeVideoPlayer {
       this.notifyStateChange();
     });
 
+    // Fullscreen change events (desktop and Android)
+    document.addEventListener('fullscreenchange', () => this.handleFullscreenChange());
+    document.addEventListener('webkitfullscreenchange', () => this.handleFullscreenChange());
+    document.addEventListener('mozfullscreenchange', () => this.handleFullscreenChange());
+    document.addEventListener('MSFullscreenChange', () => this.handleFullscreenChange());
+
+    // iOS fullscreen events
+    this.videoElement.addEventListener('webkitbeginfullscreen', () => {
+      this.state.isFullscreen = true;
+      this.notifyStateChange();
+    });
+    this.videoElement.addEventListener('webkitendfullscreen', () => {
+      this.state.isFullscreen = false;
+      this.notifyStateChange();
+    });
+
     this.videoElement.addEventListener('timeupdate', () => {
       this.state.currentTime = this.videoElement.currentTime;
       this.progressBar.value = this.videoElement.currentTime.toString();
@@ -321,16 +337,99 @@ export class NativeVideoPlayer {
   }
 
   toggleFullscreen(): void {
-    if (!document.fullscreenElement) {
-      this.container.requestFullscreen().then(() => {
-        this.state.isFullscreen = true;
-        this.notifyStateChange();
-      });
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+    if (isIOS) {
+      // iOS Safari: Use webkitEnterFullscreen on video element
+      const webkitEnterFullscreen = (this.videoElement as any).webkitEnterFullscreen;
+      if (webkitEnterFullscreen) {
+        try {
+          webkitEnterFullscreen.call(this.videoElement);
+          // State will be updated via webkitbeginfullscreen event
+        } catch (error) {
+          console.error('Failed to enter fullscreen on iOS', error);
+        }
+      } else {
+        console.warn('Fullscreen not supported on this iOS device');
+      }
+    } else if (isMobile) {
+      // Android: Try video element fullscreen first, then container
+      const videoRequestFullscreen = 
+        this.videoElement.requestFullscreen ||
+        (this.videoElement as any).webkitRequestFullscreen ||
+        (this.videoElement as any).mozRequestFullscreen ||
+        (this.videoElement as any).msRequestFullscreen;
+
+      if (videoRequestFullscreen) {
+        videoRequestFullscreen.call(this.videoElement).then(() => {
+          this.state.isFullscreen = true;
+          this.notifyStateChange();
+        }).catch((error: any) => {
+          console.error('Failed to enter fullscreen on Android', error);
+          // Fallback to container fullscreen
+          this.tryContainerFullscreen();
+        });
+      } else {
+        // Fallback to container fullscreen
+        this.tryContainerFullscreen();
+      }
     } else {
-      document.exitFullscreen().then(() => {
-        this.state.isFullscreen = false;
-        this.notifyStateChange();
-      });
+      // Desktop: Use container fullscreen
+      this.tryContainerFullscreen();
+    }
+  }
+
+  private tryContainerFullscreen(): void {
+    const containerRequestFullscreen =
+      this.container.requestFullscreen ||
+      (this.container as any).webkitRequestFullscreen ||
+      (this.container as any).mozRequestFullscreen ||
+      (this.container as any).msRequestFullscreen;
+
+    if (!this.isFullscreen()) {
+      if (containerRequestFullscreen) {
+        containerRequestFullscreen.call(this.container).then(() => {
+          this.state.isFullscreen = true;
+          this.notifyStateChange();
+        }).catch((error: any) => {
+          console.error('Failed to enter fullscreen', error);
+        });
+      }
+    } else {
+      const exitFullscreen =
+        document.exitFullscreen ||
+        (document as any).webkitExitFullscreen ||
+        (document as any).mozCancelFullscreen ||
+        (document as any).msExitFullscreen;
+
+      if (exitFullscreen) {
+        exitFullscreen.call(document).then(() => {
+          this.state.isFullscreen = false;
+          this.notifyStateChange();
+        }).catch((error: any) => {
+          console.error('Failed to exit fullscreen', error);
+        });
+      }
+    }
+  }
+
+  private isFullscreen(): boolean {
+    return !!(
+      document.fullscreenElement ||
+      (document as any).webkitFullscreenElement ||
+      (document as any).mozFullScreenElement ||
+      (document as any).msFullscreenElement
+    );
+  }
+
+  private handleFullscreenChange(): void {
+    const wasFullscreen = this.state.isFullscreen;
+    const isNowFullscreen = this.isFullscreen();
+    
+    if (wasFullscreen !== isNowFullscreen) {
+      this.state.isFullscreen = isNowFullscreen;
+      this.notifyStateChange();
     }
   }
 

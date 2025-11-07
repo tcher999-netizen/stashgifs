@@ -127,6 +127,20 @@ export class NativeVideoPlayer {
             this.updateTimeDisplay();
             this.notifyStateChange();
         });
+        // Fullscreen change events (desktop and Android)
+        document.addEventListener('fullscreenchange', () => this.handleFullscreenChange());
+        document.addEventListener('webkitfullscreenchange', () => this.handleFullscreenChange());
+        document.addEventListener('mozfullscreenchange', () => this.handleFullscreenChange());
+        document.addEventListener('MSFullscreenChange', () => this.handleFullscreenChange());
+        // iOS fullscreen events
+        this.videoElement.addEventListener('webkitbeginfullscreen', () => {
+            this.state.isFullscreen = true;
+            this.notifyStateChange();
+        });
+        this.videoElement.addEventListener('webkitendfullscreen', () => {
+            this.state.isFullscreen = false;
+            this.notifyStateChange();
+        });
         this.videoElement.addEventListener('timeupdate', () => {
             this.state.currentTime = this.videoElement.currentTime;
             this.progressBar.value = this.videoElement.currentTime.toString();
@@ -266,17 +280,92 @@ export class NativeVideoPlayer {
         this.videoElement.currentTime = time;
     }
     toggleFullscreen() {
-        if (!document.fullscreenElement) {
-            this.container.requestFullscreen().then(() => {
-                this.state.isFullscreen = true;
-                this.notifyStateChange();
-            });
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+        const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+        if (isIOS) {
+            // iOS Safari: Use webkitEnterFullscreen on video element
+            const webkitEnterFullscreen = this.videoElement.webkitEnterFullscreen;
+            if (webkitEnterFullscreen) {
+                try {
+                    webkitEnterFullscreen.call(this.videoElement);
+                    // State will be updated via webkitbeginfullscreen event
+                }
+                catch (error) {
+                    console.error('Failed to enter fullscreen on iOS', error);
+                }
+            }
+            else {
+                console.warn('Fullscreen not supported on this iOS device');
+            }
+        }
+        else if (isMobile) {
+            // Android: Try video element fullscreen first, then container
+            const videoRequestFullscreen = this.videoElement.requestFullscreen ||
+                this.videoElement.webkitRequestFullscreen ||
+                this.videoElement.mozRequestFullscreen ||
+                this.videoElement.msRequestFullscreen;
+            if (videoRequestFullscreen) {
+                videoRequestFullscreen.call(this.videoElement).then(() => {
+                    this.state.isFullscreen = true;
+                    this.notifyStateChange();
+                }).catch((error) => {
+                    console.error('Failed to enter fullscreen on Android', error);
+                    // Fallback to container fullscreen
+                    this.tryContainerFullscreen();
+                });
+            }
+            else {
+                // Fallback to container fullscreen
+                this.tryContainerFullscreen();
+            }
         }
         else {
-            document.exitFullscreen().then(() => {
-                this.state.isFullscreen = false;
-                this.notifyStateChange();
-            });
+            // Desktop: Use container fullscreen
+            this.tryContainerFullscreen();
+        }
+    }
+    tryContainerFullscreen() {
+        const containerRequestFullscreen = this.container.requestFullscreen ||
+            this.container.webkitRequestFullscreen ||
+            this.container.mozRequestFullscreen ||
+            this.container.msRequestFullscreen;
+        if (!this.isFullscreen()) {
+            if (containerRequestFullscreen) {
+                containerRequestFullscreen.call(this.container).then(() => {
+                    this.state.isFullscreen = true;
+                    this.notifyStateChange();
+                }).catch((error) => {
+                    console.error('Failed to enter fullscreen', error);
+                });
+            }
+        }
+        else {
+            const exitFullscreen = document.exitFullscreen ||
+                document.webkitExitFullscreen ||
+                document.mozCancelFullscreen ||
+                document.msExitFullscreen;
+            if (exitFullscreen) {
+                exitFullscreen.call(document).then(() => {
+                    this.state.isFullscreen = false;
+                    this.notifyStateChange();
+                }).catch((error) => {
+                    console.error('Failed to exit fullscreen', error);
+                });
+            }
+        }
+    }
+    isFullscreen() {
+        return !!(document.fullscreenElement ||
+            document.webkitFullscreenElement ||
+            document.mozFullScreenElement ||
+            document.msFullscreenElement);
+    }
+    handleFullscreenChange() {
+        const wasFullscreen = this.state.isFullscreen;
+        const isNowFullscreen = this.isFullscreen();
+        if (wasFullscreen !== isNowFullscreen) {
+            this.state.isFullscreen = isNowFullscreen;
+            this.notifyStateChange();
         }
     }
     getState() {
