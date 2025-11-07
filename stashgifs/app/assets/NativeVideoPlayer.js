@@ -226,10 +226,7 @@ export class NativeVideoPlayer {
             }
             catch (e) {
                 // On mobile, try playing even if not fully ready
-                if (isMobile && this.videoElement.readyState >= 1) {
-                    console.log('NativeVideoPlayer: Playing with minimal data on mobile');
-                }
-                else {
+                if (!isMobile || this.videoElement.readyState < 1) {
                     console.warn('NativeVideoPlayer: Video not fully ready, attempting play anyway', e);
                 }
             }

@@ -47,7 +47,7 @@ function init(): void {
     });
 
     // Expose feed to window for debugging/extension
-    (window as any).stashTVFeed = feed;
+    (window as any).stashgifsFeed = feed;
   } catch (error: any) {
     console.error('Stashgifs Feed UI: Fatal error during initialization:', error);
     appContainer.innerHTML = `

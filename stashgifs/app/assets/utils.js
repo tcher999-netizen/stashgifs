@@ -60,6 +60,7 @@ export function getAspectRatioClass(aspectRatio) {
 // Removed unused generateId helper
 /**
  * Escape HTML to prevent XSS
+ * Available utility function for future use if needed
  */
 export function escapeHtml(text) {
     const div = document.createElement('div');

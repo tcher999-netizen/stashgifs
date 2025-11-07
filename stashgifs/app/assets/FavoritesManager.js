@@ -66,26 +66,19 @@ export class FavoritesManager {
      */
     async toggleFavorite(marker) {
         try {
-            console.log('FavoritesManager: Toggling favorite for marker', marker.id);
             const tagId = await this.getFavoriteTagId();
             if (!tagId) {
                 throw new Error('Favorite tag not available');
             }
-            console.log('FavoritesManager: Using favorite tag ID', tagId);
             const isCurrentlyFavorite = await this.isFavorite(marker);
-            console.log('FavoritesManager: Current favorite status', isCurrentlyFavorite);
             if (isCurrentlyFavorite) {
                 // Remove tag
-                console.log('FavoritesManager: Removing tag from marker');
                 await this.api.removeTagFromMarker(marker, tagId);
-                console.log('FavoritesManager: Tag removed successfully');
                 return false;
             }
             else {
                 // Add tag
-                console.log('FavoritesManager: Adding tag to marker');
                 await this.api.addTagToMarker(marker, tagId);
-                console.log('FavoritesManager: Tag added successfully');
                 return true;
             }
         }

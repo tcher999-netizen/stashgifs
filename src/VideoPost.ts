@@ -7,7 +7,53 @@ import { VideoPostData } from './types.js';
 import { NativeVideoPlayer } from './NativeVideoPlayer.js';
 import { FavoritesManager } from './FavoritesManager.js';
 import { StashAPI } from './StashAPI.js';
-import { calculateAspectRatio, getAspectRatioClass, isValidMediaUrl } from './utils.js';
+import { VisibilityManager } from './VisibilityManager.js';
+import { calculateAspectRatio, getAspectRatioClass, isValidMediaUrl, showToast, throttle } from './utils.js';
+
+// Constants for magic numbers and strings
+const FAVORITE_TAG_NAME = 'StashGifs Favorite';
+const RATING_MAX_STARS = 10;
+const RATING_MIN_STARS = 0;
+const RATING_DIALOG_MAX_WIDTH = 900;
+const RATING_DIALOG_MIN_WIDTH = 200;
+const RATING_DIALOG_DEFAULT_PADDING = 32;
+const RATING_DIALOG_MIN_PADDING = 16;
+const OCOUNT_DIGIT_WIDTH_PX = 8; // Approximate pixels per digit for 14px font
+const OCOUNT_MIN_WIDTH_PX = 14;
+const OCOUNT_THREE_DIGIT_PADDING = 10;
+const OCOUNT_DEFAULT_PADDING = 8;
+const RESIZE_THROTTLE_MS = 100;
+
+// SVG Constants
+const HEART_SVG_OUTLINE = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+</svg>`;
+
+const HEART_SVG_FILLED = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+</svg>`;
+
+const HQ_SVG_OUTLINE = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <rect x="4" y="6" width="16" height="12" rx="2"/>
+  <path d="M8 10h8M8 14h8" stroke-width="1.5"/>
+  <text x="12" y="15" font-size="7" font-weight="bold" fill="currentColor" text-anchor="middle" font-family="Arial, sans-serif">HD</text>
+</svg>`;
+
+const HQ_SVG_FILLED = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+  <rect x="4" y="6" width="16" height="12" rx="2"/>
+  <text x="12" y="15" font-size="7" font-weight="bold" fill="white" text-anchor="middle" font-family="Arial, sans-serif">HD</text>
+</svg>`;
+
+const PLAY_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
+
+const STAR_SVG = `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true" focusable="false">
+  <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.62L12 2 9.19 8.62 2 9.24l5.46 4.73L5.82 21z"/>
+</svg>`;
+
+interface HoverHandlers {
+  mouseenter: () => void;
+  mouseleave: () => void;
+}
 
 export class VideoPost {
   private container: HTMLElement;
@@ -17,10 +63,11 @@ export class VideoPost {
   private isLoaded: boolean = false;
   private favoritesManager?: FavoritesManager;
   private api?: StashAPI;
-  private visibilityManager?: any; // VisibilityManager instance
+  private visibilityManager?: VisibilityManager;
   private heartButton?: HTMLElement;
   private oCountButton?: HTMLElement;
   private hqButton?: HTMLElement;
+  private playButton?: HTMLElement;
   private isFavorite: boolean = false;
   private oCount: number = 0;
   private isHQMode: boolean = false;
@@ -33,11 +80,19 @@ export class VideoPost {
   private ratingStarButtons: HTMLButtonElement[] = [];
   private isRatingDialogOpen: boolean = false;
   private isSavingRating: boolean = false;
+  private isTogglingFavorite: boolean = false;
+  
+  // Event handlers for cleanup
   private ratingOutsideClickHandler = (event: Event) => this.onRatingOutsideClick(event);
   private ratingKeydownHandler = (event: KeyboardEvent) => this.onRatingKeydown(event);
-  private ratingResizeHandler = () => this.syncRatingDialogLayout();
+  private ratingResizeHandler: () => void;
+  private hoverHandlers: Map<HTMLElement, HoverHandlers> = new Map();
+  
+  // Cached DOM elements
+  private playerContainer?: HTMLElement;
+  private footer?: HTMLElement;
 
-  constructor(container: HTMLElement, data: VideoPostData, favoritesManager?: FavoritesManager, api?: StashAPI, visibilityManager?: any) {
+  constructor(container: HTMLElement, data: VideoPostData, favoritesManager?: FavoritesManager, api?: StashAPI, visibilityManager?: VisibilityManager) {
     this.container = container;
     this.data = data;
     this.thumbnailUrl = data.thumbnailUrl;
@@ -47,11 +102,17 @@ export class VideoPost {
     this.oCount = this.data.marker.scene.o_counter || 0;
     this.ratingValue = this.convertRating100ToStars(this.data.marker.scene.rating100);
     this.hasRating = typeof this.data.marker.scene.rating100 === 'number' && !Number.isNaN(this.data.marker.scene.rating100);
+    
+    // Throttle resize handler for performance
+    this.ratingResizeHandler = throttle(() => this.syncRatingDialogLayout(), RESIZE_THROTTLE_MS);
 
     this.render();
     this.checkFavoriteStatus();
   }
 
+  /**
+   * Render the complete video post structure
+   */
   private render(): void {
     this.container.className = 'video-post';
     this.container.dataset.postId = this.data.marker.id;
@@ -64,12 +125,17 @@ export class VideoPost {
     // Player container
     const playerContainer = this.createPlayerContainer();
     this.container.appendChild(playerContainer);
+    this.playerContainer = playerContainer;
 
     // Footer with buttons and rating
     const footer = this.createFooter();
     this.container.appendChild(footer);
+    this.footer = footer;
   }
 
+  /**
+   * Create the player container with thumbnail and loading indicator
+   */
   private createPlayerContainer(): HTMLElement {
     const container = document.createElement('div');
     container.className = 'video-post__player';
@@ -106,58 +172,34 @@ export class VideoPost {
     return container;
   }
 
+  /**
+   * Create header with performer and tag chips
+   */
   private createHeader(): HTMLElement {
     const header = document.createElement('div');
     header.className = 'video-post__header';
-    header.style.padding = '0'; // Remove all padding
-    header.style.marginBottom = '4px'; // Reduced margin
-    header.style.borderBottom = 'none'; // Remove divider line
+    header.style.padding = '0';
+    header.style.marginBottom = '4px';
+    header.style.borderBottom = 'none';
 
     const chips = document.createElement('div');
     chips.className = 'chips';
     chips.style.display = 'flex';
     chips.style.flexWrap = 'wrap';
     chips.style.gap = '6px';
-    chips.style.margin = '0'; // Remove any margin from chips container
+    chips.style.margin = '0';
     
     // Add performer chips
     if (this.data.marker.scene.performers && this.data.marker.scene.performers.length > 0) {
       for (const performer of this.data.marker.scene.performers) {
-        const chip = document.createElement('a');
-        chip.className = 'chip';
-        chip.href = this.getPerformerLink(performer.id);
-        chip.target = '_blank';
-        chip.rel = 'noopener noreferrer';
-        // Reduce chip size
-        chip.style.padding = '4px 8px';
-        chip.style.fontSize = '0.75rem';
-        chip.style.gap = '4px';
-        if (performer.image_path) {
-          const avatar = document.createElement('img');
-          avatar.className = 'chip__avatar';
-          avatar.src = performer.image_path.startsWith('http') ? performer.image_path : `${window.location.origin}${performer.image_path}`;
-          avatar.alt = performer.name;
-          avatar.style.width = '16px';
-          avatar.style.height = '16px';
-          chip.appendChild(avatar);
-        }
-        chip.appendChild(document.createTextNode(performer.name));
+        const chip = this.createPerformerChip(performer);
         chips.appendChild(chip);
       }
     }
 
     // Add tag chip: show only the primary tag if available
     if (this.data.marker.primary_tag && this.data.marker.primary_tag.id && this.data.marker.primary_tag.name) {
-      const tag = this.data.marker.primary_tag;
-      const chip = document.createElement('a');
-      chip.className = 'chip chip--tag';
-      chip.href = this.getTagLink(tag.id);
-      chip.target = '_blank';
-      chip.rel = 'noopener noreferrer';
-      // Reduce chip size
-      chip.style.padding = '4px 8px';
-      chip.style.fontSize = '0.75rem';
-      chip.appendChild(document.createTextNode(tag.name));
+      const chip = this.createTagChip(this.data.marker.primary_tag);
       chips.appendChild(chip);
     }
 
@@ -165,52 +207,103 @@ export class VideoPost {
     return header;
   }
 
+  /**
+   * Create a performer chip element
+   */
+  private createPerformerChip(performer: { id: string; name: string; image_path?: string }): HTMLElement {
+    const chip = document.createElement('a');
+    chip.className = 'chip';
+    chip.href = this.getPerformerLink(performer.id);
+    chip.target = '_blank';
+    chip.rel = 'noopener noreferrer';
+    chip.style.padding = '4px 8px';
+    chip.style.fontSize = '0.75rem';
+    chip.style.gap = '4px';
+    
+    if (performer.image_path) {
+      const avatar = document.createElement('img');
+      avatar.className = 'chip__avatar';
+      avatar.src = performer.image_path.startsWith('http') ? performer.image_path : `${window.location.origin}${performer.image_path}`;
+      avatar.alt = performer.name;
+      avatar.style.width = '16px';
+      avatar.style.height = '16px';
+      chip.appendChild(avatar);
+    }
+    chip.appendChild(document.createTextNode(performer.name));
+    return chip;
+  }
+
+  /**
+   * Create a tag chip element
+   */
+  private createTagChip(tag: { id: string; name: string }): HTMLElement {
+    const chip = document.createElement('a');
+    chip.className = 'chip chip--tag';
+    chip.href = this.getTagLink(tag.id);
+    chip.target = '_blank';
+    chip.rel = 'noopener noreferrer';
+    chip.style.padding = '4px 8px';
+    chip.style.fontSize = '0.75rem';
+    chip.appendChild(document.createTextNode(tag.name));
+    return chip;
+  }
+
+  /**
+   * Create footer with action buttons
+   */
   private createFooter(): HTMLElement {
     const footer = document.createElement('div');
     footer.className = 'video-post__footer';
-    footer.style.padding = '4px 8px'; // Even tighter padding
+    footer.style.padding = '4px 8px';
 
     const info = document.createElement('div');
     info.className = 'video-post__info';
-    info.style.gap = '0'; // Remove gap
+    info.style.gap = '0';
 
-    // Row: button group (right-aligned)
     const row = document.createElement('div');
     row.className = 'video-post__row';
     row.style.display = 'flex';
     row.style.alignItems = 'center';
-    row.style.justifyContent = 'flex-end'; // Right-align buttons
-    row.style.gap = '2px'; // Reduced gap
+    row.style.justifyContent = 'flex-end';
+    row.style.gap = '2px';
 
-    // Button group container for right-aligned buttons
     const buttonGroup = document.createElement('div');
     buttonGroup.style.display = 'flex';
     buttonGroup.style.alignItems = 'center';
-    buttonGroup.style.gap = '2px'; // Tighter spacing between buttons
+    buttonGroup.style.gap = '2px';
 
-    // Heart button for favorites (if FavoritesManager is available) - placed before play button
+    // Add buttons in order
     if (this.favoritesManager) {
       const heartBtn = this.createHeartButton();
       buttonGroup.appendChild(heartBtn);
     }
 
-    // O count button with splashing emoji - placed before rating button
     if (this.api) {
       const oCountBtn = this.createOCountButton();
       buttonGroup.appendChild(oCountBtn);
     }
 
-    // Rating control - star icon with dialog
     const ratingControl = this.createRatingSection();
     buttonGroup.appendChild(ratingControl);
 
-    // High-quality scene video button - placed before play button
     if (this.api) {
       const hqBtn = this.createHQButton();
       buttonGroup.appendChild(hqBtn);
     }
 
-    // Icon-only button to open full scene in Stash - styled to match heart/o-count buttons
+    const playBtn = this.createPlayButton();
+    buttonGroup.appendChild(playBtn);
+
+    row.appendChild(buttonGroup);
+    info.appendChild(row);
+    footer.appendChild(info);
+    return footer;
+  }
+
+  /**
+   * Create play button to open scene in Stash
+   */
+  private createPlayButton(): HTMLElement {
     const sceneLink = this.getSceneLink();
     const iconBtn = document.createElement('a');
     iconBtn.className = 'icon-btn icon-btn--play';
@@ -218,73 +311,84 @@ export class VideoPost {
     iconBtn.target = '_blank';
     iconBtn.rel = 'noopener noreferrer';
     iconBtn.setAttribute('aria-label', 'View full scene');
-    iconBtn.style.background = 'transparent';
-    iconBtn.style.border = 'none';
-    iconBtn.style.cursor = 'pointer';
-    iconBtn.style.padding = '2px'; // Reduced padding
-    iconBtn.style.display = 'flex';
-    iconBtn.style.alignItems = 'center';
-    iconBtn.style.justifyContent = 'center';
-    iconBtn.style.color = 'rgba(255, 255, 255, 0.7)';
-    iconBtn.style.transition = 'color 0.2s ease, transform 0.2s ease';
-    iconBtn.style.width = 'auto'; // Allow smaller size
-    iconBtn.style.height = 'auto'; // Allow smaller size
-    iconBtn.style.minWidth = 'auto'; // Remove min-width constraint
-    iconBtn.style.minHeight = 'auto'; // Remove min-height constraint
-    iconBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>'; // Smaller SVG
+    this.applyIconButtonStyles(iconBtn);
+    iconBtn.style.padding = '2px';
+    iconBtn.style.width = 'auto';
+    iconBtn.style.height = 'auto';
+    iconBtn.style.minWidth = 'auto';
+    iconBtn.style.minHeight = 'auto';
+    iconBtn.innerHTML = PLAY_SVG;
     
-    // Hover effect to match other buttons
-    iconBtn.addEventListener('mouseenter', () => {
-      iconBtn.style.transform = 'scale(1.1)';
-    });
-    iconBtn.addEventListener('mouseleave', () => {
-      iconBtn.style.transform = 'scale(1)';
-    });
-    
-    buttonGroup.appendChild(iconBtn);
-
-    // Add button group to row
-    row.appendChild(buttonGroup);
-
-    info.appendChild(row);
-    footer.appendChild(info);
-    return footer;
+    this.addHoverEffect(iconBtn);
+    this.playButton = iconBtn;
+    return iconBtn;
   }
 
+  /**
+   * Apply common icon button styles
+   */
+  private applyIconButtonStyles(button: HTMLElement): void {
+    button.style.background = 'transparent';
+    button.style.border = 'none';
+    button.style.cursor = 'pointer';
+    button.style.display = 'flex';
+    button.style.alignItems = 'center';
+    button.style.justifyContent = 'center';
+    button.style.color = 'rgba(255, 255, 255, 0.7)';
+    button.style.transition = 'color 0.2s ease, transform 0.2s ease';
+  }
+
+  /**
+   * Add hover effect to a button element
+   */
+  private addHoverEffect(button: HTMLElement): void {
+    const mouseenter = () => {
+      if (!(button instanceof HTMLButtonElement) || !button.disabled) {
+        button.style.transform = 'scale(1.1)';
+      }
+    };
+    const mouseleave = () => {
+      button.style.transform = 'scale(1)';
+    };
+    
+    button.addEventListener('mouseenter', mouseenter);
+    button.addEventListener('mouseleave', mouseleave);
+    
+    this.hoverHandlers.set(button, { mouseenter, mouseleave });
+  }
+
+  /**
+   * Remove hover effect from a button element
+   */
+  private removeHoverEffect(button: HTMLElement): void {
+    const handlers = this.hoverHandlers.get(button);
+    if (handlers) {
+      button.removeEventListener('mouseenter', handlers.mouseenter);
+      button.removeEventListener('mouseleave', handlers.mouseleave);
+      this.hoverHandlers.delete(button);
+    }
+  }
+
+  /**
+   * Create heart button for favorites
+   */
   private createHeartButton(): HTMLElement {
     const heartBtn = document.createElement('button');
     heartBtn.className = 'icon-btn icon-btn--heart';
     heartBtn.type = 'button';
     heartBtn.setAttribute('aria-label', 'Toggle favorite');
-    heartBtn.style.background = 'transparent';
-    heartBtn.style.border = 'none';
-    heartBtn.style.cursor = 'pointer';
+    this.applyIconButtonStyles(heartBtn);
     heartBtn.style.padding = '4px';
-    heartBtn.style.display = 'flex';
-    heartBtn.style.alignItems = 'center';
-    heartBtn.style.justifyContent = 'center';
-    heartBtn.style.color = 'rgba(255, 255, 255, 0.7)';
-    heartBtn.style.transition = 'color 0.2s ease, transform 0.2s ease';
-    
-    // Heart SVG - outline version
-    const heartSvg = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-    </svg>`;
-    
-    // Heart SVG - filled version
-    const heartSvgFilled = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
-      <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-    </svg>`;
 
-    this.updateHeartButton(heartBtn, heartSvg, heartSvgFilled);
+    this.updateHeartButton(heartBtn);
 
-    heartBtn.addEventListener('click', async (e) => {
+    const clickHandler = async (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
       
-      if (!this.favoritesManager) return;
+      if (!this.favoritesManager || this.isTogglingFavorite) return;
 
-      // Disable button during operation
+      this.isTogglingFavorite = true;
       heartBtn.disabled = true;
       heartBtn.style.opacity = '0.5';
 
@@ -293,292 +397,252 @@ export class VideoPost {
         this.isFavorite = newFavoriteState;
         
         // Update local marker tags to reflect the change
-        const favoriteTagName = 'StashGifs Favorite';
         if (!this.data.marker.tags) {
           this.data.marker.tags = [];
         }
         
         if (newFavoriteState) {
-          // Add favorite tag if not present
-          if (!this.data.marker.tags.some(tag => tag.name === favoriteTagName)) {
-            // We don't have the tag ID, but we can add a placeholder or fetch it
-            // For now, just mark as favorite - the tag will be there on server
-            this.data.marker.tags.push({ id: '', name: favoriteTagName });
+          if (!this.data.marker.tags.some(tag => tag.name === FAVORITE_TAG_NAME)) {
+            this.data.marker.tags.push({ id: '', name: FAVORITE_TAG_NAME });
           }
         } else {
-          // Remove favorite tag
           this.data.marker.tags = this.data.marker.tags.filter(
-            tag => tag.name !== favoriteTagName
+            tag => tag.name !== FAVORITE_TAG_NAME
           );
         }
         
-        this.updateHeartButton(heartBtn, heartSvg, heartSvgFilled);
+        this.updateHeartButton(heartBtn);
       } catch (error) {
         console.error('Failed to toggle favorite', error);
+        showToast('Failed to update favorite. Please try again.');
         // Revert UI state
         this.isFavorite = !this.isFavorite;
-        this.updateHeartButton(heartBtn, heartSvg, heartSvgFilled);
+        this.updateHeartButton(heartBtn);
       } finally {
+        this.isTogglingFavorite = false;
         heartBtn.disabled = false;
         heartBtn.style.opacity = '1';
       }
-    });
+    };
 
-    // Hover effect
-    heartBtn.addEventListener('mouseenter', () => {
-      if (!heartBtn.disabled) {
-        heartBtn.style.transform = 'scale(1.1)';
-      }
-    });
-    heartBtn.addEventListener('mouseleave', () => {
-      heartBtn.style.transform = 'scale(1)';
-    });
-
+    heartBtn.addEventListener('click', clickHandler);
+    this.addHoverEffect(heartBtn);
     this.heartButton = heartBtn;
     return heartBtn;
   }
 
-  private updateHeartButton(button: HTMLElement, outlineSvg: string, filledSvg: string): void {
+  /**
+   * Update heart button appearance based on favorite state
+   */
+  private updateHeartButton(button: HTMLElement): void {
     if (this.isFavorite) {
-      button.innerHTML = filledSvg;
+      button.innerHTML = HEART_SVG_FILLED;
       button.style.color = '#ff6b9d';
     } else {
-      button.innerHTML = outlineSvg;
+      button.innerHTML = HEART_SVG_OUTLINE;
       button.style.color = 'rgba(255, 255, 255, 0.7)';
     }
   }
 
+  /**
+   * Create O-count button
+   */
   private createOCountButton(): HTMLElement {
     const oCountBtn = document.createElement('button');
     oCountBtn.className = 'icon-btn icon-btn--ocount';
     oCountBtn.type = 'button';
     oCountBtn.setAttribute('aria-label', 'Increment o count');
-    oCountBtn.style.background = 'transparent';
-    oCountBtn.style.border = 'none';
-    oCountBtn.style.cursor = 'pointer';
+    this.applyIconButtonStyles(oCountBtn);
     oCountBtn.style.padding = '4px 8px';
-    oCountBtn.style.display = 'flex';
-    oCountBtn.style.alignItems = 'center';
-    oCountBtn.style.justifyContent = 'center';
-    oCountBtn.style.gap = '6px'; // Consistent with rating button
-    oCountBtn.style.color = 'rgba(255, 255, 255, 0.7)';
-    oCountBtn.style.transition = 'color 0.2s ease, transform 0.2s ease';
+    oCountBtn.style.gap = '6px';
     oCountBtn.style.fontSize = '16px';
-    oCountBtn.style.width = 'auto'; // Allow button to expand based on content
-    oCountBtn.style.minWidth = 'auto'; // Remove any min-width constraint
+    oCountBtn.style.width = 'auto';
+    oCountBtn.style.minWidth = 'auto';
     
-    // Splashing emoji 💦
-    const emoji = '💦';
-    
-    // Initial content - updateOCountButton will add the span
-    oCountBtn.innerHTML = emoji;
+    oCountBtn.innerHTML = '💦';
     
     this.oCountButton = oCountBtn;
-    this.updateOCountButton(); // This will add the count span with proper styling
+    this.updateOCountButton();
 
-    oCountBtn.addEventListener('click', async (e) => {
+    const clickHandler = async (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
       
       if (!this.api) return;
 
-      // Disable button during operation
       oCountBtn.disabled = true;
       oCountBtn.style.opacity = '0.5';
 
       try {
         const result = await this.api.incrementOCount(this.data.marker.scene.id);
         this.oCount = result.count;
-        
-        // Update local scene data
         this.data.marker.scene.o_counter = result.count;
-        
         this.updateOCountButton();
       } catch (error) {
         console.error('Failed to increment o count', error);
+        showToast('Failed to update o-count. Please try again.');
       } finally {
         oCountBtn.disabled = false;
         oCountBtn.style.opacity = '1';
       }
-    });
+    };
 
-    // Hover effect
-    oCountBtn.addEventListener('mouseenter', () => {
-      if (!oCountBtn.disabled) {
-        oCountBtn.style.transform = 'scale(1.1)';
-      }
-    });
-    oCountBtn.addEventListener('mouseleave', () => {
-      oCountBtn.style.transform = 'scale(1)';
-    });
-
+    oCountBtn.addEventListener('click', clickHandler);
+    this.addHoverEffect(oCountBtn);
     return oCountBtn;
   }
 
+  /**
+   * Update O-count button display
+   */
   private updateOCountButton(): void {
     if (!this.oCountButton) return;
     
     const emoji = '💦';
-    
-    // Clear existing content but keep structure
     this.oCountButton.innerHTML = emoji;
     
-    // Calculate number of digits to dynamically adjust width
     const digitCount = this.oCount > 0 ? this.oCount.toString().length : 0;
-    // Adjust min-width based on number of digits (approximately 8px per digit for 14px font)
-    const minWidth = digitCount > 0 ? `${Math.max(14, digitCount * 8)}px` : '14px';
+    const minWidth = digitCount > 0 ? `${Math.max(OCOUNT_MIN_WIDTH_PX, digitCount * OCOUNT_DIGIT_WIDTH_PX)}px` : `${OCOUNT_MIN_WIDTH_PX}px`;
     
-    // Always add count span for consistent spacing (even if 0)
     const countSpan = document.createElement('span');
     countSpan.style.fontSize = '14px';
     countSpan.style.fontWeight = '500';
-    countSpan.style.minWidth = minWidth; // Dynamic width based on digit count
+    countSpan.style.minWidth = minWidth;
     countSpan.style.textAlign = 'left';
-    countSpan.style.display = 'inline-block'; // Ensure width is respected
+    countSpan.style.display = 'inline-block';
     countSpan.textContent = this.oCount > 0 ? this.oCount.toString() : '';
     this.oCountButton.appendChild(countSpan);
     
-    // Adjust button padding dynamically if needed for very large numbers
     if (digitCount >= 3) {
-      this.oCountButton.style.paddingRight = '10px'; // Extra padding for 3+ digits
+      this.oCountButton.style.paddingRight = `${OCOUNT_THREE_DIGIT_PADDING}px`;
     } else {
-      this.oCountButton.style.paddingRight = '8px'; // Default padding
+      this.oCountButton.style.paddingRight = `${OCOUNT_DEFAULT_PADDING}px`;
     }
   }
 
+  /**
+   * Create HQ button
+   */
   private createHQButton(): HTMLElement {
     const hqBtn = document.createElement('button');
     hqBtn.className = 'icon-btn icon-btn--hq';
     hqBtn.type = 'button';
     hqBtn.setAttribute('aria-label', 'Load high-quality scene video with audio');
-    hqBtn.style.background = 'transparent';
-    hqBtn.style.border = 'none';
-    hqBtn.style.cursor = 'pointer';
+    this.applyIconButtonStyles(hqBtn);
     hqBtn.style.padding = '4px';
-    hqBtn.style.display = 'flex';
-    hqBtn.style.alignItems = 'center';
-    hqBtn.style.justifyContent = 'center';
-    hqBtn.style.color = 'rgba(255, 255, 255, 0.7)';
-    hqBtn.style.transition = 'color 0.2s ease, transform 0.2s ease';
-    
-    // HD badge icon - outline version
-    const hqSvgOutline = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <rect x="4" y="6" width="16" height="12" rx="2"/>
-      <path d="M8 10h8M8 14h8" stroke-width="1.5"/>
-      <text x="12" y="15" font-size="7" font-weight="bold" fill="currentColor" text-anchor="middle" font-family="Arial, sans-serif">HD</text>
-    </svg>`;
-    
-    // HD badge icon - filled version (active state)
-    const hqSvgFilled = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
-      <rect x="4" y="6" width="16" height="12" rx="2"/>
-      <text x="12" y="15" font-size="7" font-weight="bold" fill="white" text-anchor="middle" font-family="Arial, sans-serif">HD</text>
-    </svg>`;
-    
-    this.updateHQButton(hqBtn, hqSvgOutline, hqSvgFilled);
+
+    this.updateHQButton(hqBtn);
     this.hqButton = hqBtn;
 
-    hqBtn.addEventListener('click', async (e) => {
+    const clickHandler = async (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
       
       if (!this.api || this.isHQMode) return;
 
-      // Disable button during operation
       hqBtn.disabled = true;
       hqBtn.style.opacity = '0.5';
 
       try {
         await this.upgradeToSceneVideo();
         this.isHQMode = true;
-        this.updateHQButton(hqBtn, hqSvgOutline, hqSvgFilled);
+        this.updateHQButton(hqBtn);
       } catch (error) {
         console.error('Failed to upgrade to scene video', error);
+        showToast('Failed to load high-quality video. Please try again.');
       } finally {
         hqBtn.disabled = false;
         hqBtn.style.opacity = '1';
       }
-    });
+    };
 
-    // Hover effect
-    hqBtn.addEventListener('mouseenter', () => {
-      if (!hqBtn.disabled) {
-        hqBtn.style.transform = 'scale(1.1)';
-      }
-    });
-    hqBtn.addEventListener('mouseleave', () => {
-      hqBtn.style.transform = 'scale(1)';
-    });
-
+    hqBtn.addEventListener('click', clickHandler);
+    this.addHoverEffect(hqBtn);
     return hqBtn;
   }
 
-  private updateHQButton(button: HTMLElement, outlineSvg: string, filledSvg: string): void {
+  /**
+   * Update HQ button appearance based on mode
+   */
+  private updateHQButton(button: HTMLElement): void {
     if (this.isHQMode) {
-      button.innerHTML = filledSvg;
-      button.style.color = '#4CAF50'; // Green for active HQ mode
+      button.innerHTML = HQ_SVG_FILLED;
+      button.style.color = '#4CAF50';
     } else {
-      button.innerHTML = outlineSvg;
+      button.innerHTML = HQ_SVG_OUTLINE;
       button.style.color = 'rgba(255, 255, 255, 0.7)';
     }
   }
 
+  /**
+   * Create rating section with dialog
+   */
   private createRatingSection(): HTMLElement {
     const wrapper = document.createElement('div');
     wrapper.className = 'rating-control';
     wrapper.setAttribute('data-role', 'rating');
     this.ratingWrapper = wrapper;
 
+    const displayButton = this.createRatingDisplayButton();
+    wrapper.appendChild(displayButton);
+
+    const dialog = this.createRatingDialog();
+    wrapper.appendChild(dialog);
+
+    this.updateRatingDisplay();
+    this.updateRatingStarButtons();
+
+    return wrapper;
+  }
+
+  /**
+   * Create rating display button
+   */
+  private createRatingDisplayButton(): HTMLElement {
     const displayButton = document.createElement('button');
     displayButton.type = 'button';
     displayButton.className = 'icon-btn icon-btn--rating';
     displayButton.setAttribute('aria-haspopup', 'dialog');
     displayButton.setAttribute('aria-expanded', 'false');
-    displayButton.style.background = 'transparent';
-    displayButton.style.border = 'none';
-    displayButton.style.cursor = 'pointer';
-    displayButton.style.padding = '4px 8px'; // Consistent with o-count button
-    displayButton.style.display = 'flex';
-    displayButton.style.alignItems = 'center';
-    displayButton.style.justifyContent = 'center';
-    displayButton.style.gap = '6px'; // Consistent spacing
-    displayButton.style.color = 'rgba(255, 255, 255, 0.7)';
-    displayButton.style.transition = 'color 0.2s ease, transform 0.2s ease';
+    this.applyIconButtonStyles(displayButton);
+    displayButton.style.padding = '4px 8px';
+    displayButton.style.gap = '6px';
+    
     displayButton.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       if (this.isSavingRating) return;
       this.toggleRatingDialog();
     });
-    displayButton.addEventListener('mouseenter', () => {
-      if (!displayButton.disabled) {
-        displayButton.style.transform = 'scale(1.1)';
-      }
-    });
-    displayButton.addEventListener('mouseleave', () => {
-      displayButton.style.transform = 'scale(1)';
-    });
+    
+    this.addHoverEffect(displayButton);
     this.ratingDisplayButton = displayButton;
 
     const iconSpan = document.createElement('span');
     iconSpan.className = 'rating-display__icon';
-    iconSpan.innerHTML = this.getDisplayStarSvg();
+    iconSpan.innerHTML = STAR_SVG;
 
     const valueSpan = document.createElement('span');
     valueSpan.className = 'rating-display__value';
-    valueSpan.style.fontSize = '14px'; // Consistent with o-count
-    valueSpan.style.fontWeight = '500'; // Consistent with o-count
-    valueSpan.style.minWidth = '14px'; // Consistent width for alignment
+    valueSpan.style.fontSize = '14px';
+    valueSpan.style.fontWeight = '500';
+    valueSpan.style.minWidth = '14px';
     valueSpan.style.textAlign = 'left';
     this.ratingDisplayValue = valueSpan;
 
     displayButton.appendChild(iconSpan);
     displayButton.appendChild(valueSpan);
-    wrapper.appendChild(displayButton);
+    return displayButton;
+  }
 
+  /**
+   * Create rating dialog with star buttons
+   */
+  private createRatingDialog(): HTMLElement {
     const dialog = document.createElement('div');
     dialog.className = 'rating-dialog';
     dialog.setAttribute('role', 'dialog');
-    dialog.setAttribute('aria-modal', 'false');
+    dialog.setAttribute('aria-modal', 'true');
     dialog.setAttribute('aria-hidden', 'true');
     dialog.hidden = true;
     this.ratingDialog = dialog;
@@ -593,7 +657,7 @@ export class VideoPost {
     starsContainer.setAttribute('aria-label', 'Rate this scene from 0 to 10 stars');
     this.ratingStarButtons = [];
 
-    for (let i = 1; i <= 10; i++) {
+    for (let i = 1; i <= RATING_MAX_STARS; i++) {
       const starBtn = document.createElement('button');
       starBtn.type = 'button';
       starBtn.className = 'rating-dialog__star';
@@ -606,19 +670,62 @@ export class VideoPost {
         event.stopPropagation();
         void this.onRatingStarSelect(i);
       });
+      starBtn.addEventListener('keydown', (event) => {
+        this.handleRatingKeydown(event, i);
+      });
       this.ratingStarButtons.push(starBtn);
       starsContainer.appendChild(starBtn);
     }
 
     dialog.appendChild(starsContainer);
-    wrapper.appendChild(dialog);
-
-    this.updateRatingDisplay();
-    this.updateRatingStarButtons();
-
-    return wrapper;
+    return dialog;
   }
 
+  /**
+   * Handle keyboard navigation for rating stars
+   */
+  private handleRatingKeydown(event: KeyboardEvent, currentIndex: number): void {
+    if (!this.isRatingDialogOpen) return;
+    
+    let newIndex = currentIndex;
+    
+    switch (event.key) {
+      case 'ArrowRight':
+        event.preventDefault();
+        newIndex = Math.min(RATING_MAX_STARS, currentIndex + 1);
+        break;
+      case 'ArrowLeft':
+        event.preventDefault();
+        newIndex = Math.max(1, currentIndex - 1);
+        break;
+      case 'Home':
+        event.preventDefault();
+        newIndex = 1;
+        break;
+      case 'End':
+        event.preventDefault();
+        newIndex = RATING_MAX_STARS;
+        break;
+      case 'Enter':
+      case ' ':
+        event.preventDefault();
+        void this.onRatingStarSelect(currentIndex);
+        return;
+      default:
+        return;
+    }
+    
+    if (newIndex !== currentIndex) {
+      const newButton = this.ratingStarButtons[newIndex - 1];
+      if (newButton) {
+        newButton.focus();
+      }
+    }
+  }
+
+  /**
+   * Toggle rating dialog open/closed state
+   */
   private toggleRatingDialog(force?: boolean): void {
     const shouldOpen = typeof force === 'boolean' ? force : !this.isRatingDialogOpen;
     if (shouldOpen) {
@@ -628,6 +735,9 @@ export class VideoPost {
     }
   }
 
+  /**
+   * Open rating dialog
+   */
   private openRatingDialog(): void {
     if (!this.ratingDialog || this.isRatingDialogOpen) return;
     this.isRatingDialogOpen = true;
@@ -642,8 +752,19 @@ export class VideoPost {
     document.addEventListener('keydown', this.ratingKeydownHandler);
     window.addEventListener('resize', this.ratingResizeHandler);
     this.updateRatingStarButtons();
+    
+    // Focus first star button for keyboard navigation
+    if (this.ratingStarButtons.length > 0) {
+      const firstButton = this.ratingStarButtons[this.hasRating ? this.ratingValue - 1 : 0];
+      if (firstButton) {
+        firstButton.focus();
+      }
+    }
   }
 
+  /**
+   * Close rating dialog
+   */
   private closeRatingDialog(): void {
     if (!this.ratingDialog || !this.isRatingDialogOpen) return;
     this.isRatingDialogOpen = false;
@@ -655,6 +776,9 @@ export class VideoPost {
     this.detachRatingGlobalListeners();
   }
 
+  /**
+   * Detach global event listeners for rating dialog
+   */
   private detachRatingGlobalListeners(): void {
     document.removeEventListener('mousedown', this.ratingOutsideClickHandler);
     document.removeEventListener('touchstart', this.ratingOutsideClickHandler);
@@ -662,6 +786,9 @@ export class VideoPost {
     window.removeEventListener('resize', this.ratingResizeHandler);
   }
 
+  /**
+   * Handle clicks outside rating dialog
+   */
   private onRatingOutsideClick(event: Event): void {
     if (!this.isRatingDialogOpen || !this.ratingWrapper) return;
     const target = event.target as Node | null;
@@ -671,18 +798,25 @@ export class VideoPost {
     this.closeRatingDialog();
   }
 
+  /**
+   * Handle keyboard events for rating dialog
+   */
   private onRatingKeydown(event: KeyboardEvent): void {
     if (!this.isRatingDialogOpen) return;
     if (event.key === 'Escape') {
       event.preventDefault();
       this.closeRatingDialog();
+      this.ratingDisplayButton?.focus();
     }
   }
 
+  /**
+   * Update rating display button and value
+   */
   private updateRatingDisplay(): void {
     if (this.ratingDisplayButton) {
       const ariaLabel = this.hasRating
-        ? `Scene rating ${this.ratingValue} out of 10`
+        ? `Scene rating ${this.ratingValue} out of ${RATING_MAX_STARS}`
         : 'Rate this scene';
       this.ratingDisplayButton.setAttribute('aria-label', ariaLabel);
       this.ratingDisplayButton.classList.toggle('icon-btn--rating-active', this.hasRating);
@@ -692,6 +826,9 @@ export class VideoPost {
     }
   }
 
+  /**
+   * Update star buttons appearance and state
+   */
   private updateRatingStarButtons(): void {
     if (!this.ratingStarButtons || this.ratingStarButtons.length === 0) return;
     this.ratingStarButtons.forEach((button, index) => {
@@ -706,6 +843,9 @@ export class VideoPost {
     });
   }
 
+  /**
+   * Handle star selection
+   */
   private async onRatingStarSelect(value: number): Promise<void> {
     if (this.isSavingRating) return;
 
@@ -738,6 +878,7 @@ export class VideoPost {
       this.updateRatingStarButtons();
     } catch (error) {
       console.error('Failed to update scene rating', error);
+      showToast('Failed to update rating. Please try again.');
       this.ratingValue = previousValue;
       this.hasRating = previousHasRating;
       this.data.marker.scene.rating100 = previousRating100;
@@ -750,6 +891,9 @@ export class VideoPost {
     }
   }
 
+  /**
+   * Set rating saving state on UI elements
+   */
   private setRatingSavingState(isSaving: boolean): void {
     if (!this.ratingDisplayButton) return;
     if (isSaving) {
@@ -767,6 +911,9 @@ export class VideoPost {
     });
   }
 
+  /**
+   * Sync rating dialog layout with container
+   */
   private syncRatingDialogLayout(): void {
     if (!this.ratingWrapper) return;
     const dialog = this.ratingDialog;
@@ -776,44 +923,37 @@ export class VideoPost {
     const wrapperRect = this.ratingWrapper.getBoundingClientRect();
     if (!cardRect.width || !wrapperRect.width) return;
 
-    const footer = this.container.querySelector('.video-post__footer') as HTMLElement;
-    let horizontalPadding = 32;
+    const footer = this.footer || this.container.querySelector('.video-post__footer') as HTMLElement;
+    let horizontalPadding = RATING_DIALOG_DEFAULT_PADDING;
     if (footer) {
       const footerStyles = window.getComputedStyle(footer);
       const paddingLeft = parseFloat(footerStyles.paddingLeft || '0');
       const paddingRight = parseFloat(footerStyles.paddingRight || '0');
-      horizontalPadding = Math.max(16, Math.round(paddingLeft + paddingRight));
+      horizontalPadding = Math.max(RATING_DIALOG_MIN_PADDING, Math.round(paddingLeft + paddingRight));
     }
 
-    const availableWidth = Math.max(200, Math.floor(cardRect.width - horizontalPadding));
-    const clampedWidth = Math.min(availableWidth, 900);
+    const availableWidth = Math.max(RATING_DIALOG_MIN_WIDTH, Math.floor(cardRect.width - horizontalPadding));
+    const clampedWidth = Math.min(availableWidth, RATING_DIALOG_MAX_WIDTH);
     this.ratingWrapper.style.setProperty('--rating-dialog-width', `${clampedWidth}px`);
 
     const diffRight = cardRect.right - wrapperRect.right;
     this.ratingWrapper.style.setProperty('--rating-dialog-right', `${-diffRight}px`);
   }
 
-  private getDisplayStarSvg(): string {
-    return `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true" focusable="false">
-      <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.62L12 2 9.19 8.62 2 9.24l5.46 4.73L5.82 21z"/>
-    </svg>`;
-  }
-
-  private getCloseSvg(): string {
-    return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <line x1="18" y1="6" x2="6" y2="18"/>
-      <line x1="6" y1="6" x2="18" y2="18"/>
-    </svg>`;
-  }
-
+  /**
+   * Clamp rating value to valid range
+   */
   private clampRatingValue(value: number): number {
-    if (!Number.isFinite(value)) return 0;
-    return Math.min(10, Math.max(0, Math.round(value)));
+    if (!Number.isFinite(value)) return RATING_MIN_STARS;
+    return Math.min(RATING_MAX_STARS, Math.max(RATING_MIN_STARS, Math.round(value)));
   }
 
+  /**
+   * Convert rating100 (0-100) to stars (0-10)
+   */
   private convertRating100ToStars(rating100?: number): number {
     if (typeof rating100 !== 'number' || Number.isNaN(rating100)) {
-      return 0;
+      return RATING_MIN_STARS;
     }
     return this.clampRatingValue(rating100 / 10);
   }
@@ -832,14 +972,14 @@ export class VideoPost {
       throw new Error('Scene video URL not available');
     }
 
-    const playerContainer = this.container.querySelector('.video-post__player') as HTMLElement;
+    const playerContainer = this.playerContainer || this.container.querySelector('.video-post__player') as HTMLElement;
     if (!playerContainer) {
       throw new Error('Player container not found');
     }
 
-    // Capture current playback state
-    const wasPlaying = this.player?.getState().isPlaying || false;
-    const currentTime = this.player?.getState().currentTime || this.data.marker.seconds;
+    // Capture current playback state with proper null checks
+    const playerState = this.player?.getState();
+    const wasPlaying = playerState?.isPlaying ?? false;
 
     // Destroy current marker player
     if (this.player) {
@@ -849,15 +989,14 @@ export class VideoPost {
     }
 
     // Clear player container to prepare for new player
-    // The NativeVideoPlayer will create its own wrapper
     playerContainer.innerHTML = '';
 
     // Create new player with full scene video
     this.player = new NativeVideoPlayer(playerContainer, sceneVideoUrl, {
-      muted: false, // Enable audio for HQ mode
+      muted: false,
       autoplay: false,
-      startTime: this.data.marker.seconds, // Start at marker timestamp
-      endTime: this.data.marker.end_seconds, // End at marker end time if available
+      startTime: this.data.startTime ?? this.data.marker.seconds,
+      endTime: this.data.endTime ?? this.data.marker.end_seconds,
     });
 
     // Hide thumbnail and loading if still visible
@@ -880,48 +1019,53 @@ export class VideoPost {
         await this.player.play();
       } catch (error) {
         console.warn('Failed to resume playback after upgrade', error);
+        showToast('Video upgraded but playback failed. Click play to start.');
       }
     }
   }
 
+  /**
+   * Check favorite status from marker tags
+   */
   private async checkFavoriteStatus(): Promise<void> {
     if (!this.favoritesManager) return;
 
     try {
-      // Check if marker has the favorite tag in its tags array
-      const favoriteTagName = 'StashGifs Favorite';
       const hasFavoriteTag = this.data.marker.tags?.some(
-        tag => tag.name === favoriteTagName
+        tag => tag.name === FAVORITE_TAG_NAME
       ) || false;
 
       this.isFavorite = hasFavoriteTag;
 
       // Update heart button if it exists
       if (this.heartButton) {
-        const outlineSvg = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-        </svg>`;
-        const filledSvg = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
-          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-        </svg>`;
-        this.updateHeartButton(this.heartButton, outlineSvg, filledSvg);
+        this.updateHeartButton(this.heartButton);
       }
     } catch (error) {
       console.error('Failed to check favorite status', error);
+      // Don't show toast for background check failures
     }
   }
 
+  /**
+   * Get link to scene in Stash
+   */
   private getSceneLink(): string {
     const s = this.data.marker.scene;
-    // Link to the local Stash scene route with timestamp set to marker start seconds
     const t = Math.max(0, Math.floor(this.data.marker.seconds || 0));
     return `${window.location.origin}/scenes/${s.id}?t=${t}`;
   }
 
+  /**
+   * Get link to performer page
+   */
   private getPerformerLink(performerId: string): string {
     return `${window.location.origin}/performers/${performerId}`;
   }
 
+  /**
+   * Get link to tag page
+   */
   private getTagLink(tagId: string): string {
     return `${window.location.origin}/tags/${tagId}`;
   }
@@ -934,7 +1078,7 @@ export class VideoPost {
       return;
     }
 
-    const playerContainer = this.container.querySelector('.video-post__player') as HTMLElement;
+    const playerContainer = this.playerContainer || this.container.querySelector('.video-post__player') as HTMLElement;
     if (!playerContainer) {
       return;
     }
@@ -945,10 +1089,10 @@ export class VideoPost {
     }
 
     this.player = new NativeVideoPlayer(playerContainer, videoUrl, {
-      muted: false, // Unmuted by default (markers don't have sound anyway)
-      autoplay: false, // Will be controlled by VisibilityManager
-      startTime: startTime || this.data.startTime,
-      endTime: endTime || this.data.endTime,
+      muted: false,
+      autoplay: false,
+      startTime: startTime ?? this.data.startTime ?? this.data.marker.seconds,
+      endTime: endTime ?? this.data.endTime ?? this.data.marker.end_seconds,
     });
 
     // Hide thumbnail and loading
@@ -978,7 +1122,7 @@ export class VideoPost {
    * Register player with visibility manager after upgrade
    * Called by FeedContainer when player is upgraded
    */
-  registerPlayerWithVisibilityManager(visibilityManager: any): void {
+  registerPlayerWithVisibilityManager(visibilityManager: VisibilityManager): void {
     if (this.player && this.data.marker.id) {
       visibilityManager.registerPlayer(this.data.marker.id, this.player);
     }
@@ -999,14 +1143,30 @@ export class VideoPost {
   }
 
   /**
-   * Destroy the post
+   * Destroy the post and clean up all resources
    */
   destroy(): void {
+    // Destroy player
     if (this.player) {
       this.player.destroy();
+      this.player = undefined;
     }
-    this.detachRatingGlobalListeners();
+
+    // Close rating dialog if open and clean up listeners
+    if (this.isRatingDialogOpen) {
+      this.closeRatingDialog();
+    } else {
+      // Ensure listeners are removed even if dialog wasn't open
+      this.detachRatingGlobalListeners();
+    }
+
+    // Remove all hover effect listeners
+    for (const [button] of this.hoverHandlers) {
+      this.removeHoverEffect(button);
+    }
+    this.hoverHandlers.clear();
+
+    // Remove container from DOM
     this.container.remove();
   }
 }
-

@@ -88,14 +88,13 @@ export class FeedContainer {
             try {
                 // Try to play the dummy video to unlock autoplay
                 await dummyVideo.play();
-                console.log('FeedContainer: Mobile autoplay unlocked');
                 // Try to play all currently visible videos
                 setTimeout(() => {
                     this.visibilityManager.retryVisibleVideos();
                 }, 100);
             }
             catch (e) {
-                console.log('FeedContainer: Could not unlock autoplay yet', e);
+                // Autoplay unlock failed, user will need to interact
             }
             finally {
                 // Clean up after a short delay

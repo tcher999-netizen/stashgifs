@@ -70,6 +70,7 @@ export function getAspectRatioClass(aspectRatio: number): string {
 
 /**
  * Escape HTML to prevent XSS
+ * Available utility function for future use if needed
  */
 export function escapeHtml(text: string): string {
   const div = document.createElement('div');

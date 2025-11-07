@@ -249,9 +249,7 @@ export class StashAPI {
         // If a saved filter is specified, fetch its criteria first
         let savedFilterCriteria = null;
         if (filters?.savedFilterId) {
-            console.log('[StashAPI] Fetching saved filter:', filters.savedFilterId);
             savedFilterCriteria = await this.getSavedFilter(filters.savedFilterId);
-            console.log('[StashAPI] Saved filter criteria:', savedFilterCriteria);
         }
         // Query for scene markers based on FindSceneMarkersForTv
         const query = `query FindSceneMarkers($filter: FindFilterType, $scene_marker_filter: SceneMarkerFilterType) {
@@ -444,13 +442,6 @@ export class StashAPI {
                 });
                 const responseData = result.data?.findSceneMarkers;
                 let markers = responseData?.scene_markers || [];
-                console.log('[StashAPI] Query result:', {
-                    count: responseData?.count,
-                    markersReturned: markers.length,
-                    page: filter.page,
-                    limit: filter.per_page,
-                    filter: sceneMarkerFilter
-                });
                 if (responseData?.count > 0 && markers.length === 0) {
                     console.warn('[StashAPI] Count > 0 but no markers returned - retrying with page 1');
                     // If count > 0 but no markers, try page 1 instead
@@ -465,7 +456,6 @@ export class StashAPI {
                         });
                         const retryData = retryResult.data?.findSceneMarkers;
                         markers = retryData?.scene_markers || [];
-                        console.log('[StashAPI] Retry returned', markers.length, 'markers');
                     }
                 }
                 return markers;
@@ -539,18 +529,10 @@ export class StashAPI {
             }
             const responseData = data.data?.findSceneMarkers;
             let markers = responseData?.scene_markers || [];
-            console.log('[StashAPI] Fetch result:', {
-                count: responseData?.count,
-                markersReturned: markers.length,
-                page: filter.page,
-                limit: filter.per_page,
-                filter: sceneMarkerFilter
-            });
             if (responseData?.count > 0 && markers.length === 0) {
                 console.warn('[StashAPI] Count > 0 but no markers returned - possible page calculation issue');
                 // If count > 0 but no markers, try page 1 instead
                 if (filter.page !== 1) {
-                    console.log('[StashAPI] Retrying with page 1');
                     filter.page = 1;
                     const retryResponse = await fetch(`${this.baseUrl}/graphql`, {
                         method: 'POST',
@@ -570,7 +552,6 @@ export class StashAPI {
                         const retryData = await retryResponse.json();
                         if (!retryData.errors) {
                             markers = retryData.data?.findSceneMarkers?.scene_markers || [];
-                            console.log('[StashAPI] Retry returned', markers.length, 'markers');
                         }
                     }
                 }
@@ -767,7 +748,6 @@ export class StashAPI {
                         // Some GraphQL clients accept mutations via query method
                         result = await client.query({ query: mutation, variables });
                     }
-                    console.log('StashAPI: Tag created successfully', result.data);
                     return result.data?.tagCreate || null;
                 }
                 catch (err) {
@@ -904,12 +884,10 @@ export class StashAPI {
                     const client = this.pluginApi.GQL.client;
                     try {
                         if (client.mutate) {
-                            const result = await client.mutate({ mutation: mutation, variables });
-                            console.log('StashAPI: Tag added to marker successfully', result.data);
+                            await client.mutate({ mutation: mutation, variables });
                         }
                         else {
-                            const result = await client.query({ query: mutation, variables });
-                            console.log('StashAPI: Tag added to marker successfully (via query)', result.data);
+                            await client.query({ query: mutation, variables });
                         }
                     }
                     catch (err) {
@@ -1008,12 +986,10 @@ export class StashAPI {
                     const client = this.pluginApi.GQL.client;
                     try {
                         if (client.mutate) {
-                            const result = await client.mutate({ mutation: mutation, variables });
-                            console.log('StashAPI: Tag added to scene successfully', result.data);
+                            await client.mutate({ mutation: mutation, variables });
                         }
                         else {
-                            const result = await client.query({ query: mutation, variables });
-                            console.log('StashAPI: Tag added to scene successfully (via query)', result.data);
+                            await client.query({ query: mutation, variables });
                         }
                     }
                     catch (err) {
@@ -1095,12 +1071,10 @@ export class StashAPI {
                 const client = this.pluginApi.GQL.client;
                 try {
                     if (client.mutate) {
-                        const result = await client.mutate({ mutation: mutation, variables });
-                        console.log('StashAPI: Tag removed from marker successfully', result.data);
+                        await client.mutate({ mutation: mutation, variables });
                     }
                     else {
-                        const result = await client.query({ query: mutation, variables });
-                        console.log('StashAPI: Tag removed from marker successfully (via query)', result.data);
+                        await client.query({ query: mutation, variables });
                     }
                 }
                 catch (err) {
@@ -1197,12 +1171,10 @@ export class StashAPI {
                 const client = this.pluginApi.GQL.client;
                 try {
                     if (client.mutate) {
-                        const result = await client.mutate({ mutation: mutation, variables });
-                        console.log('StashAPI: Tag removed from scene successfully', result.data);
+                        await client.mutate({ mutation: mutation, variables });
                     }
                     else {
-                        const result = await client.query({ query: mutation, variables });
-                        console.log('StashAPI: Tag removed from scene successfully (via query)', result.data);
+                        await client.query({ query: mutation, variables });
                     }
                 }
                 catch (err) {
@@ -1263,12 +1235,10 @@ export class StashAPI {
                 try {
                     if (client.mutate) {
                         const result = await client.mutate({ mutation: mutation, variables });
-                        console.log('StashAPI: O count incremented successfully', result.data);
                         return result.data?.sceneAddO || { count: 0, history: [] };
                     }
                     else {
                         const result = await client.query({ query: mutation, variables });
-                        console.log('StashAPI: O count incremented successfully (via query)', result.data);
                         return result.data?.sceneAddO || { count: 0, history: [] };
                     }
                 }
