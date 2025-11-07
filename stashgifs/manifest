@@ -5,11 +5,8 @@ metadata:
 version: 3.0.0
 date: "2025-11-07 11:28:36"
 requires: []
-source_repository: https://raw.githubusercontent.com/evolite/stashgifs/master/main/index.yml
+source_repository: https://anonymous.4open.science/api/repo/stashgifs-D783/file/index.yml
 files:
-- manifest
-- stashgifs.yml
-- stashgifs.mjs
 - app\favicon.ico
 - app\assets\index-B_Z5UIkX.js.map
 - app\assets\index-AXLjmhIz.css
@@ -19,3 +16,5 @@ files:
 - app\stashgifs-icon.png
 - app\manifest.json
 - app\index.html
+- stashgifs.yml
+- stashgifs.mjs
