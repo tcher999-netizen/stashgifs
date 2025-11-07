@@ -1,6 +1,6 @@
 # StashGifs
 
-A TikTok-style vertical feed for browsing Stash scene markers. Scroll through your markers like GIFs.
+A Social Media-style vertical feed for browsing Stash scene markers. Scroll through your markers like GIFs.
 
 ## Quick Start
 
@@ -8,7 +8,7 @@ Install via Stash's plugin system using the `index.yml` file.
 
 ## Features
 
-- **Vertical scrolling feed** - Browse markers like a social media feed
+- **Vertical scrolling feed** - Browse markers like a social media feed, looping videos
 - **Auto-play videos** - Videos play automatically as you scroll
 - **Random content** - Fresh mix every time you load
 - **Filter by tags** - Use your saved marker filters
