@@ -56,7 +56,7 @@ export class NativeVideoPlayer {
     this.videoElement.src = videoUrl;
     this.videoElement.preload = 'auto'; // Changed from 'metadata' to 'auto' for better loading
     this.videoElement.playsInline = true; // Required for iOS inline playback
-    this.videoElement.muted = options?.muted ?? true; // Default to muted for autoplay
+    this.videoElement.muted = options?.muted ?? false; // Default to unmuted (markers don't have sound anyway)
     this.videoElement.loop = true; // Enable looping
     this.videoElement.className = 'video-player__element';
     
@@ -245,14 +245,14 @@ export class NativeVideoPlayer {
   }
 
   async play(): Promise<void> {
-    // Ensure video is muted for autoplay policies (required for mobile)
-    if (!this.videoElement.muted) {
+    // On mobile, mute for autoplay policies if not already muted
+    // (markers don't have sound anyway, so this is just for autoplay compatibility)
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobile && !this.videoElement.muted) {
       this.videoElement.muted = true;
       this.state.isMuted = true;
       this.updateMuteButton();
     }
-    
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     const minReadyState = isMobile ? 2 : 3; // Lower threshold on mobile
     
     // Wait for video to be ready if not already (shorter wait on mobile)

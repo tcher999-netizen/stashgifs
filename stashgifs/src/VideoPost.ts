@@ -17,17 +17,21 @@ export class VideoPost {
   private isLoaded: boolean = false;
   private favoritesManager?: FavoritesManager;
   private api?: StashAPI;
+  private visibilityManager?: any; // VisibilityManager instance
   private heartButton?: HTMLElement;
   private oCountButton?: HTMLElement;
+  private hqButton?: HTMLElement;
   private isFavorite: boolean = false;
   private oCount: number = 0;
+  private isHQMode: boolean = false;
 
-  constructor(container: HTMLElement, data: VideoPostData, favoritesManager?: FavoritesManager, api?: StashAPI) {
+  constructor(container: HTMLElement, data: VideoPostData, favoritesManager?: FavoritesManager, api?: StashAPI, visibilityManager?: any) {
     this.container = container;
     this.data = data;
     this.thumbnailUrl = data.thumbnailUrl;
     this.favoritesManager = favoritesManager;
     this.api = api;
+    this.visibilityManager = visibilityManager;
     this.oCount = this.data.marker.scene.o_counter || 0;
 
     this.render();
@@ -147,6 +151,12 @@ export class VideoPost {
     if (this.api) {
       const oCountBtn = this.createOCountButton();
       buttonGroup.appendChild(oCountBtn);
+    }
+
+    // High-quality scene video button - placed before play button
+    if (this.api) {
+      const hqBtn = this.createHQButton();
+      buttonGroup.appendChild(hqBtn);
     }
 
     // Icon-only button to open full scene in Stash - styled to match heart/o-count buttons
@@ -375,6 +385,147 @@ export class VideoPost {
     }
   }
 
+  private createHQButton(): HTMLElement {
+    const hqBtn = document.createElement('button');
+    hqBtn.className = 'icon-btn icon-btn--hq';
+    hqBtn.type = 'button';
+    hqBtn.setAttribute('aria-label', 'Load high-quality scene video with audio');
+    hqBtn.style.background = 'transparent';
+    hqBtn.style.border = 'none';
+    hqBtn.style.cursor = 'pointer';
+    hqBtn.style.padding = '4px';
+    hqBtn.style.display = 'flex';
+    hqBtn.style.alignItems = 'center';
+    hqBtn.style.justifyContent = 'center';
+    hqBtn.style.color = 'rgba(255, 255, 255, 0.7)';
+    hqBtn.style.transition = 'color 0.2s ease, transform 0.2s ease';
+    
+    // HD/Quality icon - outline version (using audio waves to indicate quality/audio)
+    const hqSvgOutline = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M11 5L6 9H2v6h4l5 4V5z"/>
+      <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>
+    </svg>`;
+    
+    // HD/Quality icon - filled version (active state)
+    const hqSvgFilled = `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+      <path d="M11 5L6 9H2v6h4l5 4V5z"/>
+      <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>`;
+    
+    this.updateHQButton(hqBtn, hqSvgOutline, hqSvgFilled);
+    this.hqButton = hqBtn;
+
+    hqBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      if (!this.api || this.isHQMode) return;
+
+      // Disable button during operation
+      hqBtn.disabled = true;
+      hqBtn.style.opacity = '0.5';
+
+      try {
+        await this.upgradeToSceneVideo();
+        this.isHQMode = true;
+        this.updateHQButton(hqBtn, hqSvgOutline, hqSvgFilled);
+      } catch (error) {
+        console.error('Failed to upgrade to scene video', error);
+      } finally {
+        hqBtn.disabled = false;
+        hqBtn.style.opacity = '1';
+      }
+    });
+
+    // Hover effect
+    hqBtn.addEventListener('mouseenter', () => {
+      if (!hqBtn.disabled) {
+        hqBtn.style.transform = 'scale(1.1)';
+      }
+    });
+    hqBtn.addEventListener('mouseleave', () => {
+      hqBtn.style.transform = 'scale(1)';
+    });
+
+    return hqBtn;
+  }
+
+  private updateHQButton(button: HTMLElement, outlineSvg: string, filledSvg: string): void {
+    if (this.isHQMode) {
+      button.innerHTML = filledSvg;
+      button.style.color = '#4CAF50'; // Green for active HQ mode
+    } else {
+      button.innerHTML = outlineSvg;
+      button.style.color = 'rgba(255, 255, 255, 0.7)';
+    }
+  }
+
+  /**
+   * Upgrade from marker video to full scene video with audio
+   */
+  private async upgradeToSceneVideo(): Promise<void> {
+    if (!this.api) {
+      throw new Error('API not available');
+    }
+
+    // Get full scene video URL
+    const sceneVideoUrl = this.api.getVideoUrl(this.data.marker.scene);
+    if (!sceneVideoUrl || !isValidMediaUrl(sceneVideoUrl)) {
+      throw new Error('Scene video URL not available');
+    }
+
+    const playerContainer = this.container.querySelector('.video-post__player') as HTMLElement;
+    if (!playerContainer) {
+      throw new Error('Player container not found');
+    }
+
+    // Capture current playback state
+    const wasPlaying = this.player?.getState().isPlaying || false;
+    const currentTime = this.player?.getState().currentTime || this.data.marker.seconds;
+
+    // Destroy current marker player
+    if (this.player) {
+      this.player.destroy();
+      this.player = undefined;
+      this.isLoaded = false;
+    }
+
+    // Clear player container to prepare for new player
+    // The NativeVideoPlayer will create its own wrapper
+    playerContainer.innerHTML = '';
+
+    // Create new player with full scene video
+    this.player = new NativeVideoPlayer(playerContainer, sceneVideoUrl, {
+      muted: false, // Enable audio for HQ mode
+      autoplay: false,
+      startTime: this.data.marker.seconds, // Start at marker timestamp
+      endTime: this.data.marker.end_seconds, // End at marker end time if available
+    });
+
+    // Hide thumbnail and loading if still visible
+    const thumbnail = playerContainer.querySelector('.video-post__thumbnail') as HTMLElement;
+    const loading = playerContainer.querySelector('.video-post__loading') as HTMLElement;
+    if (thumbnail) thumbnail.style.display = 'none';
+    if (loading) loading.style.display = 'none';
+
+    this.isLoaded = true;
+
+    // Register with visibility manager if available
+    if (this.visibilityManager && this.data.marker.id) {
+      this.visibilityManager.registerPlayer(this.data.marker.id, this.player);
+    }
+
+    // If video was playing, resume playback
+    if (wasPlaying) {
+      try {
+        await this.player.waitUntilCanPlay(2000);
+        await this.player.play();
+      } catch (error) {
+        console.warn('Failed to resume playback after upgrade', error);
+      }
+    }
+  }
+
   private async checkFavoriteStatus(): Promise<void> {
     if (!this.favoritesManager) return;
 
@@ -436,7 +587,7 @@ export class VideoPost {
     }
 
     this.player = new NativeVideoPlayer(playerContainer, videoUrl, {
-      muted: true, // Always muted for autoplay
+      muted: false, // Unmuted by default (markers don't have sound anyway)
       autoplay: false, // Will be controlled by VisibilityManager
       startTime: startTime || this.data.startTime,
       endTime: endTime || this.data.endTime,
@@ -456,6 +607,23 @@ export class VideoPost {
    */
   getPlayer(): NativeVideoPlayer | undefined {
     return this.player;
+  }
+
+  /**
+   * Check if currently in HQ mode (using scene video)
+   */
+  isInHQMode(): boolean {
+    return this.isHQMode;
+  }
+
+  /**
+   * Register player with visibility manager after upgrade
+   * Called by FeedContainer when player is upgraded
+   */
+  registerPlayerWithVisibilityManager(visibilityManager: any): void {
+    if (this.player && this.data.marker.id) {
+      visibilityManager.registerPlayer(this.data.marker.id, this.player);
+    }
   }
 
   /**

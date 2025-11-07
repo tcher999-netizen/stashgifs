@@ -1233,7 +1233,7 @@ export class FeedContainer {
       endTime: marker.end_seconds,
     };
 
-      const post = new VideoPost(postContainer, postData, this.favoritesManager, this.api);
+      const post = new VideoPost(postContainer, postData, this.favoritesManager, this.api, this.visibilityManager);
     this.posts.set(marker.id, post);
 
     // Add to posts container
