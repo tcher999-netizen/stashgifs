@@ -304,6 +304,8 @@ export class VideoPost {
         oCountBtn.style.color = 'rgba(255, 255, 255, 0.7)';
         oCountBtn.style.transition = 'color 0.2s ease, transform 0.2s ease';
         oCountBtn.style.fontSize = '16px';
+        oCountBtn.style.width = 'auto'; // Allow button to expand based on content
+        oCountBtn.style.minWidth = 'auto'; // Remove any min-width constraint
         // Splashing emoji 💦
         const emoji = '💦';
         // Initial content - updateOCountButton will add the span
@@ -350,14 +352,26 @@ export class VideoPost {
         const emoji = '💦';
         // Clear existing content but keep structure
         this.oCountButton.innerHTML = emoji;
+        // Calculate number of digits to dynamically adjust width
+        const digitCount = this.oCount > 0 ? this.oCount.toString().length : 0;
+        // Adjust min-width based on number of digits (approximately 8px per digit for 14px font)
+        const minWidth = digitCount > 0 ? `${Math.max(14, digitCount * 8)}px` : '14px';
         // Always add count span for consistent spacing (even if 0)
         const countSpan = document.createElement('span');
         countSpan.style.fontSize = '14px';
         countSpan.style.fontWeight = '500';
-        countSpan.style.minWidth = '14px'; // Consistent width for alignment
+        countSpan.style.minWidth = minWidth; // Dynamic width based on digit count
         countSpan.style.textAlign = 'left';
+        countSpan.style.display = 'inline-block'; // Ensure width is respected
         countSpan.textContent = this.oCount > 0 ? this.oCount.toString() : '';
         this.oCountButton.appendChild(countSpan);
+        // Adjust button padding dynamically if needed for very large numbers
+        if (digitCount >= 3) {
+            this.oCountButton.style.paddingRight = '10px'; // Extra padding for 3+ digits
+        }
+        else {
+            this.oCountButton.style.paddingRight = '8px'; // Default padding
+        }
     }
     createHQButton() {
         const hqBtn = document.createElement('button');
