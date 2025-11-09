@@ -28,6 +28,7 @@ export interface SceneMarker {
   seconds: number; // Start time in seconds
   end_seconds?: number; // End time in seconds
   stream?: string; // Stream URL for the marker
+  preview?: string; // Marker-specific preview image
   primary_tag?: Tag;
   tags?: Tag[];
   scene: Scene; // Parent scene
@@ -91,6 +92,10 @@ export interface FeedSettings {
   aspectRatio: 'preserve' | '16:9' | '9:16' | '1:1';
   showControls: 'always' | 'hover' | 'never';
   enableFullscreen: boolean;
+  backgroundPreloadEnabled?: boolean;
+  backgroundPreloadDelay?: number; // ms, default: 150ms delay between videos
+  backgroundPreloadFastScrollDelay?: number; // ms, default: 400ms delay during fast scrolling
+  backgroundPreloadScrollVelocityThreshold?: number; // pixels/ms, default: 2.0 for fast scroll detection
 }
 
 export interface VideoPostData {

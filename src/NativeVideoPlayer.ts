@@ -27,6 +27,7 @@ export class NativeVideoPlayer {
     muted?: boolean;
     startTime?: number;
     endTime?: number;
+    poster?: string;
     onStateChange?: (state: VideoPlayerState) => void;
   }) {
     // Validate video URL before proceeding
@@ -63,6 +64,36 @@ export class NativeVideoPlayer {
     });
     this.createControls();
     this.attachEventListeners();
+  }
+
+  private resolveReady(): void {
+    if (this.readyResolver) {
+      const resolve = this.readyResolver;
+      this.readyResolver = undefined;
+      resolve();
+    }
+  }
+
+  waitForReady(timeoutMs: number = 3000): Promise<void> {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      return this.readyPromise;
+    }
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+    return Promise.race([
+      this.readyPromise,
+      new Promise<void>((resolve) => {
+        timeoutHandle = setTimeout(() => {
+          timeoutHandle = undefined;
+          resolve();
+        }, timeoutMs);
+      }),
+    ]).finally(() => {
+      if (timeoutHandle !== undefined) {
+        clearTimeout(timeoutHandle);
+      }
+    });
   }
 
   private createVideoElement(videoUrl: string, options?: { autoplay?: boolean; muted?: boolean; startTime?: number; endTime?: number }): void {
@@ -140,9 +171,13 @@ export class NativeVideoPlayer {
     }, { once: true }); // Use once: true to ensure handler only runs once
     
     // Resolve ready promise when video can play
-    this.videoElement.addEventListener('canplay', () => {
-      if (this.readyResolver) this.readyResolver();
-    });
+    const handleReady = () => this.resolveReady();
+    this.videoElement.addEventListener('loadeddata', handleReady, { once: true });
+    this.videoElement.addEventListener('canplay', handleReady, { once: true });
+
+    if (this.videoElement.readyState >= 2) {
+      this.resolveReady();
+    }
 
     const playerWrapper = document.createElement('div');
     playerWrapper.className = 'video-player';
@@ -382,6 +417,10 @@ export class NativeVideoPlayer {
 
   seekTo(time: number): void {
     this.videoElement.currentTime = time;
+  }
+
+  getVideoElement(): HTMLVideoElement {
+    return this.videoElement;
   }
 
   toggleFullscreen(): void {

@@ -6,6 +6,7 @@
 import { SceneMarker, FilterOptions, FeedSettings, VideoPostData } from './types.js';
 import { StashAPI } from './StashAPI.js';
 import { VideoPost } from './VideoPost.js';
+import { NativeVideoPlayer } from './NativeVideoPlayer.js';
 import { VisibilityManager } from './VisibilityManager.js';
 import { FavoritesManager } from './FavoritesManager.js';
 import { throttle, isValidMediaUrl } from './utils.js';
@@ -13,12 +14,16 @@ import { throttle, isValidMediaUrl } from './utils.js';
 const DEFAULT_SETTINGS: FeedSettings = {
   autoPlay: true, // Enable autoplay for markers
   autoPlayThreshold: 0.2, // Lower threshold - start playing when 20% visible instead of 50%
-  maxConcurrentVideos: 3,
+  maxConcurrentVideos: Number.POSITIVE_INFINITY,
   unloadDistance: 1000,
   cardMaxWidth: 800,
   aspectRatio: 'preserve',
   showControls: 'hover',
   enableFullscreen: true,
+  backgroundPreloadEnabled: true,
+  backgroundPreloadDelay: 150, // ms, delay between videos
+  backgroundPreloadFastScrollDelay: 400, // ms, delay during fast scrolling
+  backgroundPreloadScrollVelocityThreshold: 2.0, // pixels/ms, threshold for fast scroll detection
 };
 
 export class FeedContainer {
@@ -47,16 +52,48 @@ export class FeedContainer {
   private eagerPreloadedPosts: Set<string>;
   private eagerPreloadScheduled: boolean = false;
   private eagerPreloadHandle?: number;
-  private readonly eagerPreloadCount: number = 6;
-  private readonly maxSimultaneousPreloads: number = 2;
+  private readonly eagerPreloadCount: number;
+  private readonly maxSimultaneousPreloads: number;
+  private readonly isMobileDevice: boolean;
   private preloadedTags: Array<{ id: string; name: string }> = [];
   private preloadedPerformers: Array<{ id: string; name: string; image_path?: string }> = [];
   private isPreloading: boolean = false;
+  private backgroundPreloadActive: boolean = false;
+  private backgroundPreloadHandle?: number;
+  private backgroundPreloadPriorityQueue: string[] = [];
+  private activePreloadPosts: Set<string> = new Set();
+  private lastScrollTop: number = 0;
+  private lastScrollTime: number = 0;
+  private scrollVelocity: number = 0;
+  private currentlyPreloadingCount: number = 0;
+  private mobilePreloadQueue: string[] = [];
+  private mobilePreloadActive: boolean = false;
+  private thumbnailQueue: Array<{ postId: string; thumbnail: HTMLImageElement; url: string; container: HTMLElement; distance: number }> = [];
+  private thumbnailBatchActive: boolean = false;
+  private thumbnailObserver?: IntersectionObserver;
+  private readonly thumbnailBatchSize: number = 3; // Load 3 thumbnails at a time
+  private readonly thumbnailBatchDelay: number = 200; // 200ms delay between batches
+  private thumbnailLoadStarted: boolean = false;
+  private readonly initialLoadLimit: number = 12; // Load 12 items on initial load for faster page load
+  private readonly subsequentLoadLimit: number = 20; // Load 20 items on subsequent loads
 
   constructor(container: HTMLElement, api?: StashAPI, settings?: Partial<FeedSettings>) {
     this.container = container;
     this.api = api || new StashAPI();
     this.settings = { ...DEFAULT_SETTINGS, ...settings };
+
+    const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+    this.isMobileDevice = /iPhone|iPad|iPod|Android/i.test(userAgent);
+    // Disabled eager preload - videos now load on-demand when close to viewport (50px) or on click
+    // This prevents early video loads that compete with thumbnail loading
+    this.eagerPreloadCount = 0; // No eager preloading - let Intersection Observer handle it
+    // Reduced from 6 to 3 on mobile to prevent network congestion
+    this.maxSimultaneousPreloads = this.isMobileDevice ? 3 : 4;
+
+    if (this.isMobileDevice) {
+      this.settings.backgroundPreloadDelay = 80;
+      this.settings.backgroundPreloadFastScrollDelay = 200;
+    }
     this.posts = new Map();
     this.postOrder = [];
     this.eagerPreloadedPosts = new Set();
@@ -94,8 +131,8 @@ export class FeedContainer {
     // Unlock autoplay on mobile after first user interaction
     this.unlockMobileAutoplay();
 
-    // Kick off background suggestion preload early for faster search suggestions
-    this.preloadSuggestions().catch((e) => console.warn('Initial suggestion preload failed', e));
+    // Defer suggestion preload until after initial videos load to avoid competing for bandwidth
+    // Will be triggered lazily when user opens filter dropdown or after initial load completes
   }
   
   /**
@@ -182,11 +219,8 @@ export class FeedContainer {
    * Create top header bar with unified search
    */
   private createHeaderBar(): void {
-    // Cache saved filters
+    // Saved filters will be loaded lazily when filter dropdown opens
     let savedFiltersCache: Array<{ id: string; name: string }> = [];
-    this.api.fetchSavedMarkerFilters().then((items) => {
-      savedFiltersCache = items.map((f) => ({ id: f.id, name: f.name }));
-    }).catch((e) => console.error('Failed to load saved marker filters', e));
 
     const header = document.createElement('div');
     this.headerBar = header;
@@ -456,7 +490,7 @@ export class FeedContainer {
         primary_tags: primaryTags,
         performers: performers,
         savedFilterId: this.selectedSavedFilter?.id || undefined,
-        limit: 20,
+        limit: this.initialLoadLimit,
         offset: 0,
       };
       this.currentFilters = newFilters;
@@ -629,6 +663,9 @@ export class FeedContainer {
 
       ensurePanelVisible();
 
+      // Clear any existing containers to prevent duplicates
+      suggestions.innerHTML = '';
+
       const container = document.createElement('div');
       container.style.display = 'flex';
       container.style.flexDirection = 'column';
@@ -649,14 +686,11 @@ export class FeedContainer {
       if (showDefault) {
         // If preload isn't ready, fetch fresh data immediately for first load
         if (this.preloadedTags.length === 0 || this.preloadedPerformers.length === 0) {
-          // Start background preload but don't wait
-          this.preloadSuggestions().catch((e) => console.warn('Preload suggestions (default) failed', e));
-          
-          // Fetch fresh data immediately for instant display
+          // Fetch fresh data immediately for instant display (reduced from 40 to 20)
           try {
             const [freshTags, freshPerformers] = await Promise.all([
-              this.api.searchMarkerTags('', 40),
-              this.api.searchPerformers('', 40)
+              this.api.searchMarkerTags('', 20),
+              this.api.searchPerformers('', 20)
             ]);
             if (!ensureLatest()) {
               return;
@@ -720,7 +754,7 @@ export class FeedContainer {
                 this.selectedPerformerName = undefined;
                 this.closeSuggestions();
                 updateSearchBarDisplay();
-            this.currentFilters = { savedFilterId: filter.id, limit: 20, offset: 0 };
+            this.currentFilters = { savedFilterId: filter.id, limit: this.initialLoadLimit, offset: 0 };
                 this.loadVideos(this.currentFilters, false).catch((e) => console.error('Apply saved filter failed', e));
           }));
         });
@@ -826,7 +860,7 @@ export class FeedContainer {
               this.selectedPerformerName = undefined;
           this.closeSuggestions();
           updateSearchBarDisplay();
-              this.currentFilters = { savedFilterId: filter.id, limit: 20, offset: 0 };
+              this.currentFilters = { savedFilterId: filter.id, limit: this.initialLoadLimit, offset: 0 };
               this.loadVideos(this.currentFilters, false).catch((e) => console.error('Apply saved filter failed', e));
             })
           );
@@ -928,19 +962,12 @@ export class FeedContainer {
     
     queryInput.addEventListener('keydown', (e) => { if ((e as KeyboardEvent).key === 'Enter') apply(); });
     
-    // Prevent clicks on input from bubbling to document click handler
-    queryInput.addEventListener('click', (e) => {
-      e.stopPropagation();
-      // Ensure focus without scrolling jump
-      try {
-        queryInput.focus({ preventScroll: true } as FocusOptions);
-      } catch {
-          queryInput.focus();
-        }
-      fetchAndShowSuggestions(queryInput.value, true);
-    });
-    
-    queryInput.addEventListener('focus', () => {
+    // Handle focus and show suggestions
+    let focusHandled = false;
+    const handleFocus = () => {
+      if (focusHandled) return;
+      focusHandled = true;
+      
       // Ensure background suggestions stay fresh
       this.preloadSuggestions().catch((e) => console.warn('Suggestion preload refresh failed', e));
       
@@ -955,7 +982,57 @@ export class FeedContainer {
       queryInput.value = '';
       
       fetchAndShowSuggestions('', true);
-    });
+      
+      // Reset flag after a short delay
+      setTimeout(() => { focusHandled = false; }, 100);
+    };
+    
+    // Detect mobile device
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    
+    if (isMobile) {
+      // Mobile: use touchend for immediate focus response
+      queryInput.addEventListener('touchend', (e) => {
+        e.stopPropagation();
+        // Ensure focus without scrolling jump
+        try {
+          queryInput.focus({ preventScroll: true } as FocusOptions);
+        } catch {
+          queryInput.focus();
+        }
+        handleFocus();
+      }, { passive: false });
+      
+      // Click handler as fallback (shouldn't fire if touchend worked, but keep for compatibility)
+      queryInput.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Focus might already be handled by touchend, but ensure it's focused
+        if (document.activeElement !== queryInput) {
+          try {
+            queryInput.focus({ preventScroll: true } as FocusOptions);
+          } catch {
+            queryInput.focus();
+          }
+        }
+        if (!focusHandled) {
+          fetchAndShowSuggestions(queryInput.value, true);
+        }
+      });
+    } else {
+      // Desktop: use click and focus handlers
+      queryInput.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Ensure focus without scrolling jump
+        try {
+          queryInput.focus({ preventScroll: true } as FocusOptions);
+        } catch {
+          queryInput.focus();
+        }
+        fetchAndShowSuggestions(queryInput.value, true);
+      });
+    }
+    
+    queryInput.addEventListener('focus', handleFocus);
     
     queryInput.addEventListener('blur', () => {
       queryInput.style.background = 'rgba(28, 28, 30, 0.6)';
@@ -1119,7 +1196,7 @@ export class FeedContainer {
       primary_tags: primaryTags,
       performers: performers,
       savedFilterId: this.selectedSavedFilter?.id || undefined,
-      limit: 20,
+      limit: this.initialLoadLimit,
       offset: 0,
     };
     this.currentFilters = newFilters;
@@ -1195,17 +1272,25 @@ export class FeedContainer {
     favoritesOpt.textContent = 'Favorites';
     savedSelect.appendChild(favoritesOpt);
 
-    // Cache saved filters and populate select
+    // Load saved filters lazily when filter sheet opens
     let savedFiltersCache: Array<{ id: string; name: string }> = [];
-    this.api.fetchSavedMarkerFilters().then((items) => {
-      savedFiltersCache = items.map((f) => ({ id: f.id, name: f.name }));
-      for (const f of savedFiltersCache) {
-        const opt = document.createElement('option');
-        opt.value = f.id;
-        opt.textContent = f.name;
-        savedSelect.appendChild(opt);
+    let savedFiltersLoaded = false;
+    const loadSavedFilters = async () => {
+      if (savedFiltersLoaded) return;
+      savedFiltersLoaded = true;
+      try {
+        const items = await this.api.fetchSavedMarkerFilters();
+        savedFiltersCache = items.map((f) => ({ id: f.id, name: f.name }));
+        for (const f of savedFiltersCache) {
+          const opt = document.createElement('option');
+          opt.value = f.id;
+          opt.textContent = f.name;
+          savedSelect.appendChild(opt);
+        }
+      } catch (e) {
+        console.error('Failed to load saved marker filters', e);
       }
-    }).catch((e) => console.error('Failed to load saved marker filters', e));
+    };
 
     // Search input with autocomplete for marker tags
     const searchWrapper = document.createElement('div');
@@ -1287,7 +1372,7 @@ export class FeedContainer {
         query: q || undefined,
         primary_tags: this.selectedTagId ? [String(this.selectedTagId)] : undefined,
         savedFilterId: savedId,
-        limit: 20,
+        limit: this.initialLoadLimit,
         offset: 0,
       };
       this.currentFilters = newFilters;
@@ -1712,6 +1797,8 @@ export class FeedContainer {
       backdrop.style.opacity = '1';
       backdrop.style.pointerEvents = 'auto';
       lockScroll();
+      // Load saved filters lazily when panel opens
+      loadSavedFilters().catch((e) => console.warn('Failed to load saved filters on open', e));
       // Focus input for quick typing on mobile
       (queryInput as HTMLInputElement).focus();
     };
@@ -1748,9 +1835,14 @@ export class FeedContainer {
     this.currentFilters = filters;
     await this.loadVideos(filters);
     
-    // Preload suggestions in the background after initialization
-    // Don't await - let it run asynchronously so it doesn't block initialization
-    this.preloadSuggestions().catch((e) => console.warn('Preload suggestions failed', e));
+    // Defer suggestion preloading significantly to avoid competing with initial load
+    // Wait 10 seconds on mobile, 5 seconds on desktop to ensure initial content is loaded first
+    if (typeof window !== 'undefined') {
+      const suggestionDelay = this.isMobileDevice ? 10000 : 5000;
+      window.setTimeout(() => {
+        this.preloadSuggestions().catch((e) => console.warn('Preload suggestions failed', e));
+      }, suggestionDelay);
+    }
   }
 
   /**
@@ -1764,10 +1856,10 @@ export class FeedContainer {
 
     this.isPreloading = true;
     try {
-      // Fetch tags and performers in parallel (40 to match what's used in suggestions)
+      // Fetch tags and performers in parallel (reduced from 40 to 20 for faster loading)
       const [tags, performers] = await Promise.all([
-        this.api.searchMarkerTags('', 40),
-        this.api.searchPerformers('', 40)
+        this.api.searchMarkerTags('', 20),
+        this.api.searchPerformers('', 20)
       ]);
 
       // Store in cache
@@ -1801,10 +1893,19 @@ export class FeedContainer {
       const page = append ? this.currentPage + 1 : 1;
       
       
+      // Load fewer items on initial load for faster page load, more on subsequent loads
+      const limit = append ? this.subsequentLoadLimit : (currentFilters.limit || this.initialLoadLimit);
+      
+      // Calculate offset: page 1 = 0, page 2 = initialLoadLimit, page 3+ = initialLoadLimit + (page-2) * subsequentLoadLimit
+      let offset = 0;
+      if (append && page > 1) {
+        offset = this.initialLoadLimit + (page - 2) * this.subsequentLoadLimit;
+      }
+      
       const markers = await this.api.fetchSceneMarkers({
         ...currentFilters,
-        limit: currentFilters.limit || 20,
-        offset: append ? (page - 1) * (currentFilters.limit || 20) : 0,
+        limit,
+        offset,
       });
       
       // Markers are fetched with random sorting from GraphQL API
@@ -1827,7 +1928,8 @@ export class FeedContainer {
       }
 
       // Check if we got fewer results than requested (means no more pages)
-      if (markers.length < (currentFilters.limit || 20)) {
+      const expectedLimit = append ? this.subsequentLoadLimit : (currentFilters.limit || this.initialLoadLimit);
+      if (markers.length < expectedLimit) {
         this.hasMore = false;
       }
 
@@ -1840,10 +1942,52 @@ export class FeedContainer {
         this.currentPage = page;
       }
 
-      // Autoplay first two on initial load (page 1) so they start without scroll
+      // Batch load all thumbnails on initial load before videos start
+      // Use double requestAnimationFrame or setTimeout to ensure all thumbnails are registered
       if (!append && page === 1) {
-        await this.autoplayInitial(2).catch((e) => console.warn('Autoplay initial failed', e));
+        // Mark that we've started loading to allow late registrations to trigger batch load
+        this.thumbnailLoadStarted = true;
+        // Use double requestAnimationFrame + mobile delay to ensure DOM is ready
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            // Add mobile-specific delay to account for slower DOM updates
+            const delay = this.isMobileDevice ? 100 : 0;
+            if (delay > 0) {
+              window.setTimeout(() => {
+                this.startThumbnailBatchLoad();
+              }, delay);
+            } else {
+              this.startThumbnailBatchLoad();
+            }
+          });
+        });
+      } else if (append) {
+        // For appended pages, also batch load new thumbnails
+        this.thumbnailLoadStarted = true;
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            const delay = this.isMobileDevice ? 100 : 0;
+            if (delay > 0) {
+              window.setTimeout(() => {
+                this.startThumbnailBatchLoad();
+              }, delay);
+            } else {
+              this.startThumbnailBatchLoad();
+            }
+          });
+        });
       }
+
+      // Autoplay first two on initial load (page 1) so they start without scroll
+      // Delay autoplay to let thumbnails load first
+      if (!append && page === 1) {
+        // Wait for first batch of thumbnails to start loading before autoplay
+        window.setTimeout(() => {
+          this.autoplayInitial(2).catch((e) => console.warn('Autoplay initial failed', e));
+        }, 500);
+      }
+      // Suggestion preloading is handled in init() with longer delay
+      // Background preloading disabled - videos load on-demand when close to viewport (50px) or on click
 
       this.hideLoading();
       
@@ -1908,14 +2052,43 @@ export class FeedContainer {
     // Observe for visibility
     this.visibilityManager.observePost(postContainer, marker.id);
 
-    // Load video when it becomes visible (aggressive preloading, especially on mobile)
-    // Load videos much earlier to prevent black screens
+    // Register thumbnail synchronously (before video loading logic)
+    // Get thumbnail element directly from VideoPost instead of querying DOM
+    if (thumbnailUrl) {
+      const thumbnail = post.getThumbnailElement();
+      if (thumbnail) {
+        this.registerThumbnailForBatch(marker.id, thumbnail, thumbnailUrl, postContainer);
+      }
+    }
+
+    // Load video only when very close to viewport (50px) or on click
+    // Thumbnails are shown first, videos load on-demand to reduce bandwidth
     if (safeVideoUrl) {
-      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-      // Much larger rootMargin on mobile - load videos very early to account for slower mobile networks
-      const rootMargin = isMobile ? '2000px' : '800px';
+      if (this.isMobileDevice) {
+        // On mobile: only load when very close (50px) - no aggressive preloading
+        const rootMargin = '50px';
+        const loadObserver = new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              if (entry.isIntersecting) {
+                const player = post.preload();
+                if (player) {
+                  this.visibilityManager.registerPlayer(marker.id, player);
+                }
+                loadObserver.disconnect();
+              }
+            }
+          },
+          { rootMargin, threshold: 0 }
+        );
+        loadObserver.observe(postContainer);
+        return;
+      }
+
+      // Desktop: load when close to viewport (50px) - much less aggressive than before
+      const rootMargin = '50px';
       
-      // Use Intersection Observer to load video when near viewport
+      // Use Intersection Observer to load video when very close to viewport
       const loadObserver = new IntersectionObserver(
         (entries) => {
           for (const entry of entries) {
@@ -1933,27 +2106,132 @@ export class FeedContainer {
             }
           }
         },
-        { rootMargin, threshold: 0 } // Load as soon as any part enters the expanded viewport
+        { rootMargin, threshold: 0 } // Load when very close to viewport
       );
       loadObserver.observe(postContainer);
     } else {
       console.warn('FeedContainer: No video URL for marker', { markerId: marker.id });
     }
+    // Eager preload disabled - videos load on-demand via Intersection Observer
+  }
 
-    this.scheduleEagerPreload();
+  /**
+   * Register a thumbnail for batched loading
+   */
+  private registerThumbnailForBatch(
+    postId: string, 
+    thumbnail: HTMLImageElement, 
+    url: string, 
+    container: HTMLElement
+  ): void {
+    // Calculate distance from viewport for prioritization
+    // Use fallback if container isn't laid out yet (common on mobile)
+    let distance = this.getViewportDistance(container);
+    if (distance < 0 || !isFinite(distance)) {
+      // Fallback: assume visible if we can't calculate distance
+      distance = 0;
+    }
+    
+    // Add to queue immediately (will be processed in batches)
+    const exists = this.thumbnailQueue.some(item => item.postId === postId);
+    if (!exists && !thumbnail.src) {
+      const wasEmpty = this.thumbnailQueue.length === 0;
+      this.thumbnailQueue.push({
+        postId,
+        thumbnail,
+        url,
+        container,
+        distance
+      });
+      
+      // If queue was empty and batch loading hasn't started, trigger it
+      // This handles late registrations that happen after initial batch load attempt
+      if (wasEmpty && !this.thumbnailBatchActive && this.thumbnailLoadStarted) {
+        // Use a small delay to allow other registrations to complete
+        window.setTimeout(() => {
+          this.startThumbnailBatchLoad();
+        }, this.isMobileDevice ? 100 : 50);
+      }
+    }
+  }
+
+  /**
+   * Start batched thumbnail loading for all queued thumbnails
+   */
+  private startThumbnailBatchLoad(): void {
+    if (this.thumbnailQueue.length === 0 || this.thumbnailBatchActive) {
+      return;
+    }
+
+    // Sort by viewport distance (visible first)
+    this.thumbnailQueue.sort((a, b) => a.distance - b.distance);
+    
+    // Start processing batches
+    this.processThumbnailBatch();
+  }
+
+  /**
+   * Process thumbnail queue in batches
+   */
+  private processThumbnailBatch(): void {
+    if (this.thumbnailQueue.length === 0) {
+      this.thumbnailBatchActive = false;
+      return;
+    }
+
+    this.thumbnailBatchActive = true;
+    
+    // Re-sort queue by viewport distance (prioritize visible thumbnails)
+    // Update distances in case user scrolled
+    this.thumbnailQueue.forEach(item => {
+      item.distance = this.getViewportDistance(item.container);
+    });
+    this.thumbnailQueue.sort((a, b) => a.distance - b.distance);
+
+    // Process a batch
+    const batch = this.thumbnailQueue.splice(0, this.thumbnailBatchSize);
+    
+    // Load all thumbnails in the batch
+    for (const item of batch) {
+      if (!item.thumbnail.src) {
+        item.thumbnail.src = item.url;
+      }
+    }
+
+    // Schedule next batch
+    if (this.thumbnailQueue.length > 0) {
+      window.setTimeout(() => {
+        this.processThumbnailBatch();
+      }, this.thumbnailBatchDelay);
+    } else {
+      this.thumbnailBatchActive = false;
+    }
   }
 
   /**
    * Clear all posts
    */
   private clearPosts(): void {
+    // Stop background preloading
+    this.stopBackgroundPreloading();
+    
     for (const post of this.posts.values()) {
       post.destroy();
     }
     this.posts.clear();
     this.postOrder = [];
     this.eagerPreloadedPosts.clear();
+    this.activePreloadPosts.clear();
+    this.backgroundPreloadPriorityQueue = [];
+    this.currentlyPreloadingCount = 0;
     this.cancelScheduledPreload();
+    this.thumbnailQueue = [];
+    this.thumbnailBatchActive = false;
+    this.thumbnailLoadStarted = false;
+    if (this.thumbnailObserver) {
+      this.thumbnailObserver.disconnect();
+      this.thumbnailObserver = undefined;
+    }
     if (this.postsContainer) {
       this.postsContainer.innerHTML = '';
     }
@@ -1981,6 +2259,8 @@ export class FeedContainer {
 
     // Use Intersection Observer to detect when trigger is visible
     // Use document as root to work with window scrolling
+    // Less aggressive on mobile to prevent loading too much content ahead
+    const rootMargin = this.isMobileDevice ? '50px' : '200px';
     this.scrollObserver = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
@@ -1993,7 +2273,7 @@ export class FeedContainer {
       },
       {
         root: null, // Use viewport (window) as root
-        rootMargin: '200px', // Start loading 200px before reaching the trigger
+        rootMargin, // Start loading before reaching the trigger (less aggressive on mobile)
         threshold: 0.1,
       }
     );
@@ -2170,21 +2450,358 @@ export class FeedContainer {
   }
 
   /**
+   * Calculate distance of element from viewport
+   */
+  private getViewportDistance(element: HTMLElement): number {
+    if (!element) {
+      return 0;
+    }
+    
+    const rect = element.getBoundingClientRect();
+    
+    // Fallback for mobile: if element isn't laid out yet (rect is all zeros), return 0 (assume visible)
+    if (rect.width === 0 && rect.height === 0 && rect.top === 0 && rect.left === 0) {
+      // Element might not be laid out yet, especially on mobile
+      // Check if it's actually in the DOM
+      if (!element.offsetParent && element.style.display !== 'none') {
+        return 0;
+      }
+    }
+    const viewportHeight = window.innerHeight;
+    const viewportTop = 0;
+    const viewportBottom = viewportHeight;
+
+    // If element is above viewport
+    if (rect.bottom < viewportTop) {
+      return viewportTop - rect.bottom;
+    }
+    // If element is below viewport
+    if (rect.top > viewportBottom) {
+      return rect.top - viewportBottom;
+    }
+    // Element is in or overlapping viewport
+    return 0;
+  }
+
+  /**
+   * Calculate preload priority by sorting posts by viewport distance
+   */
+  private calculatePreloadPriority(): string[] {
+    const orderedPosts = this.postOrder
+      .map((id) => {
+        const post = this.posts.get(id);
+        if (!post || !post.hasVideoSource() || post.isPlayerLoaded()) {
+          return null;
+        }
+        const container = post.getContainer();
+        const distance = this.getViewportDistance(container);
+        return { id, distance };
+      })
+      .filter((item): item is { id: string; distance: number } => item !== null)
+      .sort((a, b) => a.distance - b.distance)
+      .map((item) => item.id);
+
+    return orderedPosts;
+  }
+
+  /**
+   * Get next unloaded video from priority queue
+   */
+  private getNextUnloadedVideo(): string | null {
+    // Refresh priority queue if empty
+    if (this.backgroundPreloadPriorityQueue.length === 0) {
+      this.backgroundPreloadPriorityQueue = this.calculatePreloadPriority();
+    }
+
+    // Remove already loaded videos from queue
+    while (this.backgroundPreloadPriorityQueue.length > 0) {
+      const postId = this.backgroundPreloadPriorityQueue[0];
+      const post = this.posts.get(postId);
+      
+      if (!post || post.isPlayerLoaded() || !post.hasVideoSource()) {
+        this.backgroundPreloadPriorityQueue.shift();
+        continue;
+      }
+
+      if (this.activePreloadPosts.has(postId)) {
+        this.backgroundPreloadPriorityQueue.shift();
+        continue;
+      }
+
+      // Check if already in eager preload set
+      if (this.eagerPreloadedPosts.has(postId)) {
+        this.backgroundPreloadPriorityQueue.shift();
+        continue;
+      }
+
+      return postId;
+    }
+
+    return null;
+  }
+
+  /**
+   * Calculate delay based on scroll velocity
+   */
+  private getPreloadDelay(): number {
+    const threshold = this.settings.backgroundPreloadScrollVelocityThreshold ?? 2.0;
+    const normalDelay = this.settings.backgroundPreloadDelay ?? 150;
+    const fastScrollDelay = this.settings.backgroundPreloadFastScrollDelay ?? 400;
+
+    if (this.scrollVelocity > threshold) {
+      return fastScrollDelay;
+    }
+
+    return normalDelay;
+  }
+
+  /**
+   * Check if preloading should be throttled
+   */
+  private shouldThrottlePreloading(): boolean {
+    // Check if tab is in background
+    if (typeof document !== 'undefined' && document.hidden) {
+      return true;
+    }
+
+    // Check if we've hit concurrent preload limit
+    if (this.currentlyPreloadingCount >= this.maxSimultaneousPreloads) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Track an active background preload and decrement counters when ready or timed out
+   */
+  private trackBackgroundPreload(postId: string, player: NativeVideoPlayer): void {
+    if (this.activePreloadPosts.has(postId)) {
+      return;
+    }
+
+    this.activePreloadPosts.add(postId);
+    this.currentlyPreloadingCount += 1;
+
+    const readinessTimeout = 5000;
+    const scheduleTimeout = (cb: () => void, delay: number) => {
+      if (typeof window !== 'undefined' && typeof window.setTimeout === 'function') {
+        window.setTimeout(cb, delay);
+      } else {
+        setTimeout(cb, delay);
+      }
+    };
+    const waitForReady = async (): Promise<void> => {
+      try {
+        await Promise.race([
+          player.waitUntilCanPlay(3000).catch(() => undefined),
+          new Promise<void>((resolve) => {
+            scheduleTimeout(() => resolve(), readinessTimeout);
+          }),
+        ]);
+      } catch {
+        // Ignore readiness errors – cleanup happens in finally
+      } finally {
+        this.activePreloadPosts.delete(postId);
+        this.currentlyPreloadingCount = Math.max(0, this.currentlyPreloadingCount - 1);
+      }
+    };
+
+    waitForReady().catch(() => {
+      this.activePreloadPosts.delete(postId);
+      this.currentlyPreloadingCount = Math.max(0, this.currentlyPreloadingCount - 1);
+    });
+  }
+
+  /**
+   * Process mobile preload queue with controlled concurrency
+   */
+  private processMobilePreloadQueue(): void {
+    if (this.mobilePreloadQueue.length === 0) {
+      this.mobilePreloadActive = false;
+      return;
+    }
+
+    // Check if we've reached max concurrent preloads
+    if (this.currentlyPreloadingCount >= this.maxSimultaneousPreloads) {
+      // Retry after a short delay
+      window.setTimeout(() => {
+        this.processMobilePreloadQueue();
+      }, 100);
+      return;
+    }
+
+    const postId = this.mobilePreloadQueue.shift();
+    if (!postId) {
+      this.mobilePreloadActive = false;
+      return;
+    }
+
+    const post = this.posts.get(postId);
+    if (!post || post.isPlayerLoaded() || !post.hasVideoSource()) {
+      // Skip and continue
+      this.processMobilePreloadQueue();
+      return;
+    }
+
+    // Mark as active
+    this.currentlyPreloadingCount++;
+    this.activePreloadPosts.add(postId);
+
+    // Preload the video
+    try {
+      const player = post.preload();
+      if (player) {
+        this.visibilityManager.registerPlayer(postId, player);
+        this.trackBackgroundPreload(postId, player);
+      } else {
+        this.currentlyPreloadingCount = Math.max(0, this.currentlyPreloadingCount - 1);
+        this.activePreloadPosts.delete(postId);
+      }
+    } catch (error) {
+      console.warn('Mobile preload failed for post', postId, error);
+      this.currentlyPreloadingCount = Math.max(0, this.currentlyPreloadingCount - 1);
+      this.activePreloadPosts.delete(postId);
+    }
+
+    // Continue processing queue with a small delay to prevent network congestion
+    // Add delay between queue items on mobile to space out requests
+    const delay = this.isMobileDevice ? 150 : 0;
+    if (delay > 0) {
+      window.setTimeout(() => {
+        this.processMobilePreloadQueue();
+      }, delay);
+    } else {
+      this.processMobilePreloadQueue();
+    }
+  }
+
+  /**
+   * Process next video in background preload queue
+   */
+  private preloadNextVideo(): void {
+    // Check if preloading should be paused
+    if (this.shouldThrottlePreloading()) {
+      // Schedule next attempt after delay
+      const delay = this.getPreloadDelay();
+      this.backgroundPreloadHandle = window.setTimeout(() => {
+        this.preloadNextVideo();
+      }, delay);
+      return;
+    }
+
+    // Get next video to preload
+    const postId = this.getNextUnloadedVideo();
+    if (!postId) {
+      // No more videos to preload, stop background preloading
+      this.backgroundPreloadActive = false;
+      return;
+    }
+
+    const post = this.posts.get(postId);
+    if (!post || post.isPlayerLoaded() || !post.hasVideoSource()) {
+      // Skip this one and try next
+      this.backgroundPreloadPriorityQueue.shift();
+      this.preloadNextVideo();
+      return;
+    }
+
+    // Mark as preloaded to avoid duplicates
+    this.eagerPreloadedPosts.add(postId);
+
+    // Preload the video
+    try {
+      const player = post.preload();
+      if (player) {
+        this.visibilityManager.registerPlayer(postId, player);
+        this.trackBackgroundPreload(postId, player);
+      }
+    } catch (error) {
+      console.warn('Background preload failed for post', postId, error);
+    }
+
+    // Remove from queue
+    this.backgroundPreloadPriorityQueue.shift();
+
+    // Schedule next preload
+    const delay = this.getPreloadDelay();
+    this.backgroundPreloadHandle = window.setTimeout(() => {
+      this.preloadNextVideo();
+    }, delay);
+  }
+
+  /**
+   * Start background preloading system
+   */
+  private startBackgroundPreloading(): void {
+    // Check if enabled
+    if (!this.settings.backgroundPreloadEnabled) {
+      return;
+    }
+
+    // Don't start if already active
+    if (this.backgroundPreloadActive) {
+      return;
+    }
+
+    // Don't start if no posts yet
+    if (this.posts.size === 0) {
+      return;
+    }
+
+    this.backgroundPreloadActive = true;
+    this.backgroundPreloadPriorityQueue = this.calculatePreloadPriority();
+
+    // Start preloading after a short delay
+    const delay = this.getPreloadDelay();
+    this.backgroundPreloadHandle = window.setTimeout(() => {
+      this.preloadNextVideo();
+    }, delay);
+  }
+
+  /**
+   * Stop background preloading
+   */
+  private stopBackgroundPreloading(): void {
+    this.backgroundPreloadActive = false;
+    if (this.backgroundPreloadHandle) {
+      window.clearTimeout(this.backgroundPreloadHandle);
+      this.backgroundPreloadHandle = undefined;
+    }
+  }
+
+  /**
    * Setup scroll handler
-   * Handles header hide/show based on scroll direction
+   * Handles header hide/show based on scroll direction and tracks scroll velocity
    */
   private setupScrollHandler(): void {
     let lastScrollY = window.scrollY;
     let isHeaderHidden = false;
 
+    // Initialize scroll tracking
+    this.lastScrollTop = window.scrollY || document.documentElement.scrollTop;
+    this.lastScrollTime = Date.now();
+
     const handleScroll = () => {
+      // Update scroll velocity for background preloading
+      const now = Date.now();
+      const currentScrollY = window.scrollY || document.documentElement.scrollTop;
+      const timeDelta = now - this.lastScrollTime;
+      
+      if (timeDelta > 0) {
+        const scrollDelta = Math.abs(currentScrollY - this.lastScrollTop);
+        this.scrollVelocity = scrollDelta / timeDelta; // pixels per ms
+      }
+      
+      this.lastScrollTop = currentScrollY;
+      this.lastScrollTime = now;
+
       // Don't hide/show header if suggestions overlay is open
       const suggestions = document.querySelector('.feed-filters__suggestions') as HTMLElement;
       if (suggestions && suggestions.style.display !== 'none' && suggestions.style.display !== '') {
         return;
       }
 
-      const currentScrollY = window.scrollY;
       const scrollDelta = currentScrollY - lastScrollY;
 
       // Only hide/show header if scroll delta is significant enough
@@ -2209,6 +2826,17 @@ export class FeedContainer {
 
     // Use passive listener for better performance
     window.addEventListener('scroll', handleScroll, { passive: true });
+
+    // Listen for page visibility changes to pause/resume preloading
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        // Pause preloading when tab is hidden
+        this.stopBackgroundPreloading();
+      } else if (this.settings.backgroundPreloadEnabled && this.posts.size > 0) {
+        // Resume preloading when tab becomes visible
+        this.startBackgroundPreloading();
+      }
+    });
   }
 
   /**
@@ -2315,6 +2943,7 @@ export class FeedContainer {
    * Cleanup
    */
   cleanup(): void {
+    this.stopBackgroundPreloading();
     this.visibilityManager.cleanup();
     this.clearPosts();
   }

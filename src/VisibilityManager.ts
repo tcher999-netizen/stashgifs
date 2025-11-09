@@ -29,6 +29,7 @@ export class VisibilityManager {
   private scrollVelocity: number = 0;
   private lastScrollTime: number = 0;
   private lastScrollTop: number = 0;
+  private readonly isMobileDevice: boolean;
   private options: {
     threshold: number;
     rootMargin: string;
@@ -46,14 +47,23 @@ export class VisibilityManager {
   }) {
     // On mobile, use larger rootMargin to start playing videos earlier
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    // Much larger rootMargin on mobile - start autoplay much earlier to account for slower networks
-    const defaultRootMargin = isMobile ? '800px' : '300px';
+    this.isMobileDevice = isMobile;
+    // Playback decisions rely on actual viewport visibility – keep root margin tight
+    const defaultRootMargin = '0px';
     
+    const requestedMaxConcurrent = options?.maxConcurrent;
+    const maxConcurrent =
+      requestedMaxConcurrent === undefined
+        ? Number.POSITIVE_INFINITY
+        : requestedMaxConcurrent <= 0
+          ? Number.POSITIVE_INFINITY
+          : requestedMaxConcurrent;
+
     this.options = {
-      threshold: options?.threshold ?? (isMobile ? 0.1 : 0.2), // Even lower threshold on mobile - start at 10% visible
+      threshold: options?.threshold ?? 0, // Only pause when completely out of viewport
       rootMargin: options?.rootMargin ?? defaultRootMargin,
       autoPlay: options?.autoPlay ?? false,
-      maxConcurrent: options?.maxConcurrent ?? 3,
+      maxConcurrent,
     };
 
     this.entries = new Map();
@@ -223,14 +233,31 @@ export class VisibilityManager {
   private computeVisibilityDelay(isEntering: boolean): number {
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     const baseEnter = isMobile ? 40 : 60;
-    const baseExit = isMobile ? 140 : 180;
+    const baseExit = isMobile ? 200 : 250; // Increased exit delay for more consistent pausing
     const base = isEntering ? baseEnter : baseExit;
     const multiplier = 1 + Math.min(this.scrollVelocity * 8, 2);
     return Math.round(base * multiplier);
   }
 
   /**
-   * Handle intersection changes with hysteresis to prevent rapid toggling
+   * Check if element is actually visible in viewport using fresh getBoundingClientRect()
+   */
+  private isActuallyInViewport(element: HTMLElement): boolean {
+    const rect = element.getBoundingClientRect();
+    const viewportHeight = window.innerHeight;
+    const viewportWidth = window.innerWidth;
+    
+    // Element is visible if any part intersects with the actual viewport
+    return rect.bottom > 0 && 
+           rect.top < viewportHeight && 
+           rect.right > 0 && 
+           rect.left < viewportWidth;
+  }
+
+  /**
+   * Handle intersection state transitions with hysteresis to prevent rapid toggling.
+   * Playback decisions rely on true viewport visibility — the entry must intersect,
+   * meet the configured threshold, and overlap with the actual viewport rectangle.
    */
   private handleIntersection(entries: IntersectionObserverEntry[]): void {
     for (const entry of entries) {
@@ -241,7 +268,12 @@ export class VisibilityManager {
       if (!visibilityEntry) continue;
 
       const wasVisible = visibilityEntry.isVisible;
-      const isVisible = entry.isIntersecting && entry.intersectionRatio >= this.options.threshold;
+      const element = visibilityEntry.element;
+      
+      // For playing: use expanded area (with rootMargin) to start early
+      const meetsThreshold = entry.intersectionRatio >= this.options.threshold;
+      const isActuallyVisible = this.isActuallyInViewport(element);
+      const isVisible = entry.isIntersecting && meetsThreshold && isActuallyVisible;
 
       if (isVisible === wasVisible) {
         continue;
@@ -264,11 +296,19 @@ export class VisibilityManager {
         }
 
         if (isVisible) {
-          if (!currentEntry.isVisible) {
+          const stillInViewport = this.isActuallyInViewport(currentEntry.element);
+          if (!currentEntry.isVisible || !stillInViewport) {
+            currentEntry.isVisible = stillInViewport;
             return;
           }
           this.requestPlaybackIfReady(postId, currentEntry, 'observer');
         } else {
+          const stillActuallyVisible = this.isActuallyInViewport(currentEntry.element);
+          if (stillActuallyVisible) {
+            currentEntry.isVisible = true;
+            this.requestPlaybackIfReady(postId, currentEntry, 'observer');
+            return;
+          }
           if (currentEntry.isVisible) {
             return;
           }
@@ -277,7 +317,7 @@ export class VisibilityManager {
       }, delay);
 
       this.pendingOperations.set(postId, timeoutId);
-      this.debugLog('visibility-change', { postId, isVisible, delay });
+      this.debugLog('visibility-change', { postId, isVisible, delay, meetsThreshold, isActuallyVisible });
     }
   }
 
@@ -382,6 +422,18 @@ export class VisibilityManager {
 
     const perform = async (): Promise<void> => {
       try {
+        if (this.isMobileDevice) {
+          try {
+            await player.waitForReady(1500);
+          } catch (err) {
+            this.debugLog('play-wait-ready-timeout', { postId, origin, attempt, error: err });
+          }
+          if (!entry.isVisible) {
+            this.debugLog('play-abort-after-ready-wait', { postId, origin, attempt });
+            return;
+          }
+        }
+
         await player.waitUntilCanPlay(timeout);
         if (!entry.isVisible) {
           return;
@@ -436,6 +488,10 @@ export class VisibilityManager {
   }
 
   private enforceConcurrency(postId: string): void {
+    if (!Number.isFinite(this.options.maxConcurrent) || this.options.maxConcurrent <= 0) {
+      return;
+    }
+
     if (this.activeVideos.has(postId)) {
       this.touchActive(postId);
       return;
@@ -453,7 +509,7 @@ export class VisibilityManager {
     });
 
     if (!candidate) {
-      candidate = active.find((id) => id !== postId);
+      return;
     }
 
     if (candidate) {
