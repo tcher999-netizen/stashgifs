@@ -79,6 +79,7 @@ export class VideoPost {
   private isRatingDialogOpen: boolean = false;
   private isSavingRating: boolean = false;
   private isTogglingFavorite: boolean = false;
+  private videoLoadingIndicator?: HTMLElement;
   
   // Event handlers for cleanup
   private ratingOutsideClickHandler = (event: Event) => this.onRatingOutsideClick(event);
@@ -226,12 +227,13 @@ export class VideoPost {
       // The thumbnail src will be set when it's processed in the batch queue
     }
 
-    // Loading indicator
+    // Loading indicator for video
     const loading = document.createElement('div');
     loading.className = 'video-post__loading';
     loading.innerHTML = '<div class="spinner"></div>';
     loading.style.display = this.isLoaded ? 'none' : 'flex';
     container.appendChild(loading);
+    this.videoLoadingIndicator = loading;
 
     return container;
   }
@@ -1507,11 +1509,18 @@ export class VideoPost {
       return undefined;
     }
 
-    return this.loadPlayer(
+    // Show loading indicator when video starts loading
+    if (this.videoLoadingIndicator && !this.isLoaded) {
+      this.videoLoadingIndicator.style.display = 'flex';
+    }
+
+    const player = this.loadPlayer(
       this.data.videoUrl!,
       this.data.startTime ?? this.data.marker.seconds,
       this.data.endTime ?? this.data.marker.end_seconds
     );
+    
+    return player;
   }
 
   /**
@@ -1562,7 +1571,13 @@ export class VideoPost {
           img.onclick = null;
         }
       }
-      if (loading) loading.style.display = 'none';
+      if (loading) {
+        loading.style.display = 'none';
+        // Mark video as ready
+        if (this.videoLoadingIndicator) {
+          this.videoLoadingIndicator = undefined;
+        }
+      }
     };
 
     const scheduleTimeout = typeof window !== 'undefined'

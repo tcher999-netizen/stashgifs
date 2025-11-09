@@ -25,6 +25,11 @@ export class StashAPI {
   private tagsWithMarkersCache: Set<number> = new Set();
   private performersWithMarkersCache: Set<number> = new Set();;
   private pluginApi?: StashPluginApi;
+  // Request deduplication - cache in-flight requests
+  private pendingRequests: Map<string, Promise<any>> = new Map();
+  // Simple cache for search results (TTL: 5 minutes)
+  private searchCache: Map<string, { data: any; timestamp: number }> = new Map();
+  private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
   constructor(baseUrl?: string, apiKey?: string) {
     // Get from window if available (Stash plugin context)
@@ -318,8 +323,42 @@ export class StashAPI {
   /**
    * Search marker tags (by name) for autocomplete
    * Only returns tags that have more than 10 markers (filtered directly in GraphQL)
+   * Includes request deduplication and caching
    */
-  async searchMarkerTags(term: string, limit: number = 10): Promise<Array<{ id: string; name: string }>> {
+  async searchMarkerTags(term: string, limit: number = 10, signal?: AbortSignal): Promise<Array<{ id: string; name: string }>> {
+    // Check cache first
+    const cacheKey = `tags:${term}:${limit}`;
+    const cached = this.searchCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+      return cached.data;
+    }
+    
+    // Check for in-flight request (deduplication)
+    const requestKey = `searchMarkerTags:${term}:${limit}`;
+    const pending = this.pendingRequests.get(requestKey);
+    if (pending) {
+      return pending;
+    }
+    
+    // Create new request
+    const request = this._searchMarkerTags(term, limit, signal);
+    this.pendingRequests.set(requestKey, request);
+    
+    try {
+      const result = await request;
+      // Cache the result
+      this.searchCache.set(cacheKey, { data: result, timestamp: Date.now() });
+      return result;
+    } finally {
+      // Remove from pending requests
+      this.pendingRequests.delete(requestKey);
+    }
+  }
+  
+  /**
+   * Internal implementation of searchMarkerTags
+   */
+  private async _searchMarkerTags(term: string, limit: number = 10, signal?: AbortSignal): Promise<Array<{ id: string; name: string }>> {
     const query = `query FindTags($filter: FindFilterType, $tag_filter: TagFilterType) {
       findTags(filter: $filter, tag_filter: $tag_filter) {
         tags { id name }
@@ -350,9 +389,14 @@ export class StashAPI {
     const variables = { filter, tag_filter };
 
     try {
+      // Check if already aborted
+      if (signal?.aborted) return [];
+      
       let tags: Array<{ id: string; name: string }> = [];
       if (this.pluginApi?.GQL?.client) {
         const result = await this.pluginApi.GQL.client.query({ query: query as any, variables });
+        // Check if aborted after query
+        if (signal?.aborted) return [];
         tags = result.data?.findTags?.tags ?? [];
       } else {
         const response = await fetch(`${this.baseUrl}/graphql`, {
@@ -362,17 +406,27 @@ export class StashAPI {
             ...(this.apiKey && { 'ApiKey': this.apiKey }),
           },
           body: JSON.stringify({ query, variables }),
+          signal,
         });
+        if (signal?.aborted) return [];
         if (!response.ok) return [];
         const data = await response.json();
+        if (signal?.aborted) return [];
         tags = data.data?.findTags?.tags ?? [];
       }
+      
+      // Check if aborted before processing
+      if (signal?.aborted) return [];
       
       // Sort alphabetically by name and return up to limit
       return tags
         .sort((a, b) => a.name.localeCompare(b.name))
         .slice(0, limit);
-    } catch (e) {
+    } catch (e: any) {
+      // Ignore AbortError - it's expected when cancelling
+      if (e.name === 'AbortError' || signal?.aborted) {
+        return [];
+      }
       console.warn('searchMarkerTags failed', e);
       return [];
     }
@@ -381,8 +435,42 @@ export class StashAPI {
   /**
    * Search performers (by name) for autocomplete
    * Only returns performers that have more than 1 scene (filtered directly in GraphQL)
+   * Includes request deduplication and caching
    */
-  async searchPerformers(term: string, limit: number = 10): Promise<Array<{ id: string; name: string; image_path?: string }>> {
+  async searchPerformers(term: string, limit: number = 10, signal?: AbortSignal): Promise<Array<{ id: string; name: string; image_path?: string }>> {
+    // Check cache first
+    const cacheKey = `performers:${term}:${limit}`;
+    const cached = this.searchCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+      return cached.data;
+    }
+    
+    // Check for in-flight request (deduplication)
+    const requestKey = `searchPerformers:${term}:${limit}`;
+    const pending = this.pendingRequests.get(requestKey);
+    if (pending) {
+      return pending;
+    }
+    
+    // Create new request
+    const request = this._searchPerformers(term, limit, signal);
+    this.pendingRequests.set(requestKey, request);
+    
+    try {
+      const result = await request;
+      // Cache the result
+      this.searchCache.set(cacheKey, { data: result, timestamp: Date.now() });
+      return result;
+    } finally {
+      // Remove from pending requests
+      this.pendingRequests.delete(requestKey);
+    }
+  }
+  
+  /**
+   * Internal implementation of searchPerformers
+   */
+  private async _searchPerformers(term: string, limit: number = 10, signal?: AbortSignal): Promise<Array<{ id: string; name: string; image_path?: string }>> {
     const query = `query FindPerformers($filter: FindFilterType, $performer_filter: PerformerFilterType) {
       findPerformers(filter: $filter, performer_filter: $performer_filter) {
         performers { id name image_path }
@@ -413,9 +501,14 @@ export class StashAPI {
     const variables = { filter, performer_filter };
 
     try {
+      // Check if already aborted
+      if (signal?.aborted) return [];
+      
       let performers: Array<{ id: string; name: string; image_path?: string }> = [];
       if (this.pluginApi?.GQL?.client) {
         const result = await this.pluginApi.GQL.client.query({ query: query as any, variables });
+        // Check if aborted after query
+        if (signal?.aborted) return [];
         performers = result.data?.findPerformers?.performers ?? [];
       } else {
         const response = await fetch(`${this.baseUrl}/graphql`, {
@@ -425,17 +518,27 @@ export class StashAPI {
             ...(this.apiKey && { 'ApiKey': this.apiKey }),
           },
           body: JSON.stringify({ query, variables }),
+          signal,
         });
+        if (signal?.aborted) return [];
         if (!response.ok) return [];
         const data = await response.json();
+        if (signal?.aborted) return [];
         performers = data.data?.findPerformers?.performers ?? [];
       }
+      
+      // Check if aborted before processing
+      if (signal?.aborted) return [];
       
       // Sort alphabetically by name and return up to limit
       return performers
         .sort((a, b) => a.name.localeCompare(b.name))
         .slice(0, limit);
-    } catch (e) {
+    } catch (e: any) {
+      // Ignore AbortError - it's expected when cancelling
+      if (e.name === 'AbortError' || signal?.aborted) {
+        return [];
+      }
       console.warn('searchPerformers failed', e);
       return [];
     }
@@ -445,11 +548,16 @@ export class StashAPI {
   /**
    * Fetch saved marker filters from Stash
    */
-  async fetchSavedMarkerFilters(): Promise<Array<{ id: string; name: string }>> {
+  async fetchSavedMarkerFilters(signal?: AbortSignal): Promise<Array<{ id: string; name: string }>> {
     const query = `query GetSavedMarkerFilters { findSavedFilters(mode: SCENE_MARKERS) { id name } }`;
     try {
+      // Check if already aborted
+      if (signal?.aborted) return [];
+      
       if (this.pluginApi?.GQL?.client) {
         const result = await this.pluginApi.GQL.client.query({ query: query as any });
+        // Check if aborted after query
+        if (signal?.aborted) return [];
         return result.data?.findSavedFilters || [];
       }
       const response = await fetch(`${this.baseUrl}/graphql`, {
@@ -459,10 +567,18 @@ export class StashAPI {
           ...(this.apiKey && { 'ApiKey': this.apiKey }),
         },
         body: JSON.stringify({ query }),
+        signal,
       });
+      if (signal?.aborted) return [];
+      if (!response.ok) return [];
       const data = await response.json();
+      if (signal?.aborted) return [];
       return data.data?.findSavedFilters || [];
-    } catch (e) {
+    } catch (e: any) {
+      // Ignore AbortError - it's expected when cancelling
+      if (e.name === 'AbortError' || signal?.aborted) {
+        return [];
+      }
       console.error('Error fetching saved marker filters:', e);
       return [];
     }
@@ -514,11 +630,15 @@ export class StashAPI {
    * Note: Stash's SceneMarkerFilterType only supports filtering by primary_tag, not by tags array.
    * For non-primary tags, we fetch markers and filter client-side.
    */
-  async fetchSceneMarkers(filters?: FilterOptions): Promise<SceneMarker[]> {
+  async fetchSceneMarkers(filters?: FilterOptions, signal?: AbortSignal): Promise<SceneMarker[]> {
+    // Check if already aborted
+    if (signal?.aborted) return [];
+    
     // If a saved filter is specified, fetch its criteria first
     let savedFilterCriteria: any = null;
     if (filters?.savedFilterId) {
       savedFilterCriteria = await this.getSavedFilter(filters.savedFilterId);
+      if (signal?.aborted) return [];
     }
 
     // Query for scene markers based on FindSceneMarkersForTv
@@ -633,6 +753,7 @@ export class StashAPI {
         }
         
         try {
+          if (signal?.aborted) return [];
           if (this.pluginApi?.GQL?.client) {
             const countResult = await this.pluginApi.GQL.client.query({
               query: countQuery as any,
@@ -641,6 +762,7 @@ export class StashAPI {
                 scene_marker_filter: Object.keys(countSceneFilter).length > 0 ? countSceneFilter : {},
               },
             });
+            if (signal?.aborted) return [];
             const totalCount = countResult.data?.findSceneMarkers?.count || 0;
             if (totalCount > 0) {
               const totalPages = Math.ceil(totalCount / limit);
@@ -660,19 +782,29 @@ export class StashAPI {
                   scene_marker_filter: Object.keys(countSceneFilter).length > 0 ? countSceneFilter : {},
                 },
               }),
+              signal,
             });
+            if (signal?.aborted) return [];
+            if (!countResponse.ok) return [];
             const countData = await countResponse.json();
+            if (signal?.aborted) return [];
             const totalCount = countData.data?.findSceneMarkers?.count || 0;
             if (totalCount > 0) {
               const totalPages = Math.ceil(totalCount / limit);
               page = Math.floor(Math.random() * totalPages) + 1;
             }
           }
-        } catch (e) {
+        } catch (e: any) {
+          if (e.name === 'AbortError' || signal?.aborted) {
+            return [];
+          }
           console.warn('Failed to get count for random page, using page 1', e);
         }
       }
 
+      // Check if aborted before main query
+      if (signal?.aborted) return [];
+      
       // Try using PluginApi GraphQL client if available
       if (this.pluginApi?.GQL?.client) {
         // Build filter - start with saved filter criteria if available, then allow manual overrides
@@ -731,12 +863,14 @@ export class StashAPI {
             scene_marker_filter: Object.keys(sceneMarkerFilter).length > 0 ? sceneMarkerFilter : {},
           },
         });
+        if (signal?.aborted) return [];
         const responseData = result.data?.findSceneMarkers;
         let markers = responseData?.scene_markers || [];
         if (responseData?.count > 0 && markers.length === 0) {
           console.warn('[StashAPI] Count > 0 but no markers returned - retrying with page 1');
           // If count > 0 but no markers, try page 1 instead
           if (filter.page !== 1) {
+            if (signal?.aborted) return [];
             filter.page = 1;
             const retryResult = await this.pluginApi.GQL.client.query({
               query: query as any,
@@ -745,11 +879,13 @@ export class StashAPI {
                 scene_marker_filter: Object.keys(sceneMarkerFilter).length > 0 ? sceneMarkerFilter : {},
               },
             });
+            if (signal?.aborted) return [];
             const retryData = retryResult.data?.findSceneMarkers;
             markers = retryData?.scene_markers || [];
           }
         }
         
+        if (signal?.aborted) return [];
         return markers;
       }
 
@@ -818,8 +954,10 @@ export class StashAPI {
           query: query.trim(),
           variables,
         }),
+        signal,
       });
 
+      if (signal?.aborted) return [];
       if (!response.ok) {
         const errorText = await response.text();
         console.error('GraphQL request failed', {
@@ -831,6 +969,7 @@ export class StashAPI {
       }
 
       const data = await response.json();
+      if (signal?.aborted) return [];
       
       if (data.errors) {
         console.error('GraphQL errors:', data.errors);
@@ -843,6 +982,7 @@ export class StashAPI {
         console.warn('[StashAPI] Count > 0 but no markers returned - possible page calculation issue');
         // If count > 0 but no markers, try page 1 instead
         if (filter.page !== 1) {
+          if (signal?.aborted) return [];
           filter.page = 1;
           const retryResponse = await fetch(`${this.baseUrl}/graphql`, {
             method: 'POST',
@@ -857,9 +997,12 @@ export class StashAPI {
                 scene_marker_filter: Object.keys(sceneMarkerFilter).length > 0 ? sceneMarkerFilter : {}
               },
             }),
+            signal,
           });
+          if (signal?.aborted) return [];
           if (retryResponse.ok) {
             const retryData = await retryResponse.json();
+            if (signal?.aborted) return [];
             if (!retryData.errors) {
               markers = retryData.data?.findSceneMarkers?.scene_markers || [];
             }
@@ -867,9 +1010,14 @@ export class StashAPI {
         }
       }
       
+      if (signal?.aborted) return [];
       return markers;
-    } catch (error) {
-      console.error('Error fetching scene markers:', error);
+    } catch (e: any) {
+      // Ignore AbortError - it's expected when cancelling
+      if (e.name === 'AbortError' || signal?.aborted) {
+        return [];
+      }
+      console.error('Error fetching scene markers:', e);
       return [];
     }
   }

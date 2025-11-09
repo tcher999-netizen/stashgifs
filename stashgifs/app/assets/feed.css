@@ -177,6 +177,54 @@
   color: #ff4444;
 }
 
+/* Skeleton Loaders */
+.video-post-skeleton {
+  opacity: 0.6;
+}
+
+.chip-skeleton,
+.button-skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.08) 0%,
+    rgba(255, 255, 255, 0.12) 50%,
+    rgba(255, 255, 255, 0.08) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  will-change: background-position;
+}
+
+.video-post-skeleton .video-post__player {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.05) 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.05) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  will-change: background-position;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes spin {
+  0% {
+    transform: translateY(-50%) rotate(0deg);
+  }
+  100% {
+    transform: translateY(-50%) rotate(360deg);
+  }
+}
+
 /* Video Post */
 .video-post-wrapper {
   width: 100%;
@@ -257,8 +305,10 @@
   align-items: center;
   justify-content: center;
   background: rgba(0, 0, 0, 0.3);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  /* Reduce backdrop-filter usage for better performance - use solid background instead */
+  /* backdrop-filter: blur(4px); */
+  /* -webkit-backdrop-filter: blur(4px); */
+  will-change: opacity;
 }
 
 .spinner {
@@ -268,6 +318,7 @@
   border-top-color: var(--color-text-primary);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
+  will-change: transform;
 }
 
 @keyframes spin {
@@ -687,6 +738,7 @@
   transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1), 
               color 0.2s ease,
               opacity 0.2s ease;
+  will-change: transform;
 }
 
 .icon-btn:hover svg,

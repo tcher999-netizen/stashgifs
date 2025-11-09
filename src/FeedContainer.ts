@@ -74,10 +74,13 @@ export class FeedContainer {
   private readonly thumbnailBatchSize: number = 3; // Load 3 thumbnails at a time
   private readonly thumbnailBatchDelay: number = 200; // 200ms delay between batches
   private thumbnailLoadStarted: boolean = false;
-  private readonly initialLoadLimit: number = 12; // Load 12 items on initial load for faster page load
+  private readonly initialLoadLimit: number; // Set in constructor based on device
   private readonly subsequentLoadLimit: number = 20; // Load 20 items on subsequent loads
   private savedFiltersCache: Array<{ id: string; name: string }> = [];
   private savedFiltersLoaded: boolean = false;
+  private activeSearchAbortController?: AbortController;
+  private activeLoadVideosAbortController?: AbortController;
+  private skeletonLoaders: HTMLElement[] = [];
 
   constructor(container: HTMLElement, api?: StashAPI, settings?: Partial<FeedSettings>) {
     this.container = container;
@@ -86,6 +89,10 @@ export class FeedContainer {
 
     const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
     this.isMobileDevice = /iPhone|iPad|iPod|Android/i.test(userAgent);
+    
+    // Mobile: reduce initial load for faster perceived performance
+    this.initialLoadLimit = this.isMobileDevice ? 8 : 12; // Load 8 on mobile, 12 on desktop
+    
     // Disabled eager preload - videos now load on-demand when close to viewport (50px) or on click
     // This prevents early video loads that compete with thumbnail loading
     this.eagerPreloadCount = 0; // No eager preloading - let Intersection Observer handle it
@@ -395,6 +402,23 @@ export class FeedContainer {
     queryInput.style.boxSizing = 'border-box';
     queryInput.style.transition = 'background 0.2s ease, border-color 0.2s ease';
 
+    // Create loading spinner for search input
+    const loadingSpinner = document.createElement('div');
+    loadingSpinner.className = 'feed-search-loading';
+    loadingSpinner.style.display = 'none';
+    loadingSpinner.style.position = 'absolute';
+    loadingSpinner.style.right = '14px';
+    loadingSpinner.style.top = '50%';
+    loadingSpinner.style.transform = 'translateY(-50%)';
+    loadingSpinner.style.width = '16px';
+    loadingSpinner.style.height = '16px';
+    loadingSpinner.style.border = '2px solid rgba(255,255,255,0.3)';
+    loadingSpinner.style.borderTopColor = 'rgba(255,255,255,0.8)';
+    loadingSpinner.style.borderRadius = '50%';
+    loadingSpinner.style.animation = 'spin 0.8s linear infinite';
+    loadingSpinner.style.willChange = 'transform';
+    inputWrapper.appendChild(loadingSpinner);
+
     // Append input to wrapper
     inputWrapper.appendChild(queryInput);
 
@@ -441,6 +465,19 @@ export class FeedContainer {
     };
 
     const apply = async () => {
+      // Show loading state
+      queryInput.disabled = true;
+      queryInput.style.opacity = '0.6';
+      loadingSpinner.style.display = 'block';
+      
+      // Cancel previous loadVideos queries
+      if (this.activeLoadVideosAbortController) {
+        this.activeLoadVideosAbortController.abort();
+      }
+      // Create new AbortController for this load
+      this.activeLoadVideosAbortController = new AbortController();
+      const loadSignal = this.activeLoadVideosAbortController.signal;
+      
       const q = queryInput.value.trim();
       // Use query for text-based search (includes partial matches like "finger" matching "fingers", "finger - pov", etc.)
       // Exception: "cowgirl" should use exact tag matching to exclude "reverse cowgirl"
@@ -458,7 +495,8 @@ export class FeedContainer {
           // For fuzzy matching: search for tags matching the name, then use their IDs
           // This allows "finger" to match "fingers", "finger - pov", etc.
           try {
-            const matchingTags = await this.api.searchMarkerTags(this.selectedTagName, 50);
+            const matchingTags = await this.api.searchMarkerTags(this.selectedTagName, 50, loadSignal);
+            if (loadSignal.aborted) return;
             const matchingTagIds = matchingTags
               .map(tag => parseInt(tag.id, 10))
               .filter(id => !Number.isNaN(id))
@@ -496,7 +534,18 @@ export class FeedContainer {
         offset: 0,
       };
       this.currentFilters = newFilters;
-      this.loadVideos(newFilters, false).catch((e) => console.error('Apply filters failed', e));
+      try {
+        await this.loadVideos(newFilters, false, loadSignal);
+      } catch (e: any) {
+        if (e.name !== 'AbortError') {
+          console.error('Apply filters failed', e);
+        }
+      } finally {
+        // Hide loading state
+        queryInput.disabled = false;
+        queryInput.style.opacity = '1';
+        loadingSpinner.style.display = 'none';
+      }
     };
 
     // Suggestions
@@ -1368,6 +1417,14 @@ export class FeedContainer {
     clearBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>';
 
     const apply = () => {
+      // Cancel previous loadVideos queries
+      if (this.activeLoadVideosAbortController) {
+        this.activeLoadVideosAbortController.abort();
+      }
+      // Create new AbortController for this load
+      this.activeLoadVideosAbortController = new AbortController();
+      const loadSignal = this.activeLoadVideosAbortController.signal;
+      
       const q = queryInput.value.trim();
       const savedId = (this.selectedSavedFilter?.id) || (savedSelect.value || undefined);
       const newFilters: FilterOptions = {
@@ -1378,7 +1435,11 @@ export class FeedContainer {
         offset: 0,
       };
       this.currentFilters = newFilters;
-      this.loadVideos(newFilters, false).catch((e) => console.error('Apply filters failed', e));
+      this.loadVideos(newFilters, false, loadSignal).catch((e: any) => {
+        if (e.name !== 'AbortError') {
+          console.error('Apply filters failed', e);
+        }
+      });
     };
 
     // Apply immediately when selecting a saved filter
@@ -1457,6 +1518,14 @@ export class FeedContainer {
     };
 
     const fetchSuggestions = async (text: string, page: number = 1, forceShow: boolean = false) => {
+      // Cancel previous search queries
+      if (this.activeSearchAbortController) {
+        this.activeSearchAbortController.abort();
+      }
+      // Create new AbortController for this search
+      this.activeSearchAbortController = new AbortController();
+      const signal = this.activeSearchAbortController.signal;
+      
       const trimmedText = text.trim();
       // Show suggestions if we have text (2+ chars) OR if forced (on focus)
       if (!trimmedText || trimmedText.length < 2) {
@@ -1464,7 +1533,8 @@ export class FeedContainer {
           // On focus with empty text, show some tags and all saved filters
           suggestions.innerHTML = '';
           const pageSize = 24;
-          const tags = await this.api.searchMarkerTags('', pageSize);
+          const tags = await this.api.searchMarkerTags('', pageSize, signal);
+          if (signal.aborted) return;
           tags.forEach((tag) => {
             if (this.selectedTagId === parseInt(tag.id, 10)) return;
             const chip = document.createElement('button');
@@ -1506,6 +1576,7 @@ export class FeedContainer {
           suggestions.appendChild(label);
           // Load saved filters if needed
           await this.loadSavedFiltersIfNeeded();
+          if (signal.aborted) return;
           this.savedFiltersCache.forEach((f) => {
             const chip = document.createElement('button');
             chip.textContent = f.name;
@@ -1542,7 +1613,8 @@ export class FeedContainer {
       }
       suggestTerm = trimmedText;
       const pageSize = 24;
-      const items = await this.api.searchMarkerTags(trimmedText, pageSize);
+      const items = await this.api.searchMarkerTags(trimmedText, pageSize, signal);
+      if (signal.aborted) return;
 
       // Render as chips
       items.forEach((tag) => {
@@ -1581,6 +1653,7 @@ export class FeedContainer {
       const term = trimmedText.toLowerCase();
       // Load saved filters if needed
       await this.loadSavedFiltersIfNeeded();
+      if (signal.aborted) return;
       const matchingSaved = this.savedFiltersCache.filter((f) => f.name.toLowerCase().includes(term));
       if (matchingSaved.length) {
         const label = document.createElement('div');
@@ -1635,7 +1708,9 @@ export class FeedContainer {
         more.addEventListener('click', async () => {
           suggestPage += 1;
           // Fetch next page and append
-          const next = await this.api.searchMarkerTags(trimmedText, pageSize);
+          // Use the same signal for consistency
+          const next = await this.api.searchMarkerTags(trimmedText, pageSize, signal);
+          if (signal.aborted) return;
           next.forEach((tag) => {
             if (this.selectedTagId === parseInt(tag.id, 10)) return;
             const chip = document.createElement('button');
@@ -1882,14 +1957,25 @@ export class FeedContainer {
   /**
    * Load scene markers from Stash
    */
-  async loadVideos(filters?: FilterOptions, append: boolean = false): Promise<void> {
+  async loadVideos(filters?: FilterOptions, append: boolean = false, signal?: AbortSignal): Promise<void> {
+    // Cancel previous loadVideos queries if no signal provided (new search started)
+    if (!signal && this.activeLoadVideosAbortController) {
+      this.activeLoadVideosAbortController.abort();
+    }
+    // Create new AbortController if no signal provided
+    if (!signal) {
+      this.activeLoadVideosAbortController = new AbortController();
+      signal = this.activeLoadVideosAbortController.signal;
+    }
+    
     if (this.isLoading) {
       return;
     }
 
     this.isLoading = true;
     if (!append) {
-      this.showLoading();
+      // Show skeleton loaders immediately for better perceived performance
+      this.showSkeletonLoaders();
       this.currentPage = 1;
       this.hasMore = true;
     }
@@ -1908,11 +1994,25 @@ export class FeedContainer {
         offset = this.initialLoadLimit + (page - 2) * this.subsequentLoadLimit;
       }
       
+      // Check if aborted before fetching
+      if (signal?.aborted) {
+        this.isLoading = false;
+        this.hideSkeletonLoaders();
+        return;
+      }
+      
       const markers = await this.api.fetchSceneMarkers({
         ...currentFilters,
         limit,
         offset,
-      });
+      }, signal);
+      
+      // Check if aborted after fetching
+      if (signal?.aborted) {
+        this.isLoading = false;
+        this.hideSkeletonLoaders();
+        return;
+      }
       
       // Markers are fetched with random sorting from GraphQL API
 
@@ -1929,7 +2029,7 @@ export class FeedContainer {
           this.showError('No scene markers found. Try adjusting your filters.');
         }
         this.hasMore = false;
-        this.hideLoading();
+        this.hideSkeletonLoaders();
         return;
       }
 
@@ -1939,48 +2039,77 @@ export class FeedContainer {
         this.hasMore = false;
       }
 
-      // Create posts for each marker
-      for (const marker of markers) {
-        await this.createPost(marker);
+      // Create posts progressively - render immediately as each post is ready
+      // This provides instant visual feedback instead of waiting for all posts
+      // Use DocumentFragment for batch DOM insertions to reduce layout thrashing
+      const renderChunkSize = 3; // Render 3 posts at a time
+      const renderDelay = 16; // ~1 frame delay between chunks for smooth rendering
+      
+      let fragment: DocumentFragment | null = null;
+      let fragmentPostCount = 0;
+      
+      for (let i = 0; i < markers.length; i++) {
+        if (signal?.aborted) {
+          this.isLoading = false;
+          this.hideSkeletonLoaders();
+          return;
+        }
+        
+        // Create post (returns container element)
+        const postContainer = await this.createPost(markers[i]);
+        
+        // Remove one skeleton loader as each real post is added
+        if (!append && i < this.getSkeletonCount()) {
+          this.removeSkeletonLoader();
+        }
+        
+        // Add to fragment for batch insertion
+        if (!fragment) {
+          fragment = document.createDocumentFragment();
+        }
+        if (postContainer) {
+          fragment.appendChild(postContainer);
+          fragmentPostCount++;
+        }
+        
+        // Insert fragment when chunk is complete or at end
+        const shouldInsert = (i + 1) % renderChunkSize === 0 || i === markers.length - 1;
+        if (shouldInsert && fragment && fragmentPostCount > 0) {
+          this.postsContainer.appendChild(fragment);
+          fragment = null;
+          fragmentPostCount = 0;
+          
+          // Small delay between chunks to prevent blocking the main thread
+          if (i < markers.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, renderDelay));
+          }
+        }
+      }
+      
+      // Check if aborted after creating posts
+      if (signal?.aborted) {
+        this.isLoading = false;
+        this.hideSkeletonLoaders();
+        return;
       }
 
       if (append) {
         this.currentPage = page;
       }
 
-      // Batch load all thumbnails on initial load before videos start
-      // Use double requestAnimationFrame or setTimeout to ensure all thumbnails are registered
+      // Batch load all thumbnails - start immediately after first post is rendered
+      // Reduced delay for faster initial load (single RAF instead of double + timeout)
       if (!append && page === 1) {
-        // Mark that we've started loading to allow late registrations to trigger batch load
         this.thumbnailLoadStarted = true;
-        // Use double requestAnimationFrame + mobile delay to ensure DOM is ready
+        // Use single requestAnimationFrame for immediate start (removed double RAF + mobile delay)
         requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            // Add mobile-specific delay to account for slower DOM updates
-            const delay = this.isMobileDevice ? 100 : 0;
-            if (delay > 0) {
-              window.setTimeout(() => {
-                this.startThumbnailBatchLoad();
-              }, delay);
-            } else {
-              this.startThumbnailBatchLoad();
-            }
-          });
+          this.startThumbnailBatchLoad();
         });
       } else if (append) {
         // For appended pages, also batch load new thumbnails
         this.thumbnailLoadStarted = true;
         requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            const delay = this.isMobileDevice ? 100 : 0;
-            if (delay > 0) {
-              window.setTimeout(() => {
-                this.startThumbnailBatchLoad();
-              }, delay);
-            } else {
-              this.startThumbnailBatchLoad();
-            }
-          });
+          this.startThumbnailBatchLoad();
         });
       }
 
@@ -1995,7 +2124,10 @@ export class FeedContainer {
       // Suggestion preloading is handled in init() with longer delay
       // Background preloading disabled - videos load on-demand when close to viewport (50px) or on click
 
-      this.hideLoading();
+      // Hide skeleton loaders after all posts are rendered
+      if (!append) {
+        this.hideSkeletonLoaders();
+      }
       
       // Update infinite scroll trigger position
       this.updateInfiniteScrollTrigger();
@@ -2004,7 +2136,7 @@ export class FeedContainer {
       if (!append) {
         this.showError(`Failed to load scene markers: ${error.message || 'Unknown error'}`);
       }
-      this.hideLoading();
+      this.hideSkeletonLoaders();
     } finally {
       this.isLoading = false;
     }
@@ -2012,8 +2144,9 @@ export class FeedContainer {
 
   /**
    * Create a video post from a scene marker
+   * Returns the post container element for batch DOM insertion
    */
-  private async createPost(marker: SceneMarker): Promise<void> {
+  private async createPost(marker: SceneMarker): Promise<HTMLElement | null> {
     const videoUrl = this.api.getMarkerVideoUrl(marker);
     const safeVideoUrl = isValidMediaUrl(videoUrl) ? videoUrl : undefined;
     
@@ -2024,7 +2157,7 @@ export class FeedContainer {
         markerTitle: marker.title,
         videoUrl,
       });
-      return;
+      return null;
     }
 
     const postContainer = document.createElement('article');
@@ -2052,8 +2185,8 @@ export class FeedContainer {
     this.posts.set(marker.id, post);
     this.postOrder.push(marker.id);
 
-    // Add to posts container
-    this.postsContainer.appendChild(postContainer);
+    // Don't append to DOM here - return container for batch insertion
+    // Caller will handle DOM insertion using DocumentFragment
 
     // Observe for visibility
     this.visibilityManager.observePost(postContainer, marker.id);
@@ -2088,7 +2221,7 @@ export class FeedContainer {
           { rootMargin, threshold: 0 }
         );
         loadObserver.observe(postContainer);
-        return;
+        return postContainer;
       }
 
       // Desktop: load when close to viewport (50px) - much less aggressive than before
@@ -2114,11 +2247,14 @@ export class FeedContainer {
         },
         { rootMargin, threshold: 0 } // Load when very close to viewport
       );
-      loadObserver.observe(postContainer);
-    } else {
-      console.warn('FeedContainer: No video URL for marker', { markerId: marker.id });
-    }
+        loadObserver.observe(postContainer);
+      } else {
+        console.warn('FeedContainer: No video URL for marker', { markerId: marker.id });
+      }
     // Eager preload disabled - videos load on-demand via Intersection Observer
+    
+    // Return container for batch DOM insertion
+    return postContainer;
   }
 
   /**
@@ -2902,6 +3038,121 @@ export class FeedContainer {
   }
 
   /**
+   * Show skeleton loaders for better perceived performance
+   */
+  private showSkeletonLoaders(): void {
+    // Clear any existing skeletons
+    this.hideSkeletonLoaders();
+    
+    // Create skeleton loaders matching expected initial load count
+    const skeletonCount = this.initialLoadLimit;
+    this.skeletonLoaders = [];
+    
+    for (let i = 0; i < skeletonCount; i++) {
+      const skeleton = this.createSkeletonLoader();
+      this.postsContainer.appendChild(skeleton);
+      this.skeletonLoaders.push(skeleton);
+    }
+  }
+
+  /**
+   * Create a single skeleton loader element
+   */
+  private createSkeletonLoader(): HTMLElement {
+    const skeleton = document.createElement('article');
+    skeleton.className = 'video-post-wrapper video-post-skeleton';
+    
+    const card = document.createElement('div');
+    card.className = 'video-post';
+    
+    // Header skeleton
+    const header = document.createElement('div');
+    header.className = 'video-post__header';
+    header.style.padding = '8px 16px';
+    header.style.marginBottom = '0';
+    
+    const chips = document.createElement('div');
+    chips.className = 'chips';
+    chips.style.display = 'flex';
+    chips.style.flexWrap = 'wrap';
+    chips.style.gap = '4px';
+    chips.style.margin = '0';
+    
+    // Add 2-3 chip skeletons
+    for (let i = 0; i < 3; i++) {
+      const chip = document.createElement('div');
+      chip.className = 'chip-skeleton';
+      chip.style.width = `${60 + Math.random() * 40}px`;
+      chip.style.height = '24px';
+      chip.style.borderRadius = '12px';
+      chips.appendChild(chip);
+    }
+    header.appendChild(chips);
+    card.appendChild(header);
+    
+    // Player skeleton
+    const player = document.createElement('div');
+    player.className = 'video-post__player aspect-16-9';
+    player.style.position = 'relative';
+    player.style.backgroundColor = '#1C1C1E';
+    player.style.overflow = 'hidden';
+    card.appendChild(player);
+    
+    // Footer skeleton
+    const footer = document.createElement('div');
+    footer.className = 'video-post__footer';
+    footer.style.padding = '8px 16px';
+    footer.style.display = 'flex';
+    footer.style.justifyContent = 'flex-end';
+    footer.style.gap = '4px';
+    
+    // Add 4 button skeletons
+    for (let i = 0; i < 4; i++) {
+      const btn = document.createElement('div');
+      btn.className = 'button-skeleton';
+      btn.style.width = '44px';
+      btn.style.height = '44px';
+      btn.style.borderRadius = '8px';
+      footer.appendChild(btn);
+    }
+    card.appendChild(footer);
+    
+    skeleton.appendChild(card);
+    return skeleton;
+  }
+
+  /**
+   * Hide and remove all skeleton loaders
+   */
+  private hideSkeletonLoaders(): void {
+    for (const skeleton of this.skeletonLoaders) {
+      if (skeleton.parentNode) {
+        skeleton.parentNode.removeChild(skeleton);
+      }
+    }
+    this.skeletonLoaders = [];
+  }
+
+  /**
+   * Remove a single skeleton loader (when real post is added)
+   */
+  private removeSkeletonLoader(): void {
+    if (this.skeletonLoaders.length > 0) {
+      const skeleton = this.skeletonLoaders.shift();
+      if (skeleton && skeleton.parentNode) {
+        skeleton.parentNode.removeChild(skeleton);
+      }
+    }
+  }
+
+  /**
+   * Get current skeleton count
+   */
+  private getSkeletonCount(): number {
+    return this.skeletonLoaders.length;
+  }
+
+  /**
    * Load saved filters if not already loaded
    */
   private async loadSavedFiltersIfNeeded(): Promise<void> {
@@ -2964,9 +3215,46 @@ export class FeedContainer {
    * Cleanup
    */
   cleanup(): void {
+    // Stop background preloading
     this.stopBackgroundPreloading();
+    
+    // Clean up visibility manager
     this.visibilityManager.cleanup();
+    
+    // Clear all posts (which will destroy players and clean up observers)
     this.clearPosts();
+    
+    // Clean up thumbnail observer
+    if (this.thumbnailObserver) {
+      this.thumbnailObserver.disconnect();
+      this.thumbnailObserver = undefined;
+    }
+    
+    // Clear thumbnail queue
+    this.thumbnailQueue = [];
+    this.thumbnailBatchActive = false;
+    
+    // Clear skeleton loaders
+    this.hideSkeletonLoaders();
+    
+    // Abort any pending requests
+    if (this.activeLoadVideosAbortController) {
+      this.activeLoadVideosAbortController.abort();
+      this.activeLoadVideosAbortController = undefined;
+    }
+    if (this.activeSearchAbortController) {
+      this.activeSearchAbortController.abort();
+      this.activeSearchAbortController = undefined;
+    }
+    
+    // Clean up scroll observer
+    if (this.scrollObserver) {
+      this.scrollObserver.disconnect();
+      this.scrollObserver = undefined;
+    }
+    if (this.loadMoreTrigger) {
+      this.loadMoreTrigger = undefined;
+    }
   }
 }
 
