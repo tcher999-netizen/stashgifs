@@ -76,6 +76,8 @@ export class FeedContainer {
   private thumbnailLoadStarted: boolean = false;
   private readonly initialLoadLimit: number = 12; // Load 12 items on initial load for faster page load
   private readonly subsequentLoadLimit: number = 20; // Load 20 items on subsequent loads
+  private savedFiltersCache: Array<{ id: string; name: string }> = [];
+  private savedFiltersLoaded: boolean = false;
 
   constructor(container: HTMLElement, api?: StashAPI, settings?: Partial<FeedSettings>) {
     this.container = container;
@@ -745,7 +747,9 @@ export class FeedContainer {
             apply();
         }));
 
-        savedFiltersCache.forEach((filter) => {
+        // Load saved filters if needed
+        await this.loadSavedFiltersIfNeeded();
+        this.savedFiltersCache.forEach((filter) => {
           pillRow.appendChild(createPillButton(filter.name, () => {
             this.selectedSavedFilter = { id: filter.id, name: filter.name };
                 this.selectedTagId = undefined;
@@ -840,7 +844,9 @@ export class FeedContainer {
       
       container.innerHTML = '';
 
-      const matchingSavedFilters = savedFiltersCache
+      // Load saved filters if needed
+      await this.loadSavedFiltersIfNeeded();
+      const matchingSavedFilters = this.savedFiltersCache
         .filter((filter) => filter.name.toLowerCase().includes(trimmedText.toLowerCase()))
         .slice(0, 6);
 
@@ -1273,22 +1279,18 @@ export class FeedContainer {
     savedSelect.appendChild(favoritesOpt);
 
     // Load saved filters lazily when filter sheet opens
-    let savedFiltersCache: Array<{ id: string; name: string }> = [];
-    let savedFiltersLoaded = false;
     const loadSavedFilters = async () => {
-      if (savedFiltersLoaded) return;
-      savedFiltersLoaded = true;
-      try {
-        const items = await this.api.fetchSavedMarkerFilters();
-        savedFiltersCache = items.map((f) => ({ id: f.id, name: f.name }));
-        for (const f of savedFiltersCache) {
+      await this.loadSavedFiltersIfNeeded();
+      // Populate dropdown with cached filters
+      for (const f of this.savedFiltersCache) {
+        // Check if option already exists
+        const exists = Array.from(savedSelect.options).some(opt => opt.value === f.id);
+        if (!exists) {
           const opt = document.createElement('option');
           opt.value = f.id;
           opt.textContent = f.name;
           savedSelect.appendChild(opt);
         }
-      } catch (e) {
-        console.error('Failed to load saved marker filters', e);
       }
     };
 
@@ -1407,7 +1409,7 @@ export class FeedContainer {
           }
         } else {
           // Handle regular saved filter
-          const match = savedFiltersCache.find((f) => f.id === savedSelect.value);
+          const match = this.savedFiltersCache.find((f) => f.id === savedSelect.value);
           if (match) {
             this.selectedSavedFilter = { id: match.id, name: match.name };
           }
@@ -1502,7 +1504,9 @@ export class FeedContainer {
           label.style.width = '100%';
           label.style.marginBottom = '6px';
           suggestions.appendChild(label);
-          savedFiltersCache.forEach((f) => {
+          // Load saved filters if needed
+          await this.loadSavedFiltersIfNeeded();
+          this.savedFiltersCache.forEach((f) => {
             const chip = document.createElement('button');
             chip.textContent = f.name;
             chip.className = 'suggest-chip';
@@ -1575,7 +1579,9 @@ export class FeedContainer {
 
       // Also surface matching saved filters as chips (unified UX)
       const term = trimmedText.toLowerCase();
-      const matchingSaved = (savedFiltersCache || []).filter((f) => f.name.toLowerCase().includes(term));
+      // Load saved filters if needed
+      await this.loadSavedFiltersIfNeeded();
+      const matchingSaved = this.savedFiltersCache.filter((f) => f.name.toLowerCase().includes(term));
       if (matchingSaved.length) {
         const label = document.createElement('div');
         label.textContent = 'Saved Filters';
@@ -2892,6 +2898,21 @@ export class FeedContainer {
     const loading = this.container.querySelector('.feed-loading') as HTMLElement;
     if (loading) {
       loading.style.display = 'none';
+    }
+  }
+
+  /**
+   * Load saved filters if not already loaded
+   */
+  private async loadSavedFiltersIfNeeded(): Promise<void> {
+    if (this.savedFiltersLoaded) return;
+    this.savedFiltersLoaded = true;
+    try {
+      const items = await this.api.fetchSavedMarkerFilters();
+      this.savedFiltersCache = items.map((f) => ({ id: f.id, name: f.name }));
+    } catch (e) {
+      console.error('Failed to load saved marker filters', e);
+      this.savedFiltersCache = [];
     }
   }
 

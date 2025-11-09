@@ -20,7 +20,10 @@ interface StashPluginApi {
 
 export class StashAPI {
   private baseUrl: string;
-  private apiKey?: string;
+  private apiKey?: string
+  // Cache for tags/performers that have markers (to avoid repeated checks)
+  private tagsWithMarkersCache: Set<number> = new Set();
+  private performersWithMarkersCache: Set<number> = new Set();;
   private pluginApi?: StashPluginApi;
 
   constructor(baseUrl?: string, apiKey?: string) {
@@ -118,11 +121,207 @@ export class StashAPI {
   }
 
   /**
+   * Batch check which tags have at least one marker
+   * Returns a Set of tag IDs that have markers
+   */
+  private async batchCheckTagsHaveMarkers(tagIds: number[]): Promise<Set<number>> {
+    if (tagIds.length === 0) return new Set();
+    
+    // Check cache first
+    const results = new Set<number>();
+    const uncachedIds: number[] = [];
+    for (const tagId of tagIds) {
+      if (this.tagsWithMarkersCache.has(tagId)) {
+        results.add(tagId);
+      } else {
+        uncachedIds.push(tagId);
+      }
+    }
+    
+    if (uncachedIds.length === 0) return results;
+    
+    const query = `query CheckTagsHaveMarkers($scene_marker_filter: SceneMarkerFilterType) {
+      findSceneMarkers(scene_marker_filter: $scene_marker_filter) {
+        count
+      }
+    }`;
+    
+    const sceneMarkerFilter = {
+      tags: { value: tagIds, modifier: 'INCLUDES' as const }
+    };
+    
+    try {
+      if (this.pluginApi?.GQL?.client) {
+        const result = await this.pluginApi.GQL.client.query({
+          query: query as any,
+          variables: { scene_marker_filter: sceneMarkerFilter }
+        });
+        const count = result.data?.findSceneMarkers?.count || 0;
+        // If count > 0, at least one tag has markers, but we need to check individually
+        // For efficiency, we'll check in smaller batches
+        if (count === 0) return results; // Return cached results
+        
+        // Check each tag individually (but in parallel batches of 5)
+        const batchSize = 5;
+        for (let i = 0; i < uncachedIds.length; i += batchSize) {
+          const batch = uncachedIds.slice(i, i + batchSize);
+          const batchChecks = await Promise.all(
+            batch.map(async (tagId) => {
+              const batchQuery = `query CheckTagHasMarkers($scene_marker_filter: SceneMarkerFilterType) {
+                findSceneMarkers(scene_marker_filter: $scene_marker_filter) {
+                  count
+                }
+              }`;
+              const batchFilter = { tags: { value: [tagId], modifier: 'INCLUDES' as const } };
+              try {
+                if (this.pluginApi?.GQL?.client) {
+                  const batchResult = await this.pluginApi.GQL.client.query({
+                    query: batchQuery as any,
+                    variables: { scene_marker_filter: batchFilter }
+                  });
+                  return batchResult.data?.findSceneMarkers?.count > 0 ? tagId : null;
+                } else {
+                  const response = await fetch(`${this.baseUrl}/graphql`, {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      ...(this.apiKey && { 'ApiKey': this.apiKey }),
+                    },
+                    body: JSON.stringify({ query: batchQuery, variables: { scene_marker_filter: batchFilter } }),
+                  });
+                  const data = await response.json();
+                  return data.data?.findSceneMarkers?.count > 0 ? tagId : null;
+                }
+              } catch {
+                return null;
+              }
+            })
+          );
+          batchChecks.forEach(id => { 
+            if (id !== null) {
+              results.add(id);
+              this.tagsWithMarkersCache.add(id); // Cache positive results
+            }
+          });
+        }
+        return results;
+      } else {
+        // Fallback: check individually but in smaller batches
+        const batchSize = 5;
+        for (let i = 0; i < uncachedIds.length; i += batchSize) {
+          const batch = uncachedIds.slice(i, i + batchSize);
+          const batchChecks = await Promise.all(
+            batch.map(async (tagId) => {
+              const batchQuery = `query CheckTagHasMarkers($scene_marker_filter: SceneMarkerFilterType) {
+                findSceneMarkers(scene_marker_filter: $scene_marker_filter) {
+                  count
+                }
+              }`;
+              const batchFilter = { tags: { value: [tagId], modifier: 'INCLUDES' } };
+              try {
+                const response = await fetch(`${this.baseUrl}/graphql`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    ...(this.apiKey && { 'ApiKey': this.apiKey }),
+                  },
+                  body: JSON.stringify({ query: batchQuery, variables: { scene_marker_filter: batchFilter } }),
+                });
+                const data = await response.json();
+                return data.data?.findSceneMarkers?.count > 0 ? tagId : null;
+              } catch {
+                return null;
+              }
+            })
+          );
+          batchChecks.forEach(id => { 
+            if (id !== null) {
+              results.add(id);
+              this.tagsWithMarkersCache.add(id); // Cache positive results
+            }
+          });
+        }
+        return results;
+      }
+    } catch (e) {
+      console.warn('batchCheckTagsHaveMarkers failed', e);
+      return results; // Return cached results even if new checks fail
+    }
+  }
+
+  /**
+   * Batch check which performers have at least one marker
+   * Returns a Set of performer IDs that have markers
+   */
+  private async batchCheckPerformersHaveMarkers(performerIds: number[]): Promise<Set<number>> {
+    if (performerIds.length === 0) return new Set();
+    
+    // Check cache first
+    const results = new Set<number>();
+    const uncachedIds: number[] = [];
+    for (const performerId of performerIds) {
+      if (this.performersWithMarkersCache.has(performerId)) {
+        results.add(performerId);
+      } else {
+        uncachedIds.push(performerId);
+      }
+    }
+    
+    if (uncachedIds.length === 0) return results;
+    
+    // Check each performer individually (in parallel batches of 5)
+    const batchSize = 5;
+    for (let i = 0; i < uncachedIds.length; i += batchSize) {
+      const batch = uncachedIds.slice(i, i + batchSize);
+      const batchChecks = await Promise.all(
+        batch.map(async (performerId) => {
+          const query = `query CheckPerformerHasMarkers($scene_marker_filter: SceneMarkerFilterType) {
+            findSceneMarkers(scene_marker_filter: $scene_marker_filter) {
+              count
+            }
+          }`;
+          const sceneMarkerFilter = { performers: { value: [performerId], modifier: 'INCLUDES_ALL' as const } };
+          try {
+            if (this.pluginApi?.GQL?.client) {
+              const result = await this.pluginApi.GQL.client.query({
+                query: query as any,
+                variables: { scene_marker_filter: sceneMarkerFilter }
+              });
+              return result.data?.findSceneMarkers?.count > 0 ? performerId : null;
+            } else {
+              const response = await fetch(`${this.baseUrl}/graphql`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...(this.apiKey && { 'ApiKey': this.apiKey }),
+                },
+                body: JSON.stringify({ query, variables: { scene_marker_filter: sceneMarkerFilter } }),
+              });
+              const data = await response.json();
+              return data.data?.findSceneMarkers?.count > 0 ? performerId : null;
+            }
+          } catch {
+            return null;
+          }
+        })
+      );
+      batchChecks.forEach(id => { 
+        if (id !== null) {
+          results.add(id);
+          this.performersWithMarkersCache.add(id); // Cache positive results
+        }
+      });
+    }
+    return results;
+  }
+
+  /**
    * Search marker tags (by name) for autocomplete
+   * Only returns tags that have more than 10 markers (filtered directly in GraphQL)
    */
   async searchMarkerTags(term: string, limit: number = 10): Promise<Array<{ id: string; name: string }>> {
-    const query = `query FindTags($filter: FindFilterType) {
-      findTags(filter: $filter) {
+    const query = `query FindTags($filter: FindFilterType, $tag_filter: TagFilterType) {
+      findTags(filter: $filter, tag_filter: $tag_filter) {
         tags { id name }
       }
     }`;
@@ -140,7 +339,15 @@ export class StashAPI {
       filter.sort = `random_${Math.floor(Math.random() * 1000000)}`;
     }
     
-    const variables = { filter };
+    // Filter to only tags with more than 10 markers
+    const tag_filter: any = {
+      marker_count: {
+        value: 10,
+        modifier: 'GREATER_THAN'
+      }
+    };
+    
+    const variables = { filter, tag_filter };
 
     try {
       let tags: Array<{ id: string; name: string }> = [];
@@ -173,10 +380,11 @@ export class StashAPI {
 
   /**
    * Search performers (by name) for autocomplete
+   * Only returns performers that have more than 1 scene (filtered directly in GraphQL)
    */
   async searchPerformers(term: string, limit: number = 10): Promise<Array<{ id: string; name: string; image_path?: string }>> {
-    const query = `query FindPerformers($filter: FindFilterType) {
-      findPerformers(filter: $filter) {
+    const query = `query FindPerformers($filter: FindFilterType, $performer_filter: PerformerFilterType) {
+      findPerformers(filter: $filter, performer_filter: $performer_filter) {
         performers { id name image_path }
       }
     }`;
@@ -194,7 +402,15 @@ export class StashAPI {
       filter.sort = `random_${Math.floor(Math.random() * 1000000)}`;
     }
     
-    const variables = { filter };
+    // Filter to only performers with more than 1 scene
+    const performer_filter: any = {
+      scene_count: {
+        value: 1,
+        modifier: 'GREATER_THAN'
+      }
+    };
+    
+    const variables = { filter, performer_filter };
 
     try {
       let performers: Array<{ id: string; name: string; image_path?: string }> = [];
