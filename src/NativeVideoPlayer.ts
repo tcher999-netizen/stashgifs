@@ -507,12 +507,16 @@ export class NativeVideoPlayer {
     playerWrapper.style.width = '100%';
     playerWrapper.style.height = '100%';
     playerWrapper.style.zIndex = '1'; // Below thumbnail (z-index: 2) but above background
+    // Set transparent background to prevent black flicker - let thumbnail/poster show through
+    playerWrapper.style.backgroundColor = 'transparent';
     // Enable hardware acceleration for video wrapper
     playerWrapper.style.transform = 'translateZ(0)';
     playerWrapper.style.willChange = 'transform';
     
     this.videoElement.style.position = 'relative';
     this.videoElement.style.zIndex = '1';
+    // Set background to transparent to prevent black flicker - let poster/thumbnail show through
+    this.videoElement.style.backgroundColor = 'transparent';
     // Enable hardware acceleration for video element
     this.videoElement.style.transform = 'translateZ(0)';
     this.videoElement.style.willChange = 'auto'; // Browser will optimize based on video playback

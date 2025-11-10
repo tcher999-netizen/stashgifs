@@ -426,6 +426,7 @@
 .video-player__element {
   width: 100%;
   height: 100%;
+  background: transparent; /* Prevent black flicker - let poster/thumbnail show through */
   object-fit: contain;
   display: block;
   /* Hardware acceleration for video playback */
