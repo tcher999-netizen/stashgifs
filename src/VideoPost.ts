@@ -1325,23 +1325,23 @@ export class VideoPost {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
 
-    // Clear player container to prepare for new player
-    // The destroy() method should have removed the video element, but clear any remaining children
-    try {
-      // Remove all children one by one to avoid issues
-      while (playerContainer.firstChild) {
-        playerContainer.removeChild(playerContainer.firstChild);
-      }
-    } catch (e) {
-      // If removing children fails, try innerHTML as fallback
-      console.warn('Failed to remove children individually, using innerHTML', e);
-      try {
-        playerContainer.innerHTML = '';
-      } catch (e2) {
-        console.error('Failed to clear player container', e2);
-        throw new Error('Failed to clear player container for upgrade');
-      }
-    }
+    // Don't clear player container - let browser handle cleanup naturally
+    // The destroy() method should have removed the video element
+    // try {
+    //   // Remove all children one by one to avoid issues
+    //   while (playerContainer.firstChild) {
+    //     playerContainer.removeChild(playerContainer.firstChild);
+    //   }
+    // } catch (e) {
+    //   // If removing children fails, try innerHTML as fallback
+    //   console.warn('Failed to remove children individually, using innerHTML', e);
+    //   try {
+    //     playerContainer.innerHTML = '';
+    //   } catch (e2) {
+    //     console.error('Failed to clear player container', e2);
+    //     throw new Error('Failed to clear player container for upgrade');
+    //   }
+    // }
 
     // Small delay to ensure DOM is cleared and old player is fully destroyed
     await new Promise(resolve => setTimeout(resolve, 50));

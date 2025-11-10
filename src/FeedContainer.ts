@@ -2965,12 +2965,13 @@ export class FeedContainer {
       this.thumbnailObserver.disconnect();
       this.thumbnailObserver = undefined;
     }
-    if (this.postsContainer) {
-      // Clear posts efficiently
-      while (this.postsContainer.firstChild) {
-        this.postsContainer.removeChild(this.postsContainer.firstChild);
-      }
-    }
+    // Don't clear posts container - let browser handle cleanup naturally
+    // if (this.postsContainer) {
+    //   // Clear posts efficiently
+    //   while (this.postsContainer.firstChild) {
+    //     this.postsContainer.removeChild(this.postsContainer.firstChild);
+    //   }
+    // }
     
     // Clean up all load observers
     this.cleanupLoadObservers();

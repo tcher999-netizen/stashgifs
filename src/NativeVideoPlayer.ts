@@ -1268,10 +1268,10 @@ export class NativeVideoPlayer {
       this.msFullscreenChangeHandler = undefined;
     }
     
-    // Clear container completely
-    if (this.container) {
-      this.container.innerHTML = '';
-    }
+    // Don't clear container - let browser handle cleanup naturally
+    // if (this.container) {
+    //   this.container.innerHTML = '';
+    // }
     
     // Clear all references to help garbage collection
     this.videoElement = undefined as any;

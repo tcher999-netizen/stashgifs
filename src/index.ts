@@ -22,14 +22,14 @@ function init(): void {
   const existingSkeletons = appContainer.querySelectorAll('.video-post-skeleton');
   const hasExistingSkeletons = existingSkeletons.length > 0;
   
-  // Only clear content if there are no existing skeletons or if structure doesn't match
+  // Don't clear content - let browser handle cleanup naturally
   // This preserves the skeleton loaders that were added to the HTML for immediate display
-  if (!hasExistingSkeletons) {
-    // Clear any existing content efficiently
-    while (appContainer.firstChild) {
-      appContainer.removeChild(appContainer.firstChild);
-    }
-  }
+  // if (!hasExistingSkeletons) {
+  //   // Clear any existing content efficiently
+  //   while (appContainer.firstChild) {
+  //     appContainer.removeChild(appContainer.firstChild);
+  //   }
+  // }
 
   try {
     // Initialize API (will use window.stash if available)
