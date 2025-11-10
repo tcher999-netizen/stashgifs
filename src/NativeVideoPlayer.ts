@@ -21,6 +21,18 @@ export class NativeVideoPlayer {
   private readyResolver?: () => void;
   private readyPromise: Promise<void>;
   private errorHandled: boolean = false;
+  private desiredStartTime?: number; // Track desired start time for enforcement
+  private startTimeEnforced: boolean = false; // Track if we've successfully enforced startTime
+  private isUnloaded: boolean = false;
+  private originalVideoUrl?: string; // Store original URL for reload
+  private originalStartTime?: number; // Store original start time for reload
+  private originalEndTime?: number; // Store original end time for reload
+  private originalPoster?: string; // Store original poster for reload
+  // Store event handlers for proper cleanup
+  private fullscreenChangeHandler?: () => void;
+  private webkitFullscreenChangeHandler?: () => void;
+  private mozFullscreenChangeHandler?: () => void;
+  private msFullscreenChangeHandler?: () => void;
 
   constructor(container: HTMLElement, videoUrl: string, options?: {
     autoplay?: boolean;
@@ -29,6 +41,7 @@ export class NativeVideoPlayer {
     endTime?: number;
     poster?: string;
     onStateChange?: (state: VideoPlayerState) => void;
+    aggressivePreload?: boolean; // Use 'auto' preload for non-HD videos
   }) {
     // Validate video URL before proceeding
     if (!videoUrl || !isValidMediaUrl(videoUrl)) {
@@ -55,12 +68,19 @@ export class NativeVideoPlayer {
 
     this.readyPromise = new Promise<void>((resolve) => { this.readyResolver = resolve; });
 
-    // Note: startTime is intentionally ignored so videos resume from their natural buffered position.
+    // Store original values for reload
+    this.originalVideoUrl = videoUrl;
+    this.originalStartTime = options?.startTime;
+    this.originalEndTime = options?.endTime;
+    this.originalPoster = options?.poster;
+
     this.createVideoElement(videoUrl, {
       autoplay: options?.autoplay,
       muted: options?.muted,
       startTime: options?.startTime,
       endTime: options?.endTime,
+      poster: options?.poster,
+      aggressivePreload: options?.aggressivePreload,
     });
     this.createControls();
     this.attachEventListeners();
@@ -96,7 +116,7 @@ export class NativeVideoPlayer {
     });
   }
 
-  private createVideoElement(videoUrl: string, options?: { autoplay?: boolean; muted?: boolean; startTime?: number; endTime?: number }): void {
+  private createVideoElement(videoUrl: string, options?: { autoplay?: boolean; muted?: boolean; startTime?: number; endTime?: number; poster?: string; aggressivePreload?: boolean }): void {
     // Defensive validation - validate URL again before setting src
     // This is a last line of defense in case validation was bypassed
     // If invalid, create element but don't set src - error handler will catch it
@@ -111,18 +131,106 @@ export class NativeVideoPlayer {
       return;
     }
 
-    this.videoElement.src = videoUrl;
-    this.videoElement.preload = 'auto'; // Changed from 'metadata' to 'auto' for better loading
+    // Check codec support before setting src (helps with HEVC detection)
+    // Note: canPlayType() may not always be accurate, but it's a good first check
+    const checkCodecSupport = (url: string): boolean => {
+      // Try to detect HEVC/H.265 files
+      const isHevc = url.toLowerCase().includes('hevc') || 
+                     url.toLowerCase().includes('h265') ||
+                     url.toLowerCase().includes('h.265');
+      
+      if (isHevc) {
+        // Check if browser supports HEVC
+        const hevcSupport1 = this.videoElement.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0,mp4a.40.2"');
+        const hevcSupport2 = this.videoElement.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0,mp4a.40.2"');
+        const hevcSupport3 = this.videoElement.canPlayType('video/mp4; codecs="hev1"');
+        const hevcSupport4 = this.videoElement.canPlayType('video/mp4; codecs="hvc1"');
+        
+        const hevcSupport = hevcSupport1 || hevcSupport2 || hevcSupport3 || hevcSupport4;
+        
+        // canPlayType returns "" (empty string), "maybe", or "probably"
+        // Empty string means not supported
+        if (!hevcSupport || hevcSupport.length === 0) {
+          console.warn('NativeVideoPlayer: HEVC/H.265 codec may not be supported in this browser', {
+            url,
+            canPlayType: hevcSupport || '(empty)',
+          });
+        }
+      }
+      
+      return true; // Always try to load, let error handler catch issues
+    };
+    
+    checkCodecSupport(videoUrl);
+    
+    // Set poster BEFORE setting src to prevent showing last frame
+    // The poster will display until the video is ready and at the correct start time
+    if (options?.poster) {
+      this.videoElement.poster = options.poster;
+    }
+    
+    // Use 'metadata' preload to prevent showing last frame
+    // For non-HD videos, we can be more aggressive but still use metadata initially
+    // The poster will cover the video until the correct frame is ready
+    this.videoElement.preload = 'metadata';
     this.videoElement.playsInline = true; // Required for iOS inline playback
     this.videoElement.muted = options?.muted ?? false; // Default to unmuted (markers don't have sound anyway)
     this.videoElement.loop = true; // Enable looping
     this.videoElement.className = 'video-player__element';
+    
+    // Don't hide video - let it render but ensure it's positioned correctly
+    // The thumbnail will cover it until ready
     
     // Mobile-specific attributes
     this.videoElement.setAttribute('playsinline', 'true'); // iOS Safari requires lowercase
     this.videoElement.setAttribute('webkit-playsinline', 'true'); // Legacy iOS support
     this.videoElement.setAttribute('x5-playsinline', 'true'); // Android X5 browser
     this.videoElement.setAttribute('x-webkit-airplay', 'allow'); // AirPlay support
+    
+    // Set initial currentTime BEFORE setting src to prevent showing last frame
+    // This ensures the browser knows where to position the video
+    const initialStartTime = (typeof options?.startTime === 'number' && Number.isFinite(options.startTime))
+      ? Math.max(0, options.startTime)
+      : 0;
+    
+    // Set currentTime BEFORE setting src to prevent browser from showing last frame
+    // Some browsers respect this if set before src
+    try {
+      this.videoElement.currentTime = initialStartTime;
+    } catch {
+      // Ignore - will set in event handlers
+    }
+    
+    // Ensure video is paused to prevent auto-playing
+    this.videoElement.pause();
+    
+    // Now set src - this will trigger loading
+    this.videoElement.src = videoUrl;
+    
+    // Ensure video stays paused after setting src
+    this.videoElement.pause();
+    
+    // Immediately try to set currentTime again after setting src
+    // This is critical to prevent showing last frame
+    try {
+      this.videoElement.currentTime = initialStartTime;
+    } catch {
+      // Ignore - metadata not loaded yet, will be set in event handlers below
+    }
+    
+    // Use loadstart event to set currentTime as early as possible and ensure paused
+    const onLoadStart = () => {
+      // Ensure video is paused
+      this.videoElement.pause();
+      try {
+        if (this.videoElement.readyState >= 0) {
+          this.videoElement.currentTime = initialStartTime;
+        }
+      } catch {
+        // Ignore
+      }
+    };
+    this.videoElement.addEventListener('loadstart', onLoadStart, { once: true });
     
     // Handle end time if provided (only if endTime is greater than a small tolerance)
     // Loop back to 0 when reaching endTime
@@ -153,21 +261,40 @@ export class NativeVideoPlayer {
       const isInvalidUriError = errorCode === 4 || 
         (errorMessage && errorMessage.includes('MediaLoadInvalidURI'));
       
-      if (isInvalidUriError) {
+      // Check for codec/format errors (including HEVC)
+      const isCodecError = errorCode === 4 && 
+        (errorMessage?.includes('codec') || 
+         errorMessage?.includes('format') ||
+         errorMessage?.includes('not supported') ||
+         errorMessage?.toLowerCase().includes('hevc') ||
+         errorMessage?.toLowerCase().includes('h.265'));
+      
+      if (isInvalidUriError && !isCodecError) {
         // Mark as handled and silently suppress - validation should have caught this
         this.errorHandled = true;
         // Don't clear src or do anything that could trigger more events
         return;
       }
       
-      // Mark as handled and log other errors normally (only once)
+      // Mark as handled and log errors (including codec errors)
       this.errorHandled = true;
-      console.error('NativeVideoPlayer: Video error', {
-        error: e,
-        errorCode,
-        errorMessage,
-        src: this.videoElement.src,
-      });
+      
+      if (isCodecError) {
+        console.error('NativeVideoPlayer: Video codec not supported (possibly HEVC/H.265)', {
+          error: e,
+          errorCode,
+          errorMessage,
+          src: this.videoElement.src,
+          hint: 'HEVC/H.265 codec may not be supported in this browser. Consider using H.264 or transcoding the video.',
+        });
+      } else {
+        console.error('NativeVideoPlayer: Video error', {
+          error: e,
+          errorCode,
+          errorMessage,
+          src: this.videoElement.src,
+        });
+      }
     }, { once: true }); // Use once: true to ensure handler only runs once
     
     // Resolve ready promise when video can play
@@ -175,12 +302,199 @@ export class NativeVideoPlayer {
     this.videoElement.addEventListener('loadeddata', handleReady, { once: true });
     this.videoElement.addEventListener('canplay', handleReady, { once: true });
 
+    // If a startTime is provided, ensure we seek to it as soon as metadata is available,
+    // and also attempt an immediate seek if already ready.
+    const hasStart = typeof options?.startTime === 'number' && Number.isFinite(options?.startTime as number);
+    this.desiredStartTime = hasStart ? Math.max(0, options!.startTime as number) : undefined;
+    this.startTimeEnforced = false;
+    
+    if (hasStart && this.desiredStartTime !== undefined) {
+      const trySeek = () => {
+        try {
+          if (this.videoElement.readyState >= 1 && this.desiredStartTime !== undefined) {
+            this.videoElement.currentTime = this.desiredStartTime;
+            this.startTimeEnforced = true;
+          }
+        } catch {
+          // Some browsers require metadata; handled by events below
+        }
+      };
+      // Immediate attempt if metadata is already loaded
+      if (this.videoElement.readyState >= 1) {
+        trySeek();
+      }
+      // Ensure seek once metadata is loaded - do this early to prevent showing last frame
+      const onMeta = () => {
+        // Ensure video is paused to prevent auto-playing
+        this.videoElement.pause();
+        trySeek();
+        
+        // Also check if video is positioned at the end and seek immediately
+        // This prevents the browser from showing the last frame
+        if (this.desiredStartTime !== undefined && this.videoElement.readyState >= 1) {
+          const current = this.videoElement.currentTime;
+          const desired = this.desiredStartTime;
+          const duration = this.videoElement.duration;
+          const isNearEnd = duration > 0 && (duration - current) < 0.5;
+          const isPastStart = current > desired + 0.5;
+          
+          // Seek immediately on metadata load if we're at the wrong position
+          if (isNearEnd || isPastStart) {
+            try {
+              this.videoElement.currentTime = desired;
+              this.startTimeEnforced = true;
+            } catch {
+              // Ignore seek errors
+            }
+          }
+        }
+        
+        // Keep preload as 'metadata' - poster will show until correct frame is ready
+        // For non-HD videos with aggressivePreload, we can switch to 'auto' after seek completes
+        // but only if we have a poster to cover any potential frame flashes
+        if (options?.aggressivePreload && this.originalPoster) {
+          // Switch to auto preload after metadata is loaded and seek is attempted
+          // This allows better loading while poster is still showing
+          this.videoElement.preload = 'auto';
+        }
+      };
+      this.videoElement.addEventListener('loadedmetadata', onMeta, { once: true });
+      this.videoElement.addEventListener('canplay', onMeta, { once: true });
+      
+      // Also ensure seek when first frame loads - prevents showing last frame
+      // This catches cases where browser initially positions video at end
+      const onLoadedData = () => {
+        // Ensure video is paused to prevent auto-playing
+        this.videoElement.pause();
+        
+        if (this.desiredStartTime !== undefined && this.videoElement.readyState >= 2) {
+          const current = this.videoElement.currentTime;
+          const desired = this.desiredStartTime;
+          // If video is positioned at or near the end (likely the last frame), seek to start
+          // Check if current time is close to duration (within 0.5s) or significantly past startTime
+          const duration = this.videoElement.duration;
+          const isNearEnd = duration > 0 && (duration - current) < 0.5;
+          const isPastStart = current > desired + 0.5;
+          
+          if (isNearEnd || isPastStart) {
+            try {
+              this.videoElement.currentTime = desired;
+              this.startTimeEnforced = true;
+            } catch {
+              // Ignore seek errors
+            }
+          }
+          
+          // For non-HD videos with aggressivePreload, switch to auto after loadeddata
+          // if we have a poster to cover any potential frame flashes
+          if (options?.aggressivePreload && this.originalPoster) {
+            this.videoElement.preload = 'auto';
+          }
+        }
+      };
+      this.videoElement.addEventListener('loadeddata', onLoadedData, { once: true });
+      
+      // On mobile, also enforce startTime in timeupdate to catch browsers that reset on play()
+      // Only enforce if we have a startTime > 0 and video is actually at the wrong position
+      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      if (isMobile && this.desiredStartTime !== undefined && this.desiredStartTime > 0) {
+        const enforceStartTime = () => {
+          // Only enforce if we haven't successfully enforced yet, or if video reset to 0
+          if (this.videoElement.readyState >= 1 && !this.startTimeEnforced) {
+            const current = this.videoElement.currentTime;
+            const desired = this.desiredStartTime!;
+            const diff = Math.abs(current - desired);
+            
+            // Only seek if we're significantly off AND video is at 0 or very early
+            // This prevents interfering with normal playback
+            if (diff > 0.5 && current < 1) {
+              try {
+                this.videoElement.currentTime = desired;
+                this.startTimeEnforced = true;
+              } catch {
+                // Ignore seek errors
+              }
+            } else if (diff <= 0.1) {
+              // Once we're at or very close to startTime, mark as enforced and stop checking
+              this.startTimeEnforced = true;
+            }
+          }
+        };
+        // Use a throttled version to avoid excessive seeks
+        let lastEnforceTime = 0;
+        const throttledEnforce = () => {
+          // Stop enforcing once we're at the correct position
+          if (this.startTimeEnforced) {
+            return;
+          }
+          const now = Date.now();
+          if (now - lastEnforceTime > 200) { // Throttle to every 200ms
+            lastEnforceTime = now;
+            enforceStartTime();
+          }
+        };
+        this.videoElement.addEventListener('timeupdate', throttledEnforce);
+        
+        // Add persistent playing event listener to re-seek when video starts playing
+        // This catches cases where mobile browsers reset currentTime to 0 on play()
+        // Only fire once per play session
+        let playingSeekAttempted = false;
+        const onPlaying = () => {
+          if (this.desiredStartTime !== undefined && this.videoElement.readyState >= 1 && !playingSeekAttempted) {
+            const current = this.videoElement.currentTime;
+            const desired = this.desiredStartTime;
+            const diff = Math.abs(current - desired);
+            // If video is significantly off from desired start time (especially if at 0), seek to it
+            if (diff > 0.5 && current < 1) {
+              try {
+                this.videoElement.currentTime = desired;
+                this.startTimeEnforced = true;
+                playingSeekAttempted = true;
+              } catch {
+                // Ignore seek errors
+              }
+            } else if (diff <= 0.1) {
+              this.startTimeEnforced = true;
+              playingSeekAttempted = true;
+            }
+          }
+        };
+        this.videoElement.addEventListener('playing', onPlaying);
+        
+        // Reset playing seek flag when video pauses
+        const onPause = () => {
+          playingSeekAttempted = false;
+        };
+        this.videoElement.addEventListener('pause', onPause);
+      }
+    }
+
     if (this.videoElement.readyState >= 2) {
       this.resolveReady();
     }
 
     const playerWrapper = document.createElement('div');
     playerWrapper.className = 'video-player';
+    playerWrapper.style.position = 'absolute';
+    playerWrapper.style.top = '0';
+    playerWrapper.style.left = '0';
+    playerWrapper.style.width = '100%';
+    playerWrapper.style.height = '100%';
+    playerWrapper.style.zIndex = '1'; // Below thumbnail (z-index: 2) but above background
+    // Enable hardware acceleration for video wrapper
+    playerWrapper.style.transform = 'translateZ(0)';
+    playerWrapper.style.willChange = 'transform';
+    
+    this.videoElement.style.position = 'relative';
+    this.videoElement.style.zIndex = '1';
+    // Enable hardware acceleration for video element
+    this.videoElement.style.transform = 'translateZ(0)';
+    this.videoElement.style.willChange = 'auto'; // Browser will optimize based on video playback
+    // Additional GPU acceleration hints
+    (this.videoElement.style as any).webkitTransform = 'translateZ(0)';
+    (this.videoElement.style as any).backfaceVisibility = 'hidden';
+    (this.videoElement.style as any).perspective = '1000px';
+    
     playerWrapper.appendChild(this.videoElement);
     this.container.appendChild(playerWrapper);
   }
@@ -188,6 +502,8 @@ export class NativeVideoPlayer {
   private createControls(): void {
     this.controlsContainer = document.createElement('div');
     this.controlsContainer.className = 'video-player__controls';
+    // Ensure controls are always on top
+    this.controlsContainer.style.zIndex = '10';
 
     // Play/Pause button
     this.playButton = document.createElement('button');
@@ -242,10 +558,16 @@ export class NativeVideoPlayer {
     });
 
     // Fullscreen change events (desktop and Android)
-    document.addEventListener('fullscreenchange', () => this.handleFullscreenChange());
-    document.addEventListener('webkitfullscreenchange', () => this.handleFullscreenChange());
-    document.addEventListener('mozfullscreenchange', () => this.handleFullscreenChange());
-    document.addEventListener('MSFullscreenChange', () => this.handleFullscreenChange());
+    // Store handlers for proper cleanup
+    this.fullscreenChangeHandler = () => this.handleFullscreenChange();
+    this.webkitFullscreenChangeHandler = () => this.handleFullscreenChange();
+    this.mozFullscreenChangeHandler = () => this.handleFullscreenChange();
+    this.msFullscreenChangeHandler = () => this.handleFullscreenChange();
+    
+    document.addEventListener('fullscreenchange', this.fullscreenChangeHandler);
+    document.addEventListener('webkitfullscreenchange', this.webkitFullscreenChangeHandler);
+    document.addEventListener('mozfullscreenchange', this.mozFullscreenChangeHandler);
+    document.addEventListener('MSFullscreenChange', this.msFullscreenChangeHandler);
 
     // iOS fullscreen events
     this.videoElement.addEventListener('webkitbeginfullscreen', () => {
@@ -370,10 +692,61 @@ export class NativeVideoPlayer {
     // Hint browser to allow autoplay of muted content
     this.videoElement.autoplay = true;
     
+    // On mobile, ensure startTime is set right before play (browsers may reset on play)
+    // Only reset flag if we have a startTime > 0
+    if (isMobile && this.desiredStartTime !== undefined && this.desiredStartTime > 0 && this.videoElement.readyState >= 1) {
+      this.startTimeEnforced = false; // Reset flag to allow re-seeking
+      try {
+        this.videoElement.currentTime = this.desiredStartTime;
+      } catch {
+        // Ignore seek errors
+      }
+    }
+    
     try {
       const playPromise = this.videoElement.play();
       if (playPromise !== undefined) {
         await playPromise;
+        
+        // On mobile, re-seek after play() in case browser reset currentTime
+        // Only for videos with startTime > 0, and only if video is actually at wrong position
+        if (isMobile && this.desiredStartTime !== undefined && this.desiredStartTime > 0) {
+          const performReSeek = (attempt: number = 0) => {
+            try {
+              if (this.videoElement.readyState >= 1) {
+                const current = this.videoElement.currentTime;
+                const desired = this.desiredStartTime!;
+                const diff = Math.abs(current - desired);
+                
+                // Only seek if video is significantly off AND at 0 or very early
+                // This prevents interfering with normal playback
+                if (diff > 0.5 && current < 1) {
+                  this.videoElement.currentTime = desired;
+                  this.startTimeEnforced = true;
+                  
+                  // For HD videos, make 1 additional attempt after a delay
+                  // Attempt 0: immediate (requestAnimationFrame)
+                  // Attempt 1: after 300ms
+                  if (attempt < 1) {
+                    setTimeout(() => performReSeek(attempt + 1), 300);
+                  }
+                } else if (diff <= 0.1) {
+                  // Successfully at desired time, mark as enforced
+                  this.startTimeEnforced = true;
+                }
+              } else if (attempt < 1) {
+                // Video not ready yet, try again after a delay
+                setTimeout(() => performReSeek(attempt + 1), 300);
+              }
+            } catch {
+              // Ignore seek errors
+            }
+          };
+          
+          // Start first attempt using requestAnimationFrame to ensure play() has fully started
+          requestAnimationFrame(() => performReSeek(0));
+        }
+        
         // Update state after successful play
         this.state.isPlaying = !this.videoElement.paused;
         this.updatePlayButton();
@@ -413,6 +786,21 @@ export class NativeVideoPlayer {
 
   toggleMute(): void {
     this.videoElement.muted = !this.videoElement.muted;
+  }
+
+  setMuted(isMuted: boolean): void {
+    this.videoElement.muted = !!isMuted;
+    this.state.isMuted = this.videoElement.muted;
+    this.updateMuteButton();
+  }
+
+  setVolume(volume: number): void {
+    // Clamp volume between 0 and 1
+    const clampedVolume = Math.max(0, Math.min(1, volume));
+    this.videoElement.volume = clampedVolume;
+    this.state.volume = clampedVolume;
+    // Update mute button state if volume is 0
+    this.updateMuteButton();
   }
 
   seekTo(time: number): void {
@@ -592,11 +980,237 @@ export class NativeVideoPlayer {
     });
   }
 
-  destroy(): void {
+  /**
+   * Unload the video to free memory while preserving state for reload
+   * Aggressively clears all video data to reduce RAM usage
+   */
+  unload(): void {
+    if (this.isUnloaded) {
+      return; // Already unloaded
+    }
+
     this.videoElement.pause();
+    this.videoElement.currentTime = 0;
+    
+    // Remove from DOM first to release references and help GC
+    const parent = this.videoElement.parentNode;
+    if (parent) {
+      parent.removeChild(this.videoElement);
+    }
+    
+    // Clear all sources to stop network requests and release buffers
     this.videoElement.src = '';
+    // Clear srcObject to fully release video buffers (critical for memory)
+    if (this.videoElement.srcObject) {
+      this.videoElement.srcObject = null;
+    }
+    
+    // Remove all source elements to clear browser cache
+    while (this.videoElement.firstChild) {
+      this.videoElement.removeChild(this.videoElement.firstChild);
+    }
+    
+    // Clear any poster to free image memory
+    this.videoElement.removeAttribute('poster');
+    this.videoElement.removeAttribute('src');
+    
+    // Force browser to release video buffer
     this.videoElement.load();
-    this.container.innerHTML = '';
+    
+    // Re-insert to DOM (needed for reload functionality)
+    if (parent) {
+      parent.appendChild(this.videoElement);
+    }
+    
+    this.isUnloaded = true;
+    this.state.isPlaying = false;
+    this.state.currentTime = 0;
+    this.state.duration = 0;
+    this.updatePlayButton();
+    this.notifyStateChange();
+  }
+
+  /**
+   * Reload the video after being unloaded
+   */
+  reload(): void {
+    if (!this.isUnloaded || !this.originalVideoUrl) {
+      return; // Not unloaded or no original URL
+    }
+
+    // Recreate video element with original URL and settings
+    this.videoElement.src = this.originalVideoUrl;
+    // Restore poster if it was set
+    if (this.originalPoster) {
+      this.videoElement.poster = this.originalPoster;
+    }
+    this.videoElement.load();
+    this.isUnloaded = false;
+    this.errorHandled = false;
+    this.startTimeEnforced = false;
+    this.desiredStartTime = this.originalStartTime;
+
+    // Re-setup start time handling if needed
+    if (this.originalStartTime !== undefined) {
+      const hasStart = typeof this.originalStartTime === 'number' && Number.isFinite(this.originalStartTime);
+      this.desiredStartTime = hasStart ? Math.max(0, this.originalStartTime) : undefined;
+      this.startTimeEnforced = false;
+
+      if (hasStart && this.desiredStartTime !== undefined) {
+        const trySeek = () => {
+          try {
+            if (this.videoElement.readyState >= 1 && this.desiredStartTime !== undefined) {
+              this.videoElement.currentTime = this.desiredStartTime;
+              this.startTimeEnforced = true;
+            }
+          } catch {
+            // Some browsers require metadata; handled by events below
+          }
+        };
+
+        if (this.videoElement.readyState >= 1) {
+          trySeek();
+        }
+
+        const onMeta = () => {
+          trySeek();
+        };
+        this.videoElement.addEventListener('loadedmetadata', onMeta, { once: true });
+        this.videoElement.addEventListener('canplay', onMeta, { once: true });
+      }
+    }
+
+    // Re-setup end time handling if needed
+    if (this.originalEndTime !== undefined && this.originalEndTime > 0.25) {
+      this.videoElement.addEventListener('timeupdate', () => {
+        if (this.videoElement.currentTime >= this.originalEndTime!) {
+          this.videoElement.currentTime = 0;
+          if (!this.videoElement.paused) {
+            this.videoElement.play().catch(() => {});
+          }
+        }
+      });
+    }
+
+    // Re-resolve ready promise
+    this.readyPromise = new Promise<void>((resolve) => { this.readyResolver = resolve; });
+    const handleReady = () => this.resolveReady();
+    this.videoElement.addEventListener('loadeddata', handleReady, { once: true });
+    this.videoElement.addEventListener('canplay', handleReady, { once: true });
+
+    if (this.videoElement.readyState >= 2) {
+      this.resolveReady();
+    }
+  }
+
+  /**
+   * Check if the video is currently unloaded
+   */
+  getIsUnloaded(): boolean {
+    return this.isUnloaded;
+  }
+
+  destroy(): void {
+    // Aggressively clean up all resources to free RAM
+    if (!this.isUnloaded) {
+      this.unload();
+    }
+    
+    // Remove all event listeners by clearing src and removing element
+    if (this.videoElement) {
+      // Pause and stop all playback
+      this.videoElement.pause();
+      this.videoElement.currentTime = 0;
+      
+      // Get parent BEFORE removing element - we need it for clone-and-replace
+      const parent = this.videoElement.parentNode;
+      
+      // Clear all sources to stop network requests
+      this.videoElement.src = '';
+      this.videoElement.srcObject = null;
+      
+      // Remove all child nodes (source elements, etc.)
+      while (this.videoElement.firstChild) {
+        this.videoElement.removeChild(this.videoElement.firstChild);
+      }
+      
+      // Clear all attributes that might hold references
+      this.videoElement.removeAttribute('poster');
+      this.videoElement.removeAttribute('src');
+      this.videoElement.removeAttribute('preload');
+      
+      // Force browser to release video buffers
+      this.videoElement.load();
+      
+      // Clone and replace to break all event listener references
+      // This ensures all listeners are removed and memory is freed
+      // Do this BEFORE removing from DOM, so the element is still a child
+      if (parent && parent.contains(this.videoElement)) {
+        try {
+          const newVideo = this.videoElement.cloneNode(false) as HTMLVideoElement;
+          parent.replaceChild(newVideo, this.videoElement);
+          parent.removeChild(newVideo);
+        } catch (e) {
+          // If replaceChild fails, the element may have been removed already
+          // Try to remove it directly if it's still in the parent
+          try {
+            if (parent.contains(this.videoElement)) {
+              parent.removeChild(this.videoElement);
+            }
+          } catch (e2) {
+            // Element already removed or parent changed, ignore
+          }
+        }
+      } else if (parent) {
+        // Element not in parent anymore, but parent exists - try to remove it anyway
+        try {
+          if (parent.contains(this.videoElement)) {
+            parent.removeChild(this.videoElement);
+          }
+        } catch (e) {
+          // Element already removed, ignore
+        }
+      }
+    }
+    
+    // Remove document-level event listeners
+    if (this.fullscreenChangeHandler) {
+      document.removeEventListener('fullscreenchange', this.fullscreenChangeHandler);
+      this.fullscreenChangeHandler = undefined;
+    }
+    if (this.webkitFullscreenChangeHandler) {
+      document.removeEventListener('webkitfullscreenchange', this.webkitFullscreenChangeHandler);
+      this.webkitFullscreenChangeHandler = undefined;
+    }
+    if (this.mozFullscreenChangeHandler) {
+      document.removeEventListener('mozfullscreenchange', this.mozFullscreenChangeHandler);
+      this.mozFullscreenChangeHandler = undefined;
+    }
+    if (this.msFullscreenChangeHandler) {
+      document.removeEventListener('MSFullscreenChange', this.msFullscreenChangeHandler);
+      this.msFullscreenChangeHandler = undefined;
+    }
+    
+    // Clear container completely
+    if (this.container) {
+      this.container.innerHTML = '';
+    }
+    
+    // Clear all references to help garbage collection
+    this.videoElement = undefined as any;
+    this.controlsContainer = undefined as any;
+    this.playButton = undefined as any;
+    this.muteButton = undefined as any;
+    this.progressBar = undefined as any;
+    this.timeDisplay = undefined as any;
+    this.fullscreenButton = undefined as any;
+    this.onStateChange = undefined;
+    this.externalStateListener = undefined;
+    this.readyResolver = undefined;
+    this.originalVideoUrl = undefined;
+    this.originalStartTime = undefined;
+    this.originalEndTime = undefined;
+    this.originalPoster = undefined;
   }
 }
 

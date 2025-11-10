@@ -9,12 +9,12 @@ import { VideoPost } from './VideoPost.js';
 import { NativeVideoPlayer } from './NativeVideoPlayer.js';
 import { VisibilityManager } from './VisibilityManager.js';
 import { FavoritesManager } from './FavoritesManager.js';
-import { throttle, debounce, isValidMediaUrl } from './utils.js';
+import { throttle, debounce, isValidMediaUrl, detectDeviceCapabilities, getOptimizedThumbnailUrl, DeviceCapabilities } from './utils.js';
 
 const DEFAULT_SETTINGS: FeedSettings = {
   autoPlay: true, // Enable autoplay for markers
   autoPlayThreshold: 0.2, // Lower threshold - start playing when 20% visible instead of 50%
-  maxConcurrentVideos: Number.POSITIVE_INFINITY,
+  maxConcurrentVideos: 2, // Limit to 2 concurrent videos to prevent 8GB+ RAM usage
   unloadDistance: 1000,
   cardMaxWidth: 800,
   aspectRatio: 'preserve',
@@ -81,6 +81,10 @@ export class FeedContainer {
   private activeSearchAbortController?: AbortController;
   private activeLoadVideosAbortController?: AbortController;
   private skeletonLoaders: HTMLElement[] = [];
+  private useHDMode: boolean = false;
+  private useVolumeMode: boolean = false;
+  private loadObservers: Map<string, IntersectionObserver> = new Map(); // Track load observers for cleanup
+  private deviceCapabilities: DeviceCapabilities; // Device capabilities for adaptive quality
 
   constructor(container: HTMLElement, api?: StashAPI, settings?: Partial<FeedSettings>) {
     this.container = container;
@@ -96,8 +100,8 @@ export class FeedContainer {
     // Disabled eager preload - videos now load on-demand when close to viewport (50px) or on click
     // This prevents early video loads that compete with thumbnail loading
     this.eagerPreloadCount = 0; // No eager preloading - let Intersection Observer handle it
-    // Reduced from 6 to 3 on mobile to prevent network congestion
-    this.maxSimultaneousPreloads = this.isMobileDevice ? 3 : 4;
+    // Extremely reduced to prevent 8GB+ RAM usage: max 1 on mobile, 2 on desktop
+    this.maxSimultaneousPreloads = this.isMobileDevice ? 1 : 2;
 
     if (this.isMobileDevice) {
       this.settings.backgroundPreloadDelay = 80;
@@ -106,6 +110,9 @@ export class FeedContainer {
     this.posts = new Map();
     this.postOrder = [];
     this.eagerPreloadedPosts = new Set();
+    
+    // Detect device capabilities for adaptive media quality
+    this.deviceCapabilities = detectDeviceCapabilities();
 
     // Check if container structure already exists (from initial HTML skeleton)
     let existingScrollContainer = this.container.querySelector('.feed-scroll-container') as HTMLElement;
@@ -117,6 +124,16 @@ export class FeedContainer {
       this.scrollContainer.className = 'feed-scroll-container';
       this.container.appendChild(this.scrollContainer);
     }
+    
+    // Load HD mode preference (default OFF -> marker previews) BEFORE rendering header/toggle
+    try {
+      const savedHD = localStorage.getItem('stashgifs-useHDMode');
+      this.useHDMode = savedHD === 'true' ? true : false;
+    } catch {
+      this.useHDMode = false;
+    }
+    // Always default to muted (volume mode disabled)
+    this.useVolumeMode = false;
     
     // Create header bar with unified search
     this.createHeaderBar();
@@ -133,12 +150,20 @@ export class FeedContainer {
     }
 
     // Initialize visibility manager
+    // Enable autoplay for non-HD mode (viewport-based), disable for HD mode (hover-based only)
     this.visibilityManager = new VisibilityManager({
       threshold: this.settings.autoPlayThreshold,
-      autoPlay: this.settings.autoPlay,
+      autoPlay: !this.useHDMode, // Enable autoplay in non-HD mode, disable in HD mode
       maxConcurrent: this.settings.maxConcurrentVideos,
       debug: this.shouldEnableVisibilityDebug(),
+      onHoverLoadRequest: (postId: string) => this.triggerVideoLoadOnHover(postId),
     });
+
+    // Apply saved volume mode state to visibility manager
+    this.visibilityManager.setExclusiveAudio(this.useVolumeMode);
+    
+    // Set HD mode state for more aggressive unloading
+    this.visibilityManager.setHDMode(this.useHDMode);
 
     // Initialize favorites manager
     this.favoritesManager = new FavoritesManager(this.api);
@@ -273,7 +298,7 @@ export class FeedContainer {
     // Inner container - full width of header (already constrained)
     const headerInner = document.createElement('div');
     headerInner.style.display = 'grid';
-    headerInner.style.gridTemplateColumns = 'auto 1fr';
+    headerInner.style.gridTemplateColumns = 'auto 1fr auto'; // Logo, search, buttons
     headerInner.style.alignItems = 'center';
     headerInner.style.gap = '12px';
     headerInner.style.width = '100%';
@@ -411,6 +436,7 @@ export class FeedContainer {
     queryInput.style.width = '100%';
     queryInput.style.minWidth = '0';
     queryInput.style.height = '36px';
+    // Normal padding now that buttons are outside
     queryInput.style.padding = '0 14px';
     queryInput.style.borderRadius = '10px';
     queryInput.style.border = '1px solid rgba(255,255,255,0.12)';
@@ -438,8 +464,156 @@ export class FeedContainer {
     loadingSpinner.style.willChange = 'transform';
     inputWrapper.appendChild(loadingSpinner);
 
+    // Buttons container (separate from search input, like logo)
+    const buttonsContainer = document.createElement('div');
+    buttonsContainer.style.display = 'inline-flex';
+    buttonsContainer.style.alignItems = 'center';
+    buttonsContainer.style.gap = '8px';
+    buttonsContainer.style.height = '36px';
+
+    // HD toggle button (separate element like logo)
+    const hdToggle = document.createElement('button');
+    hdToggle.type = 'button';
+    hdToggle.title = 'Load HD scene videos';
+    hdToggle.setAttribute('aria-label', 'Toggle HD videos');
+    hdToggle.style.height = '36px';
+    hdToggle.style.minWidth = '44px';
+    hdToggle.style.padding = '0 14px';
+    hdToggle.style.borderRadius = '10px';
+    hdToggle.style.border = '1px solid rgba(255,255,255,0.12)';
+    hdToggle.style.background = 'rgba(28, 28, 30, 0.6)';
+    hdToggle.style.color = 'rgba(255,255,255,0.85)';
+    hdToggle.style.fontSize = '12px';
+    hdToggle.style.fontWeight = '700';
+    hdToggle.style.cursor = 'pointer';
+    hdToggle.style.lineHeight = '1.2';
+    hdToggle.style.userSelect = 'none';
+    hdToggle.style.display = 'inline-flex';
+    hdToggle.style.alignItems = 'center';
+    hdToggle.style.justifyContent = 'center';
+    hdToggle.style.transition = 'background 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s cubic-bezier(0.2, 0, 0, 1)';
+    hdToggle.textContent = 'HD';
+
+    const setHDToggleVisualState = () => {
+      if (this.useHDMode) {
+        hdToggle.style.background = 'rgba(76, 175, 80, 0.25)'; // green-ish background
+        hdToggle.style.borderColor = 'rgba(76, 175, 80, 0.55)';
+        hdToggle.style.color = '#C8E6C9';
+      } else {
+        hdToggle.style.background = 'rgba(28, 28, 30, 0.6)';
+        hdToggle.style.borderColor = 'rgba(255,255,255,0.16)';
+        hdToggle.style.color = 'rgba(255,255,255,0.85)';
+      }
+    };
+    setHDToggleVisualState();
+
+    hdToggle.addEventListener('mouseenter', () => {
+      hdToggle.style.background = 'rgba(28, 28, 30, 0.8)';
+      hdToggle.style.borderColor = 'rgba(255,255,255,0.16)';
+      hdToggle.style.opacity = '0.9';
+    });
+    hdToggle.addEventListener('mouseleave', () => {
+      setHDToggleVisualState();
+      hdToggle.style.opacity = '1';
+    });
+
+    const onHDToggleClick = () => {
+      // Flip mode
+      const newHDMode = !this.useHDMode;
+      
+      // Persist the new HD mode preference to localStorage
+      // This will be read when the page reloads
+      try {
+        localStorage.setItem('stashgifs-useHDMode', newHDMode ? 'true' : 'false');
+      } catch (e) {
+        console.error('Failed to save HD mode preference:', e);
+      }
+      
+      // Do a full page refresh to reload the entire site with the new HD setting
+      // This ensures a clean state and proper initialization
+      window.location.reload();
+    };
+    hdToggle.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onHDToggleClick();
+    });
+
+    // Volume toggle button (separate element like logo)
+    const volToggle = document.createElement('button');
+    volToggle.type = 'button';
+    volToggle.title = 'Play audio for focused video only';
+    volToggle.setAttribute('aria-label', 'Toggle volume mode');
+    volToggle.style.height = '36px';
+    volToggle.style.minWidth = '44px';
+    volToggle.style.padding = '0 14px';
+    volToggle.style.borderRadius = '10px';
+    volToggle.style.border = '1px solid rgba(255,255,255,0.12)';
+    volToggle.style.background = 'rgba(28, 28, 30, 0.6)';
+    volToggle.style.color = 'rgba(255,255,255,0.85)';
+    volToggle.style.fontSize = '12px';
+    volToggle.style.fontWeight = '700';
+    volToggle.style.cursor = 'pointer';
+    volToggle.style.lineHeight = '1.2';
+    volToggle.style.userSelect = 'none';
+    volToggle.style.display = 'inline-flex';
+    volToggle.style.alignItems = 'center';
+    volToggle.style.justifyContent = 'center';
+    volToggle.style.transition = 'background 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s cubic-bezier(0.2, 0, 0, 1)';
+    
+    // Muted icon (using same icon as video controls)
+    const mutedIcon = '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style="display: block;"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>';
+    
+    // Unmuted icon (using same icon as video controls)
+    const unmutedIcon = '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style="display: block;"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
+
+    const setVolToggleVisualState = () => {
+      if (this.useVolumeMode) {
+        volToggle.style.background = 'rgba(33, 150, 243, 0.25)'; // blue-ish
+        volToggle.style.borderColor = 'rgba(33, 150, 243, 0.55)';
+        volToggle.style.color = '#BBDEFB';
+        volToggle.innerHTML = unmutedIcon;
+      } else {
+        volToggle.style.background = 'rgba(28, 28, 30, 0.6)';
+        volToggle.style.borderColor = 'rgba(255,255,255,0.16)';
+        volToggle.style.color = 'rgba(255,255,255,0.85)';
+        volToggle.innerHTML = mutedIcon;
+      }
+    };
+    setVolToggleVisualState();
+
+    volToggle.addEventListener('mouseenter', () => {
+      volToggle.style.background = 'rgba(28, 28, 30, 0.8)';
+      volToggle.style.borderColor = 'rgba(255,255,255,0.16)';
+      volToggle.style.opacity = '0.9';
+    });
+    volToggle.addEventListener('mouseleave', () => {
+      setVolToggleVisualState();
+      volToggle.style.opacity = '1';
+    });
+
+    const onVolToggleClick = async () => {
+      this.useVolumeMode = !this.useVolumeMode;
+      setVolToggleVisualState();
+      // Apply to visibility manager
+      this.visibilityManager.setExclusiveAudio(this.useVolumeMode);
+      this.visibilityManager.reevaluateAudioFocus();
+    };
+    volToggle.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void onVolToggleClick();
+    });
+
     // Append input to wrapper
     inputWrapper.appendChild(queryInput);
+    
+    // Add buttons to buttons container
+    buttonsContainer.appendChild(volToggle);
+    buttonsContainer.appendChild(hdToggle);
+    
+    // Add buttons container to header inner (third grid column)
+    headerInner.appendChild(buttonsContainer);
 
     const suggestions = document.createElement('div');
     suggestions.className = 'feed-filters__suggestions hide-scrollbar';
@@ -2236,10 +2410,14 @@ export class FeedContainer {
   /**
    * Load scene markers from Stash
    */
-  async loadVideos(filters?: FilterOptions, append: boolean = false, signal?: AbortSignal): Promise<void> {
-    // Cancel previous loadVideos queries if no signal provided (new search started)
-    if (!signal && this.activeLoadVideosAbortController) {
+  async loadVideos(filters?: FilterOptions, append: boolean = false, signal?: AbortSignal, force: boolean = false): Promise<void> {
+    // Always cancel previous loadVideos queries (including append operations) to prevent overload
+    if (this.activeLoadVideosAbortController) {
       this.activeLoadVideosAbortController.abort();
+      // Clean up all active load observers from previous operation
+      this.cleanupLoadObservers();
+      // Stop any video elements that are loading
+      this.stopLoadingVideos();
     }
     // Create new AbortController if no signal provided
     if (!signal) {
@@ -2247,7 +2425,8 @@ export class FeedContainer {
       signal = this.activeLoadVideosAbortController.signal;
     }
     
-    if (this.isLoading) {
+    // Skip loading check if force is true (used for HD toggle reloads)
+    if (!force && this.isLoading) {
       return;
     }
 
@@ -2335,7 +2514,8 @@ export class FeedContainer {
         }
         
         // Create post (returns container element)
-        const postContainer = await this.createPost(markers[i]);
+        // Pass abort signal to allow cleanup if aborted during creation
+        const postContainer = await this.createPost(markers[i], signal);
         
         // Remove one skeleton loader as each real post is added
         if (!append && i < this.getSkeletonCount()) {
@@ -2354,7 +2534,12 @@ export class FeedContainer {
         // Insert fragment when chunk is complete or at end
         const shouldInsert = (i + 1) % renderChunkSize === 0 || i === markers.length - 1;
         if (shouldInsert && fragment && fragmentPostCount > 0) {
-          this.postsContainer.appendChild(fragment);
+          // If loadMoreTrigger exists, insert before it to keep trigger at the end
+          if (this.loadMoreTrigger && this.loadMoreTrigger.parentNode === this.postsContainer) {
+            this.postsContainer.insertBefore(fragment, this.loadMoreTrigger);
+          } else {
+            this.postsContainer.appendChild(fragment);
+          }
           fragment = null;
           fragmentPostCount = 0;
           
@@ -2374,7 +2559,15 @@ export class FeedContainer {
 
       if (append) {
         this.currentPage = page;
+        
+        // Clean up distant posts when loading more content (infinite scroll)
+        // This prevents memory buildup without being jarring during regular scrolling
+        this.cleanupDistantPosts();
       }
+      
+      // Always ensure loadMoreTrigger is at the end after adding posts
+      // This is critical for infinite scroll to continue working
+      this.updateInfiniteScrollTrigger();
 
       // Batch load all thumbnails - start immediately after first post is rendered
       // Reduced delay for faster initial load (single RAF instead of double + timeout)
@@ -2392,14 +2585,13 @@ export class FeedContainer {
         });
       }
 
-      // Autoplay first two on initial load (page 1) so they start without scroll
-      // Delay autoplay to let thumbnails load first
-      if (!append && page === 1) {
-        // Wait for first batch of thumbnails to start loading before autoplay
-        window.setTimeout(() => {
-          this.autoplayInitial(2).catch((e) => console.warn('Autoplay initial failed', e));
-        }, 500);
-      }
+      // Initial autoplay disabled - using hover-based autoplay instead
+      // Videos will play when user hovers over them
+      // if (!append && page === 1) {
+      //   window.setTimeout(() => {
+      //     this.autoplayInitial(2).catch((e) => console.warn('Autoplay initial failed', e));
+      //   }, 500);
+      // }
       // Suggestion preloading is handled in init() with longer delay
       // Background preloading disabled - videos load on-demand when close to viewport (50px) or on click
 
@@ -2422,11 +2614,96 @@ export class FeedContainer {
   }
 
   /**
+   * Check if browser supports the video codec/format
+   * Returns true if supported, false if not
+   */
+  private isVideoCodecSupported(marker: SceneMarker, videoUrl: string): boolean {
+    // Create a temporary video element to check codec support
+    const testVideo = document.createElement('video');
+    
+    // Check for HEVC/H.265 codec from scene files
+    const sceneFiles = marker.scene?.files;
+    if (sceneFiles && sceneFiles.length > 0) {
+      const videoCodec = sceneFiles[0].video_codec?.toLowerCase() || '';
+      const isHevc = videoCodec.includes('hevc') || 
+                     videoCodec.includes('h.265') ||
+                     videoCodec.includes('h265');
+      
+      if (isHevc) {
+        // Check if browser supports HEVC
+        const hevcSupport1 = testVideo.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0,mp4a.40.2"');
+        const hevcSupport2 = testVideo.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0,mp4a.40.2"');
+        const hevcSupport3 = testVideo.canPlayType('video/mp4; codecs="hev1"');
+        const hevcSupport4 = testVideo.canPlayType('video/mp4; codecs="hvc1"');
+        
+        const hevcSupport = hevcSupport1 || hevcSupport2 || hevcSupport3 || hevcSupport4;
+        
+        // Empty string means not supported
+        if (!hevcSupport || hevcSupport.length === 0) {
+          return false; // HEVC not supported
+        }
+      }
+    }
+    
+    // Check for Matroska/MKV format
+    const isMatroska = videoUrl.toLowerCase().includes('.mkv') ||
+                       videoUrl.toLowerCase().includes('matroska');
+    
+    if (isMatroska) {
+      // Check if browser supports Matroska
+      const matroskaSupport = testVideo.canPlayType('video/x-matroska') ||
+                              testVideo.canPlayType('video/mkv');
+      
+      if (!matroskaSupport || matroskaSupport.length === 0) {
+        return false; // Matroska not supported
+      }
+    }
+    
+    return true; // Codec/format appears to be supported
+  }
+
+  /**
+   * Clean up all active load observers
+   */
+  private cleanupLoadObservers(): void {
+    for (const [postId, observer] of this.loadObservers.entries()) {
+      observer.disconnect();
+    }
+    this.loadObservers.clear();
+  }
+
+  /**
+   * Stop video elements that are currently loading
+   */
+  private stopLoadingVideos(): void {
+    for (const [postId, post] of this.posts.entries()) {
+      const player = post.getPlayer();
+      if (player) {
+        const videoElement = player.getVideoElement();
+        // If video is loading (networkState is LOADING or networkState is 2), stop it
+        if (videoElement.networkState === 2 || videoElement.readyState < 2) {
+          try {
+            videoElement.pause();
+            videoElement.src = '';
+            videoElement.load(); // This cancels the network request
+          } catch (e) {
+            // Ignore errors when stopping video
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Create a video post from a scene marker
    * Returns the post container element for batch DOM insertion
    */
-  private async createPost(marker: SceneMarker): Promise<HTMLElement | null> {
-    const videoUrl = this.api.getMarkerVideoUrl(marker);
+  private async createPost(marker: SceneMarker, signal?: AbortSignal): Promise<HTMLElement | null> {
+    // Choose video source based on HD toggle
+    const selectedUrl = this.useHDMode
+      ? this.api.getVideoUrl(marker.scene)
+      : this.api.getMarkerVideoUrl(marker);
+    const videoUrl = selectedUrl;
     const safeVideoUrl = isValidMediaUrl(videoUrl) ? videoUrl : undefined;
     
     // Skip creating post if no valid video URL is available
@@ -2438,16 +2715,20 @@ export class FeedContainer {
       });
       return null;
     }
+    
+    // Check if browser supports the video codec/format
+    // Skip unsupported codecs (HEVC, Matroska, etc.) to avoid showing broken content
+    if (!this.isVideoCodecSupported(marker, safeVideoUrl)) {
+      // Silently skip - don't log to avoid console spam
+      return null;
+    }
 
     const postContainer = document.createElement('article');
     postContainer.className = 'video-post-wrapper';
 
-    const thumbnailUrl = this.api.getMarkerThumbnailUrl(marker);
-
     const postData: VideoPostData = {
       marker,
       videoUrl: safeVideoUrl, // Use safeVideoUrl instead of potentially invalid videoUrl
-      thumbnailUrl,
       startTime: marker.seconds,
       endTime: marker.end_seconds,
     };
@@ -2464,53 +2745,79 @@ export class FeedContainer {
     this.posts.set(marker.id, post);
     this.postOrder.push(marker.id);
 
+    // If HD mode is enabled at feed level, reflect this on the card's HD icon
+    if (this.useHDMode) {
+      post.setHQMode(true);
+    }
+
     // Don't append to DOM here - return container for batch insertion
     // Caller will handle DOM insertion using DocumentFragment
 
     // Observe for visibility
     this.visibilityManager.observePost(postContainer, marker.id);
 
-    // Register thumbnail synchronously (before video loading logic)
-    // Get thumbnail element directly from VideoPost instead of querying DOM
-    if (thumbnailUrl) {
-      const thumbnail = post.getThumbnailElement();
-      if (thumbnail) {
-        this.registerThumbnailForBatch(marker.id, thumbnail, thumbnailUrl, postContainer);
-      }
+    // Thumbnails removed - just load videos directly
+
+    // Check if aborted before setting up observers
+    if (signal?.aborted) {
+      return null;
     }
 
-    // Load video only when very close to viewport (50px) or on click
-    // Thumbnails are shown first, videos load on-demand to reduce bandwidth
+    // Load video only when very close to viewport (lazy loading)
+    // Use device capabilities to determine optimal loading distance
     if (safeVideoUrl) {
+      // Adaptive lazy loading based on device capabilities
+      // Low-end devices: load closer (25px), high-end: load earlier (100px)
+      const lazyLoadDistance = this.deviceCapabilities.availableRAM < 2048 ? '25px' : 
+                              this.deviceCapabilities.isHighEnd ? '100px' : '50px';
+      
       if (this.isMobileDevice) {
-        // On mobile: only load when very close (50px) - no aggressive preloading
-        const rootMargin = '50px';
+        // On mobile: only load when very close - conserve bandwidth and memory
+        const rootMargin = lazyLoadDistance;
         const loadObserver = new IntersectionObserver(
           (entries) => {
             for (const entry of entries) {
               if (entry.isIntersecting) {
+                // Check if aborted before loading
+                if (signal?.aborted) {
+                  loadObserver.disconnect();
+                  this.loadObservers.delete(marker.id);
+                  return;
+                }
                 const player = post.preload();
                 if (player) {
                   this.visibilityManager.registerPlayer(marker.id, player);
                 }
                 loadObserver.disconnect();
+                this.loadObservers.delete(marker.id);
               }
             }
           },
           { rootMargin, threshold: 0 }
         );
+        // Track observer for cleanup
+        this.loadObservers.set(marker.id, loadObserver);
         loadObserver.observe(postContainer);
         return postContainer;
       }
 
-      // Desktop: load when close to viewport (50px) - much less aggressive than before
-      const rootMargin = '50px';
+      // Desktop: load based on device capabilities and HD mode
+      // High-end devices can load earlier, low-end should wait
+      const rootMargin = this.useHDMode 
+        ? lazyLoadDistance // HD mode: load closer to conserve bandwidth
+        : (this.deviceCapabilities.isHighEnd ? '200px' : '100px'); // Non-HD: load earlier on high-end devices
       
       // Use Intersection Observer to load video when very close to viewport
       const loadObserver = new IntersectionObserver(
         (entries) => {
           for (const entry of entries) {
             if (entry.isIntersecting) {
+              // Check if aborted before loading
+              if (signal?.aborted) {
+                loadObserver.disconnect();
+                this.loadObservers.delete(marker.id);
+                return;
+              }
               // Load the player
               const player = post.preload();
               if (player) {
@@ -2521,15 +2828,18 @@ export class FeedContainer {
                 console.warn('FeedContainer: Player not created', { markerId: marker.id });
               }
               loadObserver.disconnect();
+              this.loadObservers.delete(marker.id);
             }
           }
         },
         { rootMargin, threshold: 0 } // Load when very close to viewport
       );
-        loadObserver.observe(postContainer);
-      } else {
-        console.warn('FeedContainer: No video URL for marker', { markerId: marker.id });
-      }
+      // Track observer for cleanup
+      this.loadObservers.set(marker.id, loadObserver);
+      loadObserver.observe(postContainer);
+    } else {
+      console.warn('FeedContainer: No video URL for marker', { markerId: marker.id });
+    }
     // Eager preload disabled - videos load on-demand via Intersection Observer
     
     // Return container for batch DOM insertion
@@ -2661,6 +2971,10 @@ export class FeedContainer {
         this.postsContainer.removeChild(this.postsContainer.firstChild);
       }
     }
+    
+    // Clean up all load observers
+    this.cleanupLoadObservers();
+    
     // Recreate load more trigger at bottom of posts
     if (this.loadMoreTrigger && this.postsContainer) {
       this.postsContainer.appendChild(this.loadMoreTrigger);
@@ -2713,9 +3027,37 @@ export class FeedContainer {
    * Update infinite scroll trigger position
    */
   private updateInfiniteScrollTrigger(): void {
-    if (this.loadMoreTrigger && this.postsContainer) {
-      // Ensure trigger is at the bottom of posts
-      this.postsContainer.appendChild(this.loadMoreTrigger);
+    if (!this.loadMoreTrigger) {
+      return;
+    }
+    
+    // Ensure trigger is in the correct container
+    if (this.postsContainer) {
+      // Remove from current parent if it exists elsewhere
+      if (this.loadMoreTrigger.parentNode && this.loadMoreTrigger.parentNode !== this.postsContainer) {
+        this.loadMoreTrigger.parentNode.removeChild(this.loadMoreTrigger);
+      }
+      // Append to posts container (will move to end if already there)
+      if (!this.loadMoreTrigger.parentNode) {
+        this.postsContainer.appendChild(this.loadMoreTrigger);
+      } else {
+        // Move to end if already in container but not at the end
+        this.postsContainer.appendChild(this.loadMoreTrigger);
+      }
+    } else if (this.scrollContainer) {
+      // Fallback to scroll container
+      if (this.loadMoreTrigger.parentNode && this.loadMoreTrigger.parentNode !== this.scrollContainer) {
+        this.loadMoreTrigger.parentNode.removeChild(this.loadMoreTrigger);
+      }
+      if (!this.loadMoreTrigger.parentNode) {
+        this.scrollContainer.appendChild(this.loadMoreTrigger);
+      }
+    }
+    
+    // Re-observe if observer exists and trigger is not being observed
+    if (this.scrollObserver && this.loadMoreTrigger) {
+      // Re-observe to ensure it's still being watched (safe to call multiple times)
+      this.scrollObserver.observe(this.loadMoreTrigger);
     }
   }
 
@@ -3063,6 +3405,12 @@ export class FeedContainer {
       return;
     }
 
+    // Check if post is still in viewport before preloading
+    if (!this.isPostInViewport(postId)) {
+      this.processMobilePreloadQueue();
+      return;
+    }
+
     const post = this.posts.get(postId);
     if (!post || post.isPlayerLoaded() || !post.hasVideoSource()) {
       // Skip and continue
@@ -3103,6 +3451,49 @@ export class FeedContainer {
   }
 
   /**
+   * Check if a post is currently in or near the viewport
+   */
+  private isPostInViewport(postId: string): boolean {
+    const post = this.posts.get(postId);
+    if (!post) return false;
+    
+    const container = post.getContainer();
+    const rect = container.getBoundingClientRect();
+    const viewportHeight = window.innerHeight;
+    const viewportWidth = window.innerWidth;
+    const margin = 500; // Consider posts within 500px as "near" viewport
+    
+    return rect.bottom > -margin && 
+           rect.top < viewportHeight + margin &&
+           rect.right > -margin && 
+           rect.left < viewportWidth + margin;
+  }
+
+  /**
+   * Cancel preload for a post if it's out of view
+   */
+  private cancelPreloadIfOutOfView(postId: string): void {
+    if (!this.isPostInViewport(postId)) {
+      // Remove from active preloads
+      if (this.activePreloadPosts.has(postId)) {
+        this.activePreloadPosts.delete(postId);
+        this.currentlyPreloadingCount = Math.max(0, this.currentlyPreloadingCount - 1);
+      }
+      
+      // Remove from queues
+      const queueIndex = this.backgroundPreloadPriorityQueue.indexOf(postId);
+      if (queueIndex !== -1) {
+        this.backgroundPreloadPriorityQueue.splice(queueIndex, 1);
+      }
+      
+      const mobileIndex = this.mobilePreloadQueue.indexOf(postId);
+      if (mobileIndex !== -1) {
+        this.mobilePreloadQueue.splice(mobileIndex, 1);
+      }
+    }
+  }
+
+  /**
    * Process next video in background preload queue
    */
   private preloadNextVideo(): void {
@@ -3117,10 +3508,23 @@ export class FeedContainer {
     }
 
     // Get next video to preload
-    const postId = this.getNextUnloadedVideo();
-    if (!postId) {
+    if (this.backgroundPreloadPriorityQueue.length === 0) {
       // No more videos to preload, stop background preloading
       this.backgroundPreloadActive = false;
+      return;
+    }
+
+    const postId = this.backgroundPreloadPriorityQueue[0];
+    if (!postId) {
+      this.backgroundPreloadPriorityQueue.shift();
+      this.preloadNextVideo();
+      return;
+    }
+
+    // Check if post is still in viewport before preloading
+    if (!this.isPostInViewport(postId)) {
+      this.backgroundPreloadPriorityQueue.shift();
+      this.preloadNextVideo();
       return;
     }
 
@@ -3199,41 +3603,221 @@ export class FeedContainer {
   /**
    * Clean up posts that are far from viewport to free memory
    * Called periodically during scrolling
+   * More aggressive cleanup to prevent excessive RAM usage
    */
   private cleanupDistantPosts(): void {
-    if (this.posts.size <= 20) {
-      // Keep at least 20 posts in memory
+    // Less aggressive: keep more posts in memory to avoid jarring DOM removals
+    // Keep 15 posts in HD mode, 20 in normal mode
+    const maxPostsInMemory = this.useHDMode ? 15 : 20;
+    
+    // Only enforce maximum if we significantly exceed limit
+    if (this.posts.size > maxPostsInMemory * 1.5) {
+      const viewportTop = window.scrollY || window.pageYOffset;
+      const viewportBottom = viewportTop + window.innerHeight;
+      
+      // Calculate distance for each post
+      const postsWithDistance: Array<{ postId: string; distance: number; isVisible: boolean }> = [];
+      
+      for (const [postId, post] of this.posts.entries()) {
+        const container = post.getContainer();
+        const rect = container.getBoundingClientRect();
+        const elementTop = viewportTop + rect.top;
+        const elementBottom = elementTop + rect.height;
+        
+        // Check if visible in viewport
+        const isVisible = elementBottom > viewportTop && elementTop < viewportBottom;
+        
+        // Calculate distance from viewport
+        let distance = 0;
+        if (elementBottom < viewportTop) {
+          distance = viewportTop - elementBottom;
+        } else if (elementTop > viewportBottom) {
+          distance = elementTop - viewportBottom;
+        }
+        
+        postsWithDistance.push({ postId, distance, isVisible });
+      }
+      
+      // Sort by distance (furthest first), but prioritize non-visible posts
+      postsWithDistance.sort((a, b) => {
+        if (a.isVisible !== b.isVisible) {
+          return a.isVisible ? 1 : -1; // Non-visible first
+        }
+        return b.distance - a.distance; // Furthest first
+      });
+      
+      // Remove posts until we're under the limit
+      // But keep a good buffer to ensure loadMoreTrigger stays accessible
+      const minPostsToKeep = Math.max(5, maxPostsInMemory - 3); // Keep a larger buffer
+      const postsToRemove = postsWithDistance.slice(0, Math.max(0, this.posts.size - minPostsToKeep));
+      
+      // Also remove posts that are very far from viewport (even if under limit)
+      // Less aggressive: only remove posts that are very far away
+      // 1000px in HD mode, 1500px in normal mode (much less aggressive)
+      const cleanupDistance = this.useHDMode ? 1000 : 1500;
+      for (const { postId, distance, isVisible } of postsWithDistance) {
+        if (!isVisible && distance > cleanupDistance && !postsToRemove.find(p => p.postId === postId)) {
+          // Only add if we won't remove too many posts
+          if (this.posts.size - postsToRemove.length > minPostsToKeep) {
+            postsToRemove.push({ postId, distance, isVisible });
+          }
+        }
+      }
+      
+      // Remove posts
+      for (const { postId } of postsToRemove) {
+        // Cancel any pending preloads for this post
+        this.cancelPreloadIfOutOfView(postId);
+        
+        const post = this.posts.get(postId);
+        if (post) {
+          // Aggressively unload video before destroying to free memory
+          const player = post.getPlayer();
+          if (player) {
+            // Force unload even if already marked as unloaded
+            if (!player.getIsUnloaded()) {
+              player.unload();
+            }
+            // Destroy player completely to free all resources
+            player.destroy();
+          }
+          
+          // Remove from visibility manager before destroying
+          this.visibilityManager.unobservePost(postId);
+          
+          // Destroy post (removes from DOM)
+          post.destroy();
+          this.posts.delete(postId);
+          const index = this.postOrder.indexOf(postId);
+          if (index !== -1) {
+            this.postOrder.splice(index, 1);
+          }
+        }
+        
+        // Clean up load observer if exists
+        const observer = this.loadObservers.get(postId);
+        if (observer) {
+          observer.disconnect();
+          this.loadObservers.delete(postId);
+        }
+      }
+      
+      // Clear thumbnail queue entries for removed posts
+      this.thumbnailQueue = this.thumbnailQueue.filter(item => {
+        const stillExists = this.posts.has(item.postId);
+        if (!stillExists && item.thumbnail) {
+          // Clear image src to free memory
+          item.thumbnail.src = '';
+          item.thumbnail.removeAttribute('src');
+          // Remove image from DOM if it exists
+          if (item.thumbnail.parentNode) {
+            item.thumbnail.parentNode.removeChild(item.thumbnail);
+          }
+        }
+        return stillExists;
+      });
+      
+      // Remove markers for deleted posts to free memory
+      // This prevents the markers array from growing unbounded
+      const removedPostIds = new Set(postsToRemove.map(p => p.postId));
+      this.markers = this.markers.filter(marker => {
+        // Keep marker if its post still exists
+        return !removedPostIds.has(marker.id);
+      });
+      
+      // Force garbage collection hint by clearing any cached references
+      if (postsToRemove.length > 0) {
+        // Request browser to consider garbage collection after cleanup
+        setTimeout(() => {
+          // Small delay to let cleanup complete
+        }, 0);
+      }
+    }
+  }
+
+  /**
+   * Trigger video loading when user hovers over a video that hasn't loaded yet
+   */
+  private triggerVideoLoadOnHover(postId: string): void {
+    const post = this.posts.get(postId);
+    if (!post) {
       return;
     }
-    
+
+    // If player already exists, nothing to do
+    if (post.isPlayerLoaded()) {
+      return;
+    }
+
+    // If post has a video source, trigger preload
+    if (post.hasVideoSource()) {
+      const player = post.preload();
+      if (player) {
+        // Register player with VisibilityManager - it will handle playing when ready
+        this.visibilityManager.registerPlayer(postId, player);
+      }
+    }
+  }
+
+  /**
+   * Aggressively unload videos that are not visible to free RAM
+   * Unloads videos even if posts are still in memory
+   * Extremely aggressive to prevent 8GB+ RAM usage
+   */
+  private aggressiveVideoUnload(): void {
     const viewportTop = window.scrollY || window.pageYOffset;
     const viewportBottom = viewportTop + window.innerHeight;
-    const cleanupDistance = 3000; // Clean up posts more than 3000px away
+    // Extremely aggressive: unload videos that are more than 100px from viewport
+    // In HD mode, be even more aggressive: 50px
+    const unloadDistance = this.useHDMode ? 50 : 100;
     
-    const postsToRemove: string[] = [];
+    // Also limit concurrent loaded videos to prevent memory buildup
+    const maxLoadedVideos = this.useHDMode ? 2 : 3;
+    let loadedVideoCount = 0;
     
+    // First pass: count loaded videos in viewport
     for (const [postId, post] of this.posts.entries()) {
       const container = post.getContainer();
       const rect = container.getBoundingClientRect();
       const elementTop = viewportTop + rect.top;
       const elementBottom = elementTop + rect.height;
       
-      // Remove if post is far above or below viewport
-      if (elementBottom < viewportTop - cleanupDistance || elementTop > viewportBottom + cleanupDistance) {
-        postsToRemove.push(postId);
+      // Check if post is in or near viewport
+      const isNearViewport = elementBottom > viewportTop - 200 && elementTop < viewportBottom + 200;
+      
+      if (isNearViewport) {
+        const player = post.getPlayer();
+        if (player && !player.getIsUnloaded()) {
+          loadedVideoCount++;
+        }
       }
     }
     
-    // Remove distant posts (keep at least 10 posts around viewport)
-    if (postsToRemove.length > 0 && this.posts.size - postsToRemove.length >= 10) {
-      for (const postId of postsToRemove) {
-        const post = this.posts.get(postId);
-        if (post) {
-          post.destroy();
-          this.posts.delete(postId);
-          const index = this.postOrder.indexOf(postId);
-          if (index !== -1) {
-            this.postOrder.splice(index, 1);
+    // Second pass: unload videos that are far from viewport
+    for (const [postId, post] of this.posts.entries()) {
+      const container = post.getContainer();
+      const rect = container.getBoundingClientRect();
+      const elementTop = viewportTop + rect.top;
+      const elementBottom = elementTop + rect.height;
+      
+      // Check if post is outside viewport by more than unloadDistance
+      const isFarAbove = elementBottom < viewportTop - unloadDistance;
+      const isFarBelow = elementTop > viewportBottom + unloadDistance;
+      
+      if (isFarAbove || isFarBelow) {
+        const player = post.getPlayer();
+        if (player && !player.getIsUnloaded()) {
+          // Aggressively unload video to free RAM
+          player.unload();
+        }
+      } else if (loadedVideoCount > maxLoadedVideos) {
+        // If we have too many loaded videos, unload ones that are not immediately visible
+        const isImmediatelyVisible = elementBottom > viewportTop && elementTop < viewportBottom;
+        if (!isImmediatelyVisible) {
+          const player = post.getPlayer();
+          if (player && !player.getIsUnloaded()) {
+            player.unload();
+            loadedVideoCount--;
           }
         }
       }
@@ -3266,9 +3850,29 @@ export class FeedContainer {
       this.lastScrollTop = currentScrollY;
       this.lastScrollTime = now;
       
-      // Periodically cleanup distant posts to free memory (every 2 seconds of scrolling)
-      if (timeDelta > 2000) {
-        this.cleanupDistantPosts();
+      // Only unload videos during scrolling (don't remove posts from DOM - too jarring)
+      // Periodically unload videos that are not visible to free RAM
+      // Less frequent to avoid performance impact (every 500ms)
+      const unloadInterval = 500;
+      if (timeDelta > unloadInterval) {
+        // Only unload videos, don't remove posts from DOM
+        this.aggressiveVideoUnload();
+      }
+      
+      // Stop background preloading when scrolling fast to prevent memory buildup
+      // Fast scroll threshold: 3 pixels/ms (very fast scrolling)
+      const fastScrollThreshold = 3.0;
+      if (this.scrollVelocity > fastScrollThreshold) {
+        if (this.backgroundPreloadActive) {
+          this.stopBackgroundPreloading();
+        }
+      }
+      
+      // Cancel preloads for posts that have gone out of view
+      if (this.activePreloadPosts.size > 0) {
+        for (const postId of Array.from(this.activePreloadPosts)) {
+          this.cancelPreloadIfOutOfView(postId);
+        }
       }
 
       // Don't hide/show header if suggestions overlay is open
@@ -3607,6 +4211,12 @@ export class FeedContainer {
       this.activeSearchAbortController.abort();
       this.activeSearchAbortController = undefined;
     }
+    
+    // Clean up all load observers
+    this.cleanupLoadObservers();
+    
+    // Stop all loading videos to free memory
+    this.stopLoadingVideos();
     
     // Clean up scroll observer
     if (this.scrollObserver) {

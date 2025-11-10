@@ -204,3 +204,92 @@ export function showToast(message: string, duration: number = 2000): void {
   }, duration);
 }
 
+/**
+ * Device capability detection for adaptive media quality
+ */
+export interface DeviceCapabilities {
+  isHighEnd: boolean;
+  hasHighDPI: boolean;
+  availableRAM: number; // in MB (estimated)
+  recommendedVideoQuality: '480p' | '720p' | '1080p';
+  recommendedThumbnailWidth: number;
+}
+
+/**
+ * Detect device capabilities for adaptive media loading
+ */
+export function detectDeviceCapabilities(): DeviceCapabilities {
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const isTablet = /iPad|Android/i.test(navigator.userAgent) && !/Mobile/i.test(navigator.userAgent);
+  
+  // Detect high DPI display
+  const hasHighDPI = window.devicePixelRatio > 1.5;
+  
+  // Estimate available RAM (rough heuristic)
+  // Modern browsers don't expose RAM directly, so we use heuristics
+  let estimatedRAM = 2048; // Default 2GB
+  // deviceMemory is an experimental API, so we need to check and cast
+  const nav = navigator as Navigator & { deviceMemory?: number };
+  if (nav.deviceMemory) {
+    estimatedRAM = nav.deviceMemory * 1024; // Convert GB to MB
+  } else {
+    // Heuristic based on user agent and screen size
+    if (isMobile) {
+      estimatedRAM = 2048; // Most modern phones have 4-8GB, but we'll be conservative
+    } else if (isTablet) {
+      estimatedRAM = 3072; // Tablets typically have more RAM
+    } else {
+      estimatedRAM = 4096; // Desktop typically has more RAM
+    }
+  }
+  
+  // Determine if high-end device
+  const isHighEnd = estimatedRAM >= 3072 && hasHighDPI;
+  
+  // Recommend video quality based on device capabilities
+  let recommendedQuality: '480p' | '720p' | '1080p' = '720p';
+  if (estimatedRAM < 2048) {
+    recommendedQuality = '480p'; // Low RAM devices
+  } else if (estimatedRAM >= 4096 && !isMobile) {
+    recommendedQuality = '1080p'; // High-end desktop
+  } else {
+    recommendedQuality = '720p'; // Default for most devices
+  }
+  
+  // Recommend thumbnail width based on viewport and DPI
+  const viewportWidth = window.innerWidth;
+  const thumbnailWidth = Math.min(
+    Math.ceil(viewportWidth * (hasHighDPI ? 1.5 : 1.0)),
+    recommendedQuality === '1080p' ? 800 : recommendedQuality === '720p' ? 600 : 400
+  );
+  
+  return {
+    isHighEnd,
+    hasHighDPI,
+    availableRAM: estimatedRAM,
+    recommendedVideoQuality: recommendedQuality,
+    recommendedThumbnailWidth: thumbnailWidth,
+  };
+}
+
+/**
+ * Get optimized thumbnail URL with size parameters
+ * Downsizes image before loading to reduce memory usage
+ */
+export function getOptimizedThumbnailUrl(baseUrl: string, maxWidth: number, maxHeight?: number): string {
+  if (!baseUrl) return baseUrl;
+  
+  // If URL already has query parameters, append with &
+  const separator = baseUrl.includes('?') ? '&' : '?';
+  
+  // Request specific dimensions to reduce memory footprint
+  // Most image servers support width/height parameters
+  const params = new URLSearchParams();
+  params.set('w', maxWidth.toString());
+  if (maxHeight) {
+    params.set('h', maxHeight.toString());
+  }
+  params.set('fit', 'cover'); // Maintain aspect ratio with cover
+  
+  return `${baseUrl}${separator}${params.toString()}`;
+}

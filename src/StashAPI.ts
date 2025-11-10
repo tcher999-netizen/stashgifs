@@ -4,7 +4,7 @@
  */
 
 import { Scene, SceneMarker, FilterOptions, Performer } from './types.js';
-import { isValidMediaUrl } from './utils.js';
+import { isValidMediaUrl, getOptimizedThumbnailUrl } from './utils.js';
 
 interface StashPluginApi {
   GQL: {
@@ -30,6 +30,9 @@ export class StashAPI {
   // Simple cache for search results (TTL: 5 minutes)
   private searchCache: Map<string, { data: any; timestamp: number }> = new Map();
   private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+  private cacheCleanupInterval?: ReturnType<typeof setInterval>;
+  private readonly MAX_CACHE_SIZE = 1000; // Maximum cache entries before cleanup
+  private readonly MAX_TAG_CACHE_SIZE = 1000; // Maximum tag/performer cache entries
 
   constructor(baseUrl?: string, apiKey?: string) {
     // Get from window if available (Stash plugin context)
@@ -48,6 +51,75 @@ export class StashAPI {
     
     this.apiKey = apiKey || this.pluginApi?.apiKey;
     
+    // Start periodic cache cleanup
+    this.startCacheCleanup();
+  }
+
+  /**
+   * Start periodic cache cleanup to prevent memory leaks
+   */
+  private startCacheCleanup(): void {
+    // Clean up every 5 minutes
+    this.cacheCleanupInterval = setInterval(() => {
+      this.cleanupCache();
+    }, 5 * 60 * 1000);
+  }
+
+  /**
+   * Clean up expired and oversized cache entries
+   */
+  private cleanupCache(): void {
+    const now = Date.now();
+    
+    // Clean up expired search cache entries
+    for (const [key, value] of this.searchCache.entries()) {
+      if (now - value.timestamp > this.CACHE_TTL) {
+        this.searchCache.delete(key);
+      }
+    }
+    
+    // Limit search cache size (LRU: remove oldest entries if over limit)
+    if (this.searchCache.size > this.MAX_CACHE_SIZE) {
+      const entries = Array.from(this.searchCache.entries())
+        .sort((a, b) => a[1].timestamp - b[1].timestamp);
+      const toRemove = entries.slice(0, this.searchCache.size - this.MAX_CACHE_SIZE);
+      for (const [key] of toRemove) {
+        this.searchCache.delete(key);
+      }
+    }
+    
+    // Limit tag cache size (remove oldest entries if over limit)
+    // Since Set doesn't track insertion order, we'll clear and rebuild if too large
+    if (this.tagsWithMarkersCache.size > this.MAX_TAG_CACHE_SIZE) {
+      // Clear half of the cache (simple approach)
+      const entries = Array.from(this.tagsWithMarkersCache);
+      this.tagsWithMarkersCache.clear();
+      // Keep the most recent half (approximation)
+      const keepCount = Math.floor(this.MAX_TAG_CACHE_SIZE / 2);
+      for (let i = entries.length - keepCount; i < entries.length; i++) {
+        this.tagsWithMarkersCache.add(entries[i]);
+      }
+    }
+    
+    // Limit performer cache size (same approach)
+    if (this.performersWithMarkersCache.size > this.MAX_TAG_CACHE_SIZE) {
+      const entries = Array.from(this.performersWithMarkersCache);
+      this.performersWithMarkersCache.clear();
+      const keepCount = Math.floor(this.MAX_TAG_CACHE_SIZE / 2);
+      for (let i = entries.length - keepCount; i < entries.length; i++) {
+        this.performersWithMarkersCache.add(entries[i]);
+      }
+    }
+  }
+
+  /**
+   * Stop cache cleanup (for cleanup/destroy)
+   */
+  private stopCacheCleanup(): void {
+    if (this.cacheCleanupInterval) {
+      clearInterval(this.cacheCleanupInterval);
+      this.cacheCleanupInterval = undefined;
+    }
   }
 
   /**
@@ -166,43 +238,57 @@ export class StashAPI {
         // For efficiency, we'll check in smaller batches
         if (count === 0) return results; // Return cached results
         
-        // Check each tag individually (but in parallel batches of 5)
+        // Check each tag individually (in parallel batches of 5, with multiple batches in parallel)
         const batchSize = 5;
+        const maxConcurrentBatches = 3; // Process up to 3 batches concurrently
+        const batches: number[][] = [];
         for (let i = 0; i < uncachedIds.length; i += batchSize) {
-          const batch = uncachedIds.slice(i, i + batchSize);
-          const batchChecks = await Promise.all(
-            batch.map(async (tagId) => {
-              const batchQuery = `query CheckTagHasMarkers($scene_marker_filter: SceneMarkerFilterType) {
-                findSceneMarkers(scene_marker_filter: $scene_marker_filter) {
-                  count
-                }
-              }`;
-              const batchFilter = { tags: { value: [tagId], modifier: 'INCLUDES' as const } };
-              try {
-                if (this.pluginApi?.GQL?.client) {
-                  const batchResult = await this.pluginApi.GQL.client.query({
-                    query: batchQuery as any,
-                    variables: { scene_marker_filter: batchFilter }
-                  });
-                  return batchResult.data?.findSceneMarkers?.count > 0 ? tagId : null;
-                } else {
-                  const response = await fetch(`${this.baseUrl}/graphql`, {
-                    method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/json',
-                      ...(this.apiKey && { 'ApiKey': this.apiKey }),
-                    },
-                    body: JSON.stringify({ query: batchQuery, variables: { scene_marker_filter: batchFilter } }),
-                  });
-                  const data = await response.json();
-                  return data.data?.findSceneMarkers?.count > 0 ? tagId : null;
-                }
-              } catch {
-                return null;
-              }
+          batches.push(uncachedIds.slice(i, i + batchSize));
+        }
+        
+        // Process batches with concurrency limit
+        for (let i = 0; i < batches.length; i += maxConcurrentBatches) {
+          const concurrentBatches = batches.slice(i, i + maxConcurrentBatches);
+          const batchResults = await Promise.all(
+            concurrentBatches.map(async (batch) => {
+              const batchChecks = await Promise.all(
+                batch.map(async (tagId) => {
+                  const batchQuery = `query CheckTagHasMarkers($scene_marker_filter: SceneMarkerFilterType) {
+                    findSceneMarkers(scene_marker_filter: $scene_marker_filter) {
+                      count
+                    }
+                  }`;
+                  const batchFilter = { tags: { value: [tagId], modifier: 'INCLUDES' as const } };
+                  try {
+                    if (this.pluginApi?.GQL?.client) {
+                      const batchResult = await this.pluginApi.GQL.client.query({
+                        query: batchQuery as any,
+                        variables: { scene_marker_filter: batchFilter }
+                      });
+                      return batchResult.data?.findSceneMarkers?.count > 0 ? tagId : null;
+                    } else {
+                      const response = await fetch(`${this.baseUrl}/graphql`, {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          ...(this.apiKey && { 'ApiKey': this.apiKey }),
+                        },
+                        body: JSON.stringify({ query: batchQuery, variables: { scene_marker_filter: batchFilter } }),
+                      });
+                      const data = await response.json();
+                      return data.data?.findSceneMarkers?.count > 0 ? tagId : null;
+                    }
+                  } catch {
+                    return null;
+                  }
+                })
+              );
+              return batchChecks;
             })
           );
-          batchChecks.forEach(id => { 
+          
+          // Process results from all concurrent batches
+          batchResults.flat().forEach(id => { 
             if (id !== null) {
               results.add(id);
               this.tagsWithMarkersCache.add(id); // Cache positive results
@@ -211,35 +297,47 @@ export class StashAPI {
         }
         return results;
       } else {
-        // Fallback: check individually but in smaller batches
+        // Fallback: check individually but in smaller batches (with parallel batch processing)
         const batchSize = 5;
+        const maxConcurrentBatches = 3;
+        const batches: number[][] = [];
         for (let i = 0; i < uncachedIds.length; i += batchSize) {
-          const batch = uncachedIds.slice(i, i + batchSize);
-          const batchChecks = await Promise.all(
-            batch.map(async (tagId) => {
-              const batchQuery = `query CheckTagHasMarkers($scene_marker_filter: SceneMarkerFilterType) {
-                findSceneMarkers(scene_marker_filter: $scene_marker_filter) {
-                  count
-                }
-              }`;
-              const batchFilter = { tags: { value: [tagId], modifier: 'INCLUDES' } };
-              try {
-                const response = await fetch(`${this.baseUrl}/graphql`, {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    ...(this.apiKey && { 'ApiKey': this.apiKey }),
-                  },
-                  body: JSON.stringify({ query: batchQuery, variables: { scene_marker_filter: batchFilter } }),
-                });
-                const data = await response.json();
-                return data.data?.findSceneMarkers?.count > 0 ? tagId : null;
-              } catch {
-                return null;
-              }
+          batches.push(uncachedIds.slice(i, i + batchSize));
+        }
+        
+        for (let i = 0; i < batches.length; i += maxConcurrentBatches) {
+          const concurrentBatches = batches.slice(i, i + maxConcurrentBatches);
+          const batchResults = await Promise.all(
+            concurrentBatches.map(async (batch) => {
+              const batchChecks = await Promise.all(
+                batch.map(async (tagId) => {
+                  const batchQuery = `query CheckTagHasMarkers($scene_marker_filter: SceneMarkerFilterType) {
+                    findSceneMarkers(scene_marker_filter: $scene_marker_filter) {
+                      count
+                    }
+                  }`;
+                  const batchFilter = { tags: { value: [tagId], modifier: 'INCLUDES' } };
+                  try {
+                    const response = await fetch(`${this.baseUrl}/graphql`, {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        ...(this.apiKey && { 'ApiKey': this.apiKey }),
+                      },
+                      body: JSON.stringify({ query: batchQuery, variables: { scene_marker_filter: batchFilter } }),
+                    });
+                    const data = await response.json();
+                    return data.data?.findSceneMarkers?.count > 0 ? tagId : null;
+                  } catch {
+                    return null;
+                  }
+                })
+              );
+              return batchChecks;
             })
           );
-          batchChecks.forEach(id => { 
+          
+          batchResults.flat().forEach(id => { 
             if (id !== null) {
               results.add(id);
               this.tagsWithMarkersCache.add(id); // Cache positive results
@@ -274,43 +372,57 @@ export class StashAPI {
     
     if (uncachedIds.length === 0) return results;
     
-    // Check each performer individually (in parallel batches of 5)
+    // Check each performer individually (in parallel batches of 5, with multiple batches in parallel)
     const batchSize = 5;
+    const maxConcurrentBatches = 3; // Process up to 3 batches concurrently
+    const batches: number[][] = [];
     for (let i = 0; i < uncachedIds.length; i += batchSize) {
-      const batch = uncachedIds.slice(i, i + batchSize);
-      const batchChecks = await Promise.all(
-        batch.map(async (performerId) => {
-          const query = `query CheckPerformerHasMarkers($scene_marker_filter: SceneMarkerFilterType) {
-            findSceneMarkers(scene_marker_filter: $scene_marker_filter) {
-              count
-            }
-          }`;
-          const sceneMarkerFilter = { performers: { value: [performerId], modifier: 'INCLUDES_ALL' as const } };
-          try {
-            if (this.pluginApi?.GQL?.client) {
-              const result = await this.pluginApi.GQL.client.query({
-                query: query as any,
-                variables: { scene_marker_filter: sceneMarkerFilter }
-              });
-              return result.data?.findSceneMarkers?.count > 0 ? performerId : null;
-            } else {
-              const response = await fetch(`${this.baseUrl}/graphql`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  ...(this.apiKey && { 'ApiKey': this.apiKey }),
-                },
-                body: JSON.stringify({ query, variables: { scene_marker_filter: sceneMarkerFilter } }),
-              });
-              const data = await response.json();
-              return data.data?.findSceneMarkers?.count > 0 ? performerId : null;
-            }
-          } catch {
-            return null;
-          }
+      batches.push(uncachedIds.slice(i, i + batchSize));
+    }
+    
+    // Process batches with concurrency limit
+    for (let i = 0; i < batches.length; i += maxConcurrentBatches) {
+      const concurrentBatches = batches.slice(i, i + maxConcurrentBatches);
+      const batchResults = await Promise.all(
+        concurrentBatches.map(async (batch) => {
+          const batchChecks = await Promise.all(
+            batch.map(async (performerId) => {
+              const query = `query CheckPerformerHasMarkers($scene_marker_filter: SceneMarkerFilterType) {
+                findSceneMarkers(scene_marker_filter: $scene_marker_filter) {
+                  count
+                }
+              }`;
+              const sceneMarkerFilter = { performers: { value: [performerId], modifier: 'INCLUDES_ALL' as const } };
+              try {
+                if (this.pluginApi?.GQL?.client) {
+                  const result = await this.pluginApi.GQL.client.query({
+                    query: query as any,
+                    variables: { scene_marker_filter: sceneMarkerFilter }
+                  });
+                  return result.data?.findSceneMarkers?.count > 0 ? performerId : null;
+                } else {
+                  const response = await fetch(`${this.baseUrl}/graphql`, {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      ...(this.apiKey && { 'ApiKey': this.apiKey }),
+                    },
+                    body: JSON.stringify({ query, variables: { scene_marker_filter: sceneMarkerFilter } }),
+                  });
+                  const data = await response.json();
+                  return data.data?.findSceneMarkers?.count > 0 ? performerId : null;
+                }
+              } catch {
+                return null;
+              }
+            })
+          );
+          return batchChecks;
         })
       );
-      batchChecks.forEach(id => { 
+      
+      // Process results from all concurrent batches
+      batchResults.flat().forEach(id => { 
         if (id !== null) {
           results.add(id);
           this.performersWithMarkersCache.add(id); // Cache positive results
@@ -1110,50 +1222,65 @@ export class StashAPI {
   /**
    * Get thumbnail URL for a scene marker (uses marker-specific screenshot endpoint)
    * Optimized to prefer WebP/AVIF formats when supported
+   * @param marker - Scene marker
+   * @param maxWidth - Optional max width for optimized thumbnail (reduces memory)
+   * @param maxHeight - Optional max height for optimized thumbnail
    */
-  getMarkerThumbnailUrl(marker: SceneMarker): string | undefined {
+  getMarkerThumbnailUrl(marker: SceneMarker, maxWidth?: number, maxHeight?: number): string | undefined {
     // Use marker-specific screenshot endpoint: /scene/{sceneId}/scene_marker/{markerId}/screenshot
     if (marker.id && marker.scene?.id) {
       const markerId = typeof marker.id === 'string' ? marker.id : String(marker.id);
       const sceneId = typeof marker.scene.id === 'string' ? marker.scene.id : String(marker.scene.id);
-      const baseUrl = `${this.baseUrl}/scene/${sceneId}/scene_marker/${markerId}/screenshot`;
+      let baseUrl = `${this.baseUrl}/scene/${sceneId}/scene_marker/${markerId}/screenshot`;
       
-      // Check for WebP/AVIF support and append format parameter if supported
-      // Note: Stash may support format parameters, but we'll use base URL for now
-      // Future: could add ?format=webp if API supports it
+      // Optimize thumbnail size if dimensions provided (reduces memory usage)
+      if (maxWidth) {
+        baseUrl = getOptimizedThumbnailUrl(baseUrl, maxWidth, maxHeight);
+      }
+      
       return baseUrl;
     }
     // Fallback to scene preview if marker screenshot not available
-    return this.getThumbnailUrl(marker.scene);
+    return this.getThumbnailUrl(marker.scene, maxWidth, maxHeight);
   }
 
   /**
    * Get thumbnail URL for a scene
    * Prefers WebP format when available for better performance
+   * @param scene - Scene object
+   * @param maxWidth - Optional max width for optimized thumbnail (reduces memory)
+   * @param maxHeight - Optional max height for optimized thumbnail
    */
-  getThumbnailUrl(scene: Scene): string | undefined {
+  getThumbnailUrl(scene: Scene, maxWidth?: number, maxHeight?: number): string | undefined {
+    let url: string | undefined;
+    
     // Prefer WebP format for better compression and performance
     if (scene.paths?.webp) {
-      const url = scene.paths.webp.startsWith('http')
+      url = scene.paths.webp.startsWith('http')
         ? scene.paths.webp
         : `${this.baseUrl}${scene.paths.webp}`;
-      return url;
     }
     // Fallback to screenshot
-    if (scene.paths?.screenshot) {
-      const url = scene.paths.screenshot.startsWith('http')
+    else if (scene.paths?.screenshot) {
+      url = scene.paths.screenshot.startsWith('http')
         ? scene.paths.screenshot
         : `${this.baseUrl}${scene.paths.screenshot}`;
-      return url;
     }
     // Fallback to preview
-    if (scene.paths?.preview) {
-      const url = scene.paths.preview.startsWith('http')
+    else if (scene.paths?.preview) {
+      url = scene.paths.preview.startsWith('http')
         ? scene.paths.preview
         : `${this.baseUrl}${scene.paths.preview}`;
-      return url;
     }
-    return undefined;
+    
+    if (!url) return undefined;
+    
+    // Optimize thumbnail size if dimensions provided (reduces memory usage)
+    if (maxWidth) {
+      return getOptimizedThumbnailUrl(url, maxWidth, maxHeight);
+    }
+    
+    return url;
   }
 
   /**

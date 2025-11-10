@@ -348,6 +348,7 @@
   /* Reduce backdrop-filter usage for better performance - use solid background instead */
   /* backdrop-filter: blur(4px); */
   /* -webkit-backdrop-filter: blur(4px); */
+  z-index: 2; /* Above video (z-index: 1) but below controls (z-index: 10) */
   will-change: opacity;
 }
 
@@ -379,6 +380,14 @@
   height: 100%;
   object-fit: contain;
   display: block;
+  /* Hardware acceleration for video playback */
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  perspective: 1000px;
+  -webkit-perspective: 1000px;
+  will-change: auto; /* Browser optimizes based on video playback */
 }
 
 /* Video Controls */
