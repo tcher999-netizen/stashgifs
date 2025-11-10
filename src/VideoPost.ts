@@ -1414,23 +1414,86 @@ export class VideoPost {
 
     // If video was playing, resume playback
     if (wasPlaying) {
-      try {
-        await this.player.waitUntilCanPlay(2000);
-        await this.player.play();
-        // Verify playback actually started - only show error if it didn't
-        // Wait a brief moment to allow play() to take effect
-        await new Promise(resolve => setTimeout(resolve, 100));
-        if (!this.player.isPlaying()) {
-          console.warn('Failed to resume playback after upgrade - video not playing');
+      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      const waitTimeout = isMobile ? 6000 : 4000; // Longer timeout on mobile for HD videos
+      const checkDelay = isMobile ? 300 : 100; // More time on mobile for play() to take effect
+      
+      // Retry logic with exponential backoff
+      let retryCount = 0;
+      const maxRetries = 2; // Try up to 3 times total (initial + 2 retries)
+      const retryDelays = [0, 500, 1000]; // Initial attempt, then 500ms, then 1000ms
+      
+      while (retryCount <= maxRetries) {
+        try {
+          // Wait for video to be actually loaded (fires on loadeddata/canplay events)
+          await this.player.waitForReady(waitTimeout);
+          
+          // Attempt to play
+          await this.player.play();
+          
+          // Wait for play() to take effect (longer on mobile)
+          await new Promise(resolve => setTimeout(resolve, checkDelay));
+          
+          // Check if playback actually started
+          if (this.player.isPlaying()) {
+            // Success! Playback started
+            return;
+          }
+          
+          // If not playing, check readyState as additional verification
+          const videoElement = this.player.getVideoElement();
+          if (videoElement && videoElement.readyState >= 2) {
+            // Video is loaded, might just need more time
+            // Wait a bit more and check again
+            await new Promise(resolve => setTimeout(resolve, checkDelay));
+            if (this.player.isPlaying()) {
+              return; // Success after additional wait
+            }
+          }
+          
+          // If we get here, playback didn't start
+          // Retry if we haven't exhausted retries
+          if (retryCount < maxRetries) {
+            const delay = retryDelays[retryCount + 1];
+            await new Promise(resolve => setTimeout(resolve, delay));
+            retryCount++;
+            continue;
+          }
+          
+          // All retries exhausted, show error
+          console.warn('Failed to resume playback after upgrade - video not playing after retries', {
+            retryCount,
+            readyState: videoElement?.readyState,
+          });
           showToast('Video upgraded but playback failed. Click play to start.');
-        }
-      } catch (error) {
-        // Only show error if video is not actually playing
-        // Sometimes waitUntilCanPlay or play() throws even when playback succeeds
-        await new Promise(resolve => setTimeout(resolve, 100));
-        if (!this.player.isPlaying()) {
-          console.warn('Failed to resume playback after upgrade', error);
+          return;
+          
+        } catch (error) {
+          // Error occurred, check if video is actually playing despite the error
+          // Sometimes waitForReady or play() throws even when playback succeeds
+          await new Promise(resolve => setTimeout(resolve, checkDelay));
+          
+          if (this.player.isPlaying()) {
+            // Actually playing despite error, success!
+            return;
+          }
+          
+          // Not playing, retry if we haven't exhausted retries
+          if (retryCount < maxRetries) {
+            const delay = retryDelays[retryCount + 1];
+            await new Promise(resolve => setTimeout(resolve, delay));
+            retryCount++;
+            continue;
+          }
+          
+          // All retries exhausted, show error
+          console.warn('Failed to resume playback after upgrade', {
+            error,
+            retryCount,
+            readyState: this.player.getVideoElement()?.readyState,
+          });
           showToast('Video upgraded but playback failed. Click play to start.');
+          return;
         }
       }
     }
