@@ -626,6 +626,41 @@ export class FeedContainer {
     loadingSpinner.style.willChange = 'transform';
     inputWrapper.appendChild(loadingSpinner);
 
+    // Shuffle indicator (shows when random mode is active)
+    const shuffleIndicator = document.createElement('div');
+    shuffleIndicator.className = 'feed-random-indicator';
+    shuffleIndicator.style.position = 'absolute';
+    shuffleIndicator.style.right = '40px'; // leave space for spinner
+    shuffleIndicator.style.top = '50%';
+    shuffleIndicator.style.transform = 'translateY(-50%)';
+    shuffleIndicator.style.display = this.shuffleMode > 0 ? 'inline-flex' : 'none';
+    shuffleIndicator.style.alignItems = 'center';
+    shuffleIndicator.style.gap = '6px';
+    shuffleIndicator.style.padding = '4px 8px';
+    shuffleIndicator.style.borderRadius = '999px';
+    shuffleIndicator.style.border = '1px solid rgba(255,255,255,0.12)';
+    shuffleIndicator.style.background = 'rgba(33, 150, 243, 0.18)';
+    shuffleIndicator.style.color = 'rgba(255,255,255,0.85)';
+    shuffleIndicator.style.fontSize = '12px';
+    shuffleIndicator.style.pointerEvents = 'none';
+    // SVG shuffle icon
+    const randomIconSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    randomIconSvg.setAttribute('viewBox', '0 0 24 24');
+    randomIconSvg.setAttribute('width', '14');
+    randomIconSvg.setAttribute('height', '14');
+    randomIconSvg.setAttribute('fill', 'currentColor');
+    const p1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p1.setAttribute('d', 'M14.59 7.41L13.17 6 9 10.17 7.41 8.59 6 10l3 3 5.59-5.59z');
+    const p2 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p2.setAttribute('d', 'M14 6h5v5h-2V8h-3V6z');
+    randomIconSvg.appendChild(p1);
+    randomIconSvg.appendChild(p2);
+    const shuffleText = document.createElement('span');
+    shuffleText.textContent = 'Random';
+    shuffleIndicator.appendChild(randomIconSvg);
+    shuffleIndicator.appendChild(shuffleText);
+    inputWrapper.appendChild(shuffleIndicator);
+
     // Buttons container (separate from search input, like logo)
     const buttonsContainer = document.createElement('div');
     buttonsContainer.style.display = 'inline-flex';
@@ -978,6 +1013,8 @@ export class FeedContainer {
       // Use readOnly so clicks can disable random mode
       (queryInput as HTMLInputElement).readOnly = disabled;
       queryInput.style.opacity = disabled ? '0.6' : '1';
+      // Show shuffle indicator when random is active
+      shuffleIndicator.style.display = this.shuffleMode > 0 ? 'inline-flex' : 'none';
     };
 
     const apply = async () => {
