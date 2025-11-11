@@ -2147,6 +2147,12 @@ export class FeedContainer {
       } else {
         queryInput.value = '';
       }
+      // Ensure helper/placeholder is hidden when value is programmatically set
+      try {
+        queryInput.dispatchEvent(new Event('input', { bubbles: true }));
+      } catch {
+        // no-op
+      }
     }
 
     // Apply the filters using the same logic as in createHeaderBar
