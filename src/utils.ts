@@ -293,3 +293,14 @@ export function getOptimizedThumbnailUrl(baseUrl: string, maxWidth: number, maxH
   
   return `${baseUrl}${separator}${params.toString()}`;
 }
+
+/**
+ * Convert a relative URL to an absolute URL
+ * Handles both relative paths and already absolute URLs
+ */
+export function toAbsoluteUrl(url?: string): string | undefined {
+  if (!url) return undefined;
+  if (/^https?:\/\//i.test(url)) return url;
+  if (url.startsWith('/')) return `${window.location.origin}${url}`;
+  return `${window.location.origin}/${url}`;
+}

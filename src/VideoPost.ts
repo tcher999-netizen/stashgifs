@@ -8,7 +8,8 @@ import { NativeVideoPlayer } from './NativeVideoPlayer.js';
 import { FavoritesManager } from './FavoritesManager.js';
 import { StashAPI } from './StashAPI.js';
 import { VisibilityManager } from './VisibilityManager.js';
-import { calculateAspectRatio, getAspectRatioClass, isValidMediaUrl, showToast, throttle } from './utils.js';
+import { calculateAspectRatio, getAspectRatioClass, isValidMediaUrl, showToast, throttle, toAbsoluteUrl } from './utils.js';
+import { posterPreloader } from './PosterPreloader.js';
 
 // Constants for magic numbers and strings
 const FAVORITE_TAG_NAME = 'StashGifs Favorite';
@@ -206,6 +207,20 @@ export class VideoPost {
     this.videoLoadingIndicator = loading;
 
     return container;
+  }
+
+  /**
+   * Get poster URL for the video
+   * Prefers marker preview, then scene preview/webp, then scene screenshot
+   */
+  private getPosterUrl(): string | undefined {
+    const m = this.data.marker;
+    // Prefer preloaded poster from batch prefetch (commit parity)
+    const cached = posterPreloader.getPosterForMarker(m);
+    if (cached) return cached;
+    // Fallbacks if not preloaded
+    const p = m?.preview || m?.scene?.paths?.preview || m?.scene?.paths?.webp || m?.scene?.paths?.screenshot;
+    return toAbsoluteUrl(p);
   }
 
   /**
@@ -1455,6 +1470,7 @@ export class VideoPost {
         endTime: this.data.endTime ?? this.data.marker.end_seconds,
         aggressivePreload: false, // HD videos use metadata preload
         isHDMode: true, // HD mode - show mute button
+        posterUrl: this.getPosterUrl(),
       });
 
       this.isLoaded = true;
@@ -1652,6 +1668,7 @@ export class VideoPost {
         autoplay: false,
         startTime: finalStartTime,
         endTime: endTime ?? this.data.endTime ?? this.data.marker.end_seconds,
+        posterUrl: this.getPosterUrl(),
       });
 
       this.isLoaded = true;

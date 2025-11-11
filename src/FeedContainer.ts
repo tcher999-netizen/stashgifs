@@ -10,6 +10,7 @@ import { NativeVideoPlayer } from './NativeVideoPlayer.js';
 import { VisibilityManager } from './VisibilityManager.js';
 import { FavoritesManager } from './FavoritesManager.js';
 import { throttle, debounce, isValidMediaUrl, detectDeviceCapabilities, DeviceCapabilities } from './utils.js';
+import { posterPreloader } from './PosterPreloader.js';
 
 const DEFAULT_SETTINGS: FeedSettings = {
   autoPlay: true, // Enable autoplay for markers
@@ -36,6 +37,7 @@ export class FeedContainer {
   private postOrder: string[];
   private settings: FeedSettings;
   private markers: SceneMarker[] = [];
+  // Batch poster prefetching aligns with previous commit behavior
   private isLoading: boolean = false;
   private currentFilters?: FilterOptions;
   private selectedTagId?: number;
@@ -972,6 +974,8 @@ export class FeedContainer {
       }
       // Hide tag header since we're showing it in the search bar
       tagHeader.style.display = 'none';
+      // Ensure animated placeholder hides when we have any value or focus
+      updatePlaceholderVisibility();
     };
 
     const apply = async () => {
@@ -979,75 +983,11 @@ export class FeedContainer {
       queryInput.disabled = true;
       queryInput.style.opacity = '0.6';
       loadingSpinner.style.display = 'block';
-      
-      // Cancel previous loadVideos queries
-      if (this.activeLoadVideosAbortController) {
-        this.activeLoadVideosAbortController.abort();
-      }
-      // Create new AbortController for this load
-      this.activeLoadVideosAbortController = new AbortController();
-      const loadSignal = this.activeLoadVideosAbortController.signal;
-      
-      const q = queryInput.value.trim();
-      // Use query for text-based search (includes partial matches like "finger" matching "fingers", "finger - pov", etc.)
-      // Exception: "cowgirl" should use exact tag matching to exclude "reverse cowgirl"
-      const useExactMatch = this.selectedTagName?.toLowerCase() === 'cowgirl';
-      
-      let queryValue: string | undefined = undefined;
-      let primaryTags: string[] | undefined = undefined;
-      let performers: string[] | undefined = undefined;
-      
-      if (this.selectedTagName) {
-        if (useExactMatch && this.selectedTagId) {
-          // Use exact tag ID matching for "cowgirl" to exclude "reverse cowgirl"
-          primaryTags = [String(this.selectedTagId)];
-        } else {
-          // For fuzzy matching: search for tags matching the name, then use their IDs
-          // This allows "finger" to match "fingers", "finger - pov", etc.
-          try {
-            const matchingTags = await this.api.searchMarkerTags(this.selectedTagName, 50, loadSignal);
-            if (loadSignal.aborted) return;
-            const matchingTagIds = matchingTags
-              .map(tag => parseInt(tag.id, 10))
-              .filter(id => !Number.isNaN(id))
-              .map(id => String(id));
-            
-            if (matchingTagIds.length > 0) {
-              primaryTags = matchingTagIds;
-            } else {
-              // Fallback: use the selected tag ID if no matches found
-              if (this.selectedTagId) {
-                primaryTags = [String(this.selectedTagId)];
-              }
-            }
-          } catch (error) {
-            console.error('Failed to search for matching tags', error);
-            // Fallback: use the selected tag ID
-            if (this.selectedTagId) {
-              primaryTags = [String(this.selectedTagId)];
-            }
-          }
-        }
-      } else if (this.selectedPerformerId) {
-        // Use performer ID for filtering
-        performers = [String(this.selectedPerformerId)];
-      } else if (q && !this.selectedSavedFilter) {
-        queryValue = q;
-      }
-      
-      const newFilters: FilterOptions = {
-        query: queryValue,
-        primary_tags: primaryTags,
-        performers: performers,
-        savedFilterId: this.selectedSavedFilter?.id || undefined,
-        limit: this.initialLoadLimit,
-        offset: 0,
-      };
-      this.currentFilters = newFilters;
       try {
-        await this.loadVideos(newFilters, false, loadSignal);
+        updateSearchBarDisplay();
+        await this.applyCurrentSearch();
       } catch (e: any) {
-        if (e.name !== 'AbortError') {
+        if (e?.name !== 'AbortError') {
           console.error('Apply filters failed', e);
         }
       } finally {
@@ -1739,6 +1679,12 @@ export class FeedContainer {
       queryInput.style.borderColor = 'rgba(255,255,255,0.12)';
     });
     
+    // Debounced unified apply on typing when selection was cleared and term is substantive
+    const debouncedUnifiedApply = debounce(() => {
+      // Don't block UI; use new abort controller to align with apply()
+      void apply();
+    }, 300);
+
     queryInput.addEventListener('input', () => {
       const text = queryInput.value;
       // Clear selected tag/filter when user types (they're searching for something new)
@@ -1751,6 +1697,10 @@ export class FeedContainer {
       }
       // Use debounced function for better performance
       debouncedFetchSuggestions(text, false);
+      // Auto-apply if user is entering a new free-text search
+      if (text.trim().length >= 2) {
+        debouncedUnifiedApply();
+      }
     });
 
     suggestions.addEventListener('click', (e) => {
@@ -1818,6 +1768,90 @@ export class FeedContainer {
     this.applyFilters();
     // Scroll to top
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  /**
+   * Apply current search across UIs using unified logic
+   * Resolves selectedTagName to tag IDs, tries performer by name, or falls back to plain text.
+   */
+  private async applyCurrentSearch(loadSignal?: AbortSignal): Promise<void> {
+    // Determine current text input if available (used only when no explicit selection)
+    let q: string | undefined = undefined;
+    const activeEl = document.activeElement as HTMLElement | null;
+    if (activeEl && activeEl.classList && activeEl.classList.contains('feed-filters__input')) {
+      const input = activeEl as HTMLInputElement;
+      q = input.value?.trim() || undefined;
+    }
+
+    // Build filters similar to header bar robust logic
+    let queryValue: string | undefined = undefined;
+    let primaryTags: string[] | undefined = undefined;
+    let performers: string[] | undefined = undefined;
+
+    const useExactMatch = this.selectedTagName?.toLowerCase() === 'cowgirl';
+
+    if (this.selectedTagName) {
+      if (useExactMatch && this.selectedTagId) {
+        primaryTags = [String(this.selectedTagId)];
+      } else {
+        try {
+          const matchingTags = await this.api.searchMarkerTags(this.selectedTagName, 50, loadSignal);
+          if ((loadSignal as any)?.aborted) return;
+          const matchingTagIds = (matchingTags || [])
+            .map(tag => parseInt(tag.id, 10))
+            .filter(id => !Number.isNaN(id))
+            .map(id => String(id));
+          if (matchingTagIds.length > 0) {
+            primaryTags = matchingTagIds;
+          } else if (this.selectedTagId) {
+            primaryTags = [String(this.selectedTagId)];
+          }
+        } catch {
+          if (this.selectedTagId) {
+            primaryTags = [String(this.selectedTagId)];
+          }
+        }
+      }
+    } else if (this.selectedPerformerId) {
+      performers = [String(this.selectedPerformerId)];
+    } else if (q && !this.selectedSavedFilter) {
+      try {
+        const matchingTags = await this.api.searchMarkerTags(q, 50, loadSignal);
+        if ((loadSignal as any)?.aborted) return;
+        const matchingTagIds = (matchingTags || [])
+          .map(tag => parseInt(tag.id, 10))
+          .filter(id => !Number.isNaN(id))
+          .map(id => String(id));
+        if (matchingTagIds.length > 0) {
+          primaryTags = matchingTagIds;
+          this.selectedTagName = q;
+          this.selectedTagId = undefined;
+        } else {
+          const matchingPerformers = await this.api.searchPerformers(q, 10, loadSignal);
+          if ((loadSignal as any)?.aborted) return;
+          if (matchingPerformers && matchingPerformers.length > 0) {
+            performers = [String(matchingPerformers[0].id)];
+            this.selectedPerformerName = matchingPerformers[0].name;
+            this.selectedPerformerId = parseInt(String(matchingPerformers[0].id), 10);
+          } else {
+            queryValue = q;
+          }
+        }
+      } catch {
+        queryValue = q;
+      }
+    }
+
+    const newFilters: FilterOptions = {
+      query: queryValue,
+      primary_tags: primaryTags,
+      performers: performers,
+      savedFilterId: this.selectedSavedFilter?.id || undefined,
+      limit: this.initialLoadLimit,
+      offset: 0,
+    };
+    this.currentFilters = newFilters;
+    await this.loadVideos(newFilters, false, loadSignal);
   }
 
   /**
@@ -2071,29 +2105,8 @@ export class FeedContainer {
         suggestions.removeChild(suggestions.firstChild);
       }
       suggestions.style.display = 'none';
-      
-      // Cancel previous loadVideos queries
-      if (this.activeLoadVideosAbortController) {
-        this.activeLoadVideosAbortController.abort();
-      }
-      // Create new AbortController for this load
-      this.activeLoadVideosAbortController = new AbortController();
-      const loadSignal = this.activeLoadVideosAbortController.signal;
-      
-      const q = queryInput.value.trim();
-      const savedId = (this.selectedSavedFilter?.id) || (savedSelect.value || undefined);
-      const newFilters: FilterOptions = {
-        query: q || undefined,
-        primary_tags: this.selectedTagId ? [String(this.selectedTagId)] : undefined,
-        savedFilterId: savedId,
-        limit: this.initialLoadLimit,
-        offset: 0,
-      };
-      this.currentFilters = newFilters;
-      this.loadVideos(newFilters, false, loadSignal).catch((e: any) => {
-        if (e.name !== 'AbortError') {
-          console.error('Apply filters failed', e);
-        }
+      this.applyCurrentSearch().catch((e: any) => {
+        if (e?.name !== 'AbortError') console.error('Apply filters failed', e);
       });
     };
 
@@ -2152,6 +2165,10 @@ export class FeedContainer {
     const debouncedFetchSuggestions2 = debounce((text: string, page: number, forceShow: boolean) => {
       fetchSuggestions(text, page, forceShow);
     }, 150);
+    // Debounced unified apply for filter sheet typing
+    const debouncedUnifiedApply2 = debounce(() => {
+      apply();
+    }, 300);
     const updateSearchBarDisplay = () => {
       // Show the active search term in the search bar
       if (this.selectedTagName) {
@@ -2175,6 +2192,14 @@ export class FeedContainer {
       // Hide tag header since we're showing it in the search bar
       tagHeader.style.display = 'none';
     };
+
+    // Auto-apply on typing when entering a substantive term
+    queryInput.addEventListener('input', () => {
+      const val = queryInput.value.trim();
+      if (val.length >= 2) {
+        debouncedUnifiedApply2();
+      }
+    });
 
     const fetchSuggestions = async (text: string, page: number = 1, forceShow: boolean = false) => {
       // Cancel previous search queries
@@ -2807,6 +2832,16 @@ export class FeedContainer {
       const expectedLimit = append ? this.subsequentLoadLimit : (currentFilters.limit || this.initialLoadLimit);
       if (markers.length < expectedLimit) {
         this.hasMore = false;
+      }
+
+      // Prefetch poster screenshots for the first batch before rendering, non-blocking
+      try {
+        // Prefetch a reasonable number; align with initial load size on first page, smaller when appending
+        const prefetchCount = append ? this.subsequentLoadLimit : (currentFilters.limit || this.initialLoadLimit);
+        posterPreloader.prefetchForMarkers(markers, prefetchCount);
+      } catch (e) {
+        // Non-fatal
+        console.warn('Poster prefetch failed', e);
       }
 
       // Create posts progressively - render immediately as each post is ready

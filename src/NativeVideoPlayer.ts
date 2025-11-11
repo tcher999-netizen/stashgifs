@@ -52,6 +52,7 @@ export class NativeVideoPlayer {
     onStateChange?: (state: VideoPlayerState) => void;
     aggressivePreload?: boolean; // Use 'auto' preload for non-HD videos
     isHDMode?: boolean; // Whether this is HD mode (affects mute button visibility)
+    posterUrl?: string; // Poster image URL to display before video loads
   }) {
     // Validate video URL before proceeding
     if (!videoUrl || !isValidMediaUrl(videoUrl)) {
@@ -90,6 +91,7 @@ export class NativeVideoPlayer {
       startTime: options?.startTime,
       endTime: options?.endTime,
       aggressivePreload: options?.aggressivePreload,
+      posterUrl: options?.posterUrl,
     });
     this.createControls();
     this.attachEventListeners();
@@ -125,11 +127,16 @@ export class NativeVideoPlayer {
     });
   }
 
-  private createVideoElement(videoUrl: string, options?: { autoplay?: boolean; muted?: boolean; startTime?: number; endTime?: number; aggressivePreload?: boolean }): void {
+  private createVideoElement(videoUrl: string, options?: { autoplay?: boolean; muted?: boolean; startTime?: number; endTime?: number; aggressivePreload?: boolean; posterUrl?: string }): void {
     // Defensive validation - validate URL again before setting src
     // This is a last line of defense in case validation was bypassed
     // If invalid, create element but don't set src - error handler will catch it
     this.videoElement = document.createElement('video');
+    
+    // Set poster image if provided
+    if (options?.posterUrl) {
+      this.videoElement.poster = options.posterUrl;
+    }
     
     if (!videoUrl || !isValidMediaUrl(videoUrl)) {
       console.warn('NativeVideoPlayer: Invalid URL detected in createVideoElement, skipping src', {
