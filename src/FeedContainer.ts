@@ -975,7 +975,8 @@ export class FeedContainer {
       updatePlaceholderVisibility();
       // Disable search input in random mode
       const disabled = this.shuffleMode > 0;
-      queryInput.disabled = disabled;
+      // Use readOnly so clicks can disable random mode
+      (queryInput as HTMLInputElement).readOnly = disabled;
       queryInput.style.opacity = disabled ? '0.6' : '1';
     };
 
@@ -1741,6 +1742,22 @@ export class FeedContainer {
     // Handle focus and show suggestions
     let focusHandled = false;
     let clickHandled = false;
+    const disableRandomIfActive = async () => {
+      if (this.shuffleMode > 0) {
+        this.shuffleMode = 0;
+        try { localStorage.setItem('stashgifs-shuffleMode', '0'); } catch {}
+        // Re-enable input visuals
+        updateSearchBarDisplay();
+        // Reload non-random feed
+        this.clearPosts();
+        if (this.postsContainer) this.postsContainer.innerHTML = '';
+        this.currentPage = 1;
+        this.hasMore = true;
+        this.isLoading = false;
+        await this.loadVideos(this.currentFilters, false, undefined, true);
+      }
+    };
+
     const handleFocus = () => {
       // If click handler already processed this, skip to prevent duplicate calls
       if (clickHandled) {
@@ -1749,6 +1766,9 @@ export class FeedContainer {
       }
       if (focusHandled) return;
       focusHandled = true;
+      
+      // If random mode is active, disable it when engaging search
+      void disableRandomIfActive();
       
       // Ensure background suggestions stay fresh
       this.preloadSuggestions().catch((e) => console.warn('Suggestion preload refresh failed', e));
@@ -1782,6 +1802,8 @@ export class FeedContainer {
         } catch {
           queryInput.focus();
         }
+        // Disable random mode on interaction
+        void disableRandomIfActive();
         handleFocus();
       }, { passive: false });
       
@@ -1799,6 +1821,8 @@ export class FeedContainer {
         if (!focusHandled) {
           clickHandled = true; // Mark that click handled it to prevent focus handler from duplicating
           // Clear and reset when clicking on search bar for fresh search (same as focus handler)
+          // Disable random mode on interaction
+          void disableRandomIfActive();
           this.selectedTagId = undefined;
           this.selectedTagName = undefined;
           this.selectedPerformerId = undefined;
@@ -1821,6 +1845,8 @@ export class FeedContainer {
         } catch {
           queryInput.focus();
         }
+        // Disable random mode on interaction
+        void disableRandomIfActive();
         // Clear and reset when clicking on search bar for fresh search (same as focus handler)
         this.selectedTagId = undefined;
         this.selectedTagName = undefined;
