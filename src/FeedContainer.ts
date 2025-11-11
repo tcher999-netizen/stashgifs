@@ -450,6 +450,7 @@ export class FeedContainer {
     
     // Create a wrapper for the animated placeholder
     const placeholderWrapper = document.createElement('div');
+    placeholderWrapper.id = 'feed-search-placeholder';
     placeholderWrapper.style.position = 'absolute';
     placeholderWrapper.style.left = '14px';
     placeholderWrapper.style.top = '50%';
@@ -573,7 +574,7 @@ export class FeedContainer {
     // Add placeholder wrapper to input wrapper
     inputWrapper.appendChild(placeholderWrapper);
 
-    // Random (shuffle) left icon to replace placeholder in random mode
+    // Random (shuffle) left helper to replace placeholder in random mode
     const randomLeftIcon = document.createElement('div');
     randomLeftIcon.style.position = 'absolute';
     randomLeftIcon.style.left = '14px';
@@ -581,23 +582,17 @@ export class FeedContainer {
     randomLeftIcon.style.transform = 'translateY(-50%)';
     randomLeftIcon.style.display = this.shuffleMode > 0 ? 'inline-flex' : 'none';
     randomLeftIcon.style.alignItems = 'center';
-    randomLeftIcon.style.justifyContent = 'center';
-    randomLeftIcon.style.width = '18px';
-    randomLeftIcon.style.height = '18px';
-    randomLeftIcon.style.color = 'rgba(255,255,255,0.85)';
+    randomLeftIcon.style.gap = '8px';
+    randomLeftIcon.style.color = 'rgba(255,255,255,0.5)';
+    randomLeftIcon.style.fontSize = '15px';
+    randomLeftIcon.style.lineHeight = '20px';
     randomLeftIcon.style.pointerEvents = 'none';
-    const randomLeftSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    randomLeftSvg.setAttribute('viewBox', '0 0 24 24');
-    randomLeftSvg.setAttribute('width', '18');
-    randomLeftSvg.setAttribute('height', '18');
-    randomLeftSvg.setAttribute('fill', 'currentColor');
-    const rl1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    rl1.setAttribute('d', 'M16 3h5v5h-2V6h-3V3z');
-    const rl2 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    rl2.setAttribute('d', 'M3 16h5v5H6v-3H3v-2z');
-    randomLeftSvg.appendChild(rl1);
-    randomLeftSvg.appendChild(rl2);
-    randomLeftIcon.appendChild(randomLeftSvg);
+    const randomLeftIconSpan = document.createElement('span');
+    randomLeftIconSpan.innerHTML = '<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" width=\"16\" height=\"16\"><path d=\"M16 3h5v5M21 3l-5 5\"/><path d=\"M4 20l5-5m0 0l5 5m-5-5h3\"/><path d=\"M4 4l7 7\"/></svg>';
+    const randomLeftText = document.createElement('span');
+    randomLeftText.textContent = 'Discovering randomly';
+    randomLeftIcon.appendChild(randomLeftIconSpan);
+    randomLeftIcon.appendChild(randomLeftText);
     inputWrapper.appendChild(randomLeftIcon);
     
     // Stop animation on focus, restart on blur if empty
@@ -1044,6 +1039,8 @@ export class FeedContainer {
       // Use readOnly so clicks can disable random mode
       (queryInput as HTMLInputElement).readOnly = disabled;
       queryInput.style.opacity = disabled ? '0.6' : '1';
+      // Adjust left padding to accommodate left helper when random is active
+      queryInput.style.paddingLeft = this.shuffleMode > 0 ? '180px' : '14px';
       // Hide deprecated right pill (no longer used)
       shuffleIndicator.style.display = 'none';
       // Show left icon when random is active
@@ -2147,11 +2144,10 @@ export class FeedContainer {
       } else {
         queryInput.value = '';
       }
-      // Ensure helper/placeholder is hidden when value is programmatically set
-      try {
-        queryInput.dispatchEvent(new Event('input', { bubbles: true }));
-      } catch {
-        // no-op
+      // Hide animated helper/placeholder immediately (without triggering suggestions)
+      const ph = document.getElementById('feed-search-placeholder') as HTMLElement | null;
+      if (ph) {
+        ph.style.display = 'none';
       }
     }
 
