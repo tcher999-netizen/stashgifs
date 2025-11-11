@@ -660,7 +660,7 @@ export class FeedContainer {
     shuffleIndicator.style.right = '40px'; // leave space for spinner
     shuffleIndicator.style.top = '50%';
     shuffleIndicator.style.transform = 'translateY(-50%)';
-    shuffleIndicator.style.display = this.shuffleMode > 0 ? 'inline-flex' : 'none';
+    shuffleIndicator.style.display = 'none';
     shuffleIndicator.style.alignItems = 'center';
     shuffleIndicator.style.gap = '6px';
     shuffleIndicator.style.padding = '4px 8px';
@@ -1044,8 +1044,8 @@ export class FeedContainer {
       // Use readOnly so clicks can disable random mode
       (queryInput as HTMLInputElement).readOnly = disabled;
       queryInput.style.opacity = disabled ? '0.6' : '1';
-      // Show shuffle indicator when random is active
-      shuffleIndicator.style.display = this.shuffleMode > 0 ? 'inline-flex' : 'none';
+      // Hide deprecated right pill (no longer used)
+      shuffleIndicator.style.display = 'none';
       // Show left icon when random is active
       randomLeftIcon.style.display = this.shuffleMode > 0 ? 'inline-flex' : 'none';
     };
