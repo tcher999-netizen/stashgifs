@@ -1928,6 +1928,8 @@ export class FeedContainer {
    * Handle performer chip click - clear filters and set performer filter
    */
   private handlePerformerChipClick(performerId: number, performerName: string): void {
+    // Disable chip interactions in random mode
+    if (this.shuffleMode > 0) return;
     // Clear all filters
     this.selectedTagId = undefined;
     this.selectedTagName = undefined;
@@ -1945,6 +1947,8 @@ export class FeedContainer {
    * Handle tag chip click - clear filters and set tag filter
    */
   private handleTagChipClick(tagId: number, tagName: string): void {
+    // Disable chip interactions in random mode
+    if (this.shuffleMode > 0) return;
     // Clear all filters
     this.selectedPerformerId = undefined;
     this.selectedPerformerName = undefined;
