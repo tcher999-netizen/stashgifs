@@ -183,13 +183,6 @@ export interface FindSceneResponse {
 }
 
 /**
- * FindTag response
- */
-export interface FindTagResponse {
-  findTag: Tag | null;
-}
-
-/**
  * GetSavedMarkerFilters response
  */
 export interface GetSavedMarkerFiltersResponse {

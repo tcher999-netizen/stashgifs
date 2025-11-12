@@ -17,28 +17,6 @@ export const CHECK_TAGS_HAVE_MARKERS = `
 `;
 
 /**
- * Check if a single tag has markers
- */
-export const CHECK_TAG_HAS_MARKERS = `
-  query CheckTagHasMarkers($scene_marker_filter: SceneMarkerFilterType) {
-    findSceneMarkers(scene_marker_filter: $scene_marker_filter) {
-      count
-    }
-  }
-`;
-
-/**
- * Check if performer has markers
- */
-export const CHECK_PERFORMER_HAS_MARKERS = `
-  query CheckPerformerHasMarkers($scene_marker_filter: SceneMarkerFilterType) {
-    findSceneMarkers(scene_marker_filter: $scene_marker_filter) {
-      count
-    }
-  }
-`;
-
-/**
  * Find scene markers with full scene data
  */
 export const FIND_SCENE_MARKERS = `
@@ -122,18 +100,6 @@ export const FIND_TAGS_FOR_SELECT = `
       tags {
         ...TagFieldsExtended
       }
-    }
-  }
-`;
-
-/**
- * Find a single tag
- */
-export const FIND_TAG = `
-  ${TagFields}
-  query FindTag($filter: FindFilterType, $tag_filter: TagFilterType) {
-    findTag(filter: $filter, tag_filter: $tag_filter) {
-      ...TagFields
     }
   }
 `;

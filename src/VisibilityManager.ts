@@ -728,9 +728,9 @@ export class VisibilityManager {
       distanceFromViewport = rect.left - viewportWidth;
     }
     
-    // Extremely aggressive unload threshold to save RAM: 50px in HD mode, 100px in normal mode
+    // Unload threshold to save RAM: 100px in both HD and normal mode
     // This prevents 8GB+ RAM usage when scrolling
-    const unloadThreshold = this.isHDMode ? 50 : 100;
+    const unloadThreshold = this.isHDMode ? 100 : 100;
     
     if (distanceFromViewport > unloadThreshold) {
       this.debugLog('unloading-video', { postId, distanceFromViewport, isHDMode: this.isHDMode });
@@ -1336,15 +1336,6 @@ export class VisibilityManager {
       return;
     }
 
-    // In non-HD mode, skip hover play/pause - let autoplay handle playback
-    if (!this.isHDMode) {
-      return;
-    }
-
-    // For autoplay to work, we need to play while muted first, then unmute after
-    // Browsers block autoplay of unmuted videos, so we must play muted, then unmute
-    // This is especially important in HD mode where videos have audio
-    
     // Check if player has a valid video element before proceeding
     if (entry.player) {
       try {
@@ -1357,6 +1348,40 @@ export class VisibilityManager {
       // No player yet, skip hover actions
       return;
     }
+
+    // If exclusive audio is enabled, mute all other videos first
+    if (this.exclusiveAudioEnabled && entry.player) {
+      // Mute all other videos
+      for (const [otherPostId, otherEntry] of this.entries) {
+        if (otherPostId !== postId && otherEntry.player) {
+          // Check if other player has video element before muting
+          try {
+            otherEntry.player.getVideoElement();
+            otherEntry.player.setMuted(true);
+          } catch {
+            // Player doesn't have video element yet, skip
+            continue;
+          }
+        }
+      }
+    }
+
+    // In non-HD mode, skip hover play/pause - let autoplay handle playback
+    // But handle audio unmuting if exclusiveAudio is enabled
+    if (!this.isHDMode) {
+      // For non-HD videos, unmute on hover if exclusiveAudio is enabled
+      // Videos are already playing via autoplay, so we can unmute immediately
+      if (this.exclusiveAudioEnabled && entry.player) {
+        entry.player.setMuted(false);
+        this.currentAudioPostId = postId;
+      }
+      return;
+    }
+
+    // For HD mode, also handle play/pause on hover
+    // For autoplay to work, we need to play while muted first, then unmute after
+    // Browsers block autoplay of unmuted videos, so we must play muted, then unmute
+    // This is especially important in HD mode where videos have audio
     
     // Pause all other playing videos (hover takes priority)
     for (const [otherPostId, otherEntry] of this.entries) {
@@ -1380,23 +1405,6 @@ export class VisibilityManager {
       }
     }
 
-    // If exclusive audio is enabled, mute all other videos first
-    if (this.exclusiveAudioEnabled && entry.player) {
-      // Mute all other videos
-      for (const [otherPostId, otherEntry] of this.entries) {
-        if (otherPostId !== postId && otherEntry.player) {
-          // Check if other player has video element before muting
-          try {
-            otherEntry.player.getVideoElement();
-            otherEntry.player.setMuted(true);
-          } catch {
-            // Player doesn't have video element yet, skip
-            continue;
-          }
-        }
-      }
-    }
-
     // Play first while muted (browsers allow muted autoplay)
     // Then handle unmuting based on global mute setting after play succeeds
     this.executePlayOnHover(postId).then(() => {
@@ -1408,11 +1416,9 @@ export class VisibilityManager {
           // Volume mode is enabled: unmute the video
           // Hover provides user interaction, so unmuting is allowed
           entry.player.setMuted(false);
-        }
-        // If exclusive audio is disabled (global mute ON), video stays muted
-        if (this.exclusiveAudioEnabled) {
           this.currentAudioPostId = postId;
         }
+        // If exclusive audio is disabled (global mute ON), video stays muted
       }
     }).catch((error: unknown) => {
       // If play fails, check if it's a load failure
@@ -1428,21 +1434,6 @@ export class VisibilityManager {
       }
       // If play fails, don't unmute
     });
-  }
-
-  /**
-   * Unmute the hovered video and mute all others
-   * @deprecated Use handleHoverEnter instead to avoid race conditions
-   * NOTE: This function should NOT unmute videos - videos should stay muted by default
-   * Only the user's manual unmute action or autoplay (when global mute is disabled) should unmute
-   */
-  private unmuteOnHover(postId: string): void {
-    // This function is deprecated and should not unmute videos
-    // Videos should stay muted by default
-    // Only unmute via:
-    // 1. User's manual unmute button click (handled by NativeVideoPlayer)
-    // 2. Autoplay handler when global mute is disabled (exclusiveAudioEnabled = false)
-    return;
   }
 
   /**

@@ -83,29 +83,6 @@ export function getAspectRatioClass(aspectRatio: number): string {
 // Removed unused generateId helper
 
 /**
- * Escape HTML to prevent XSS
- * Available utility function for future use if needed
- */
-export function escapeHtml(text: string): string {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
-/**
- * Shuffle array in-place using Fisher–Yates
- */
-export function shuffleInPlace<T>(arr: T[]): T[] {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    const temp = arr[i];
-    arr[i] = arr[j]!;
-    arr[j] = temp!;
-  }
-  return arr;
-}
-
-/**
  * Basic media URL sanity check to avoid assigning the app root as a video src
  */
 export function isValidMediaUrl(url?: string): boolean {

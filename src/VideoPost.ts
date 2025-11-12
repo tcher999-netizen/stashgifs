@@ -1534,23 +1534,32 @@ export class VideoPost {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
 
-    // Don't clear player container - let browser handle cleanup naturally
-    // The destroy() method should have removed the video element
-    // try {
-    //   // Remove all children one by one to avoid issues
-    //   while (playerContainer.firstChild) {
-    //     playerContainer.removeChild(playerContainer.firstChild);
-    //   }
-    // } catch (e) {
-    //   // If removing children fails, try innerHTML as fallback
-    //   console.warn('Failed to remove children individually, using innerHTML', e);
-    //   try {
-    //     playerContainer.innerHTML = '';
-    //   } catch (e2) {
-    //     console.error('Failed to clear player container', e2);
-    //     throw new Error('Failed to clear player container for upgrade');
-    //   }
-    // }
+    // Clean up any leftover player elements from the old player
+    // Remove all .video-player wrappers and .video-player__controls
+    try {
+      const oldPlayerWrappers = playerContainer.querySelectorAll('.video-player');
+      for (const wrapper of Array.from(oldPlayerWrappers)) {
+        if (wrapper.parentNode) {
+          wrapper.parentNode.removeChild(wrapper);
+        }
+      }
+      
+      const oldControls = playerContainer.querySelectorAll('.video-player__controls');
+      for (const controls of Array.from(oldControls)) {
+        if (controls.parentNode) {
+          controls.parentNode.removeChild(controls);
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to remove old player elements', e);
+      // If removing elements fails, try clearing container as fallback
+      try {
+        playerContainer.innerHTML = '';
+      } catch (e2) {
+        console.error('Failed to clear player container', e2);
+        throw new Error('Failed to clear player container for upgrade');
+      }
+    }
 
     // Small delay to ensure DOM is cleared and old player is fully destroyed
     await new Promise(resolve => setTimeout(resolve, 50));

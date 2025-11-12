@@ -2,8 +2,8 @@ id: stashgifs
 name: StashGifs
 metadata:
   description: A GIF-style vertical scroller interface for Stash.
-version: 3.3.0
-date: "2025-11-11 10:00:58"
+version: 3.4.0
+date: "2025-11-12 10:36:47"
 requires: []
 source_repository: https://anonymous.4open.science/api/repo/stashgifs-D783/file/index.yml
 files:
@@ -32,6 +32,20 @@ files:
 - app\assets\VideoPost.js.map
 - app\assets\VisibilityManager.js
 - app\assets\VisibilityManager.js.map
+- app\assets\PosterPreloader.js
+- app\assets\PosterPreloader.js.map
+- app\assets\graphql\client.js
+- app\assets\graphql\client.js.map
+- app\assets\graphql\errors.js
+- app\assets\graphql\errors.js.map
+- app\assets\graphql\fragments.js
+- app\assets\graphql\fragments.js.map
+- app\assets\graphql\mutations.js
+- app\assets\graphql\mutations.js.map
+- app\assets\graphql\queries.js
+- app\assets\graphql\queries.js.map
+- app\assets\graphql\types.js
+- app\assets\graphql\types.js.map
 - stashgifs.yml
 - stashgifs.mjs
 - manifest

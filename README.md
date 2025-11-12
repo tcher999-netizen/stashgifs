@@ -9,13 +9,14 @@ Install via Stash's plugin system using the `index.yml` file.
 ## Features
 
 - **Vertical scrolling feed** - Browse markers like a social media feed, looping videos
-- **Auto-play videos** - Videos play automatically as you scroll
-- **Fuzzy tag matching** - Selecting "finger" matches "fingers", "finger - pov", "finger play", etc.
+- **Auto-play videos** - Videos play automatically as you scroll (HD videos play on hover)
 - **Saved filters** - Quick access to your saved marker filters
 - **Random content** - Fresh mix every time you load
 - **Favorites** - Heart markers to save them (adds "StashGifs Favorite" tag)
 - **O-count tracking** - Track and increment o-counts
 - **HD mode** - Switch to full scene video with audio
+- **Random scene player** - Watch random scenes and add markers if you like them
+- **Add markers** - Create new markers directly from scenes
 - **Mobile friendly** - Works great on touch devices
 - **Fullscreen support** - Watch in fullscreen
 
@@ -36,10 +37,11 @@ Install via Stash's plugin system using the `index.yml` file.
 - 💦 **O-count** - Increment scene o-count
 - ⭐ **Star** - Set rating (0-10 stars)
 - **HD** - Switch to full scene video with audio
+- 📌 **Marker** - Add a new marker at current timestamp
 - ▶️ **Play** - Open scene in Stash at marker timestamp
 
 **Video controls:**
-- Play/pause, seek, mute/unmute, fullscreen
+- Play/pause, seek,, fullscreen
 
 ## Development
 

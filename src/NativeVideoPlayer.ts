@@ -977,14 +977,22 @@ export class NativeVideoPlayer {
     this.videoElement.autoplay = true;
     
     // Ensure startTime is set right before play (browsers may reset on play)
+    // BUT only if video is at the beginning or before startTime (preserve paused position)
     // This applies to both mobile and desktop
     if (this.desiredStartTime !== undefined && this.desiredStartTime > 0 && this.videoElement.readyState >= 1) {
-      // Reset flag to allow re-seeking
-      if (isMobile) {
-        this.startTimeEnforced = false;
-      }
       try {
-        this.videoElement.currentTime = this.desiredStartTime;
+        const currentTime = this.videoElement.currentTime;
+        // Only set to desiredStartTime if:
+        // 1. Video is at or near the beginning (< 1 second), OR
+        // 2. Video is at or before the startTime (for initial load)
+        // This preserves the paused position if video was paused mid-playback
+        if (currentTime < 1 || currentTime <= this.desiredStartTime) {
+          // Reset flag to allow re-seeking
+          if (isMobile) {
+            this.startTimeEnforced = false;
+          }
+          this.videoElement.currentTime = this.desiredStartTime;
+        }
       } catch {
         // Ignore seek errors
       }
@@ -996,6 +1004,7 @@ export class NativeVideoPlayer {
         await playPromise;
         
         // Re-seek after play() in case browser reset currentTime
+        // BUT only if video was reset to 0 or is before startTime (preserve paused position)
         // This applies to both mobile and desktop for HD videos
         if (this.desiredStartTime !== undefined && this.desiredStartTime > 0) {
           const performReSeek = (attempt: number = 0) => {
@@ -1006,9 +1015,11 @@ export class NativeVideoPlayer {
                 const desired = this.desiredStartTime!;
                 const diff = Math.abs(current - desired);
                 
-                // Only seek if video is significantly off AND at 0 or very early
-                // This prevents interfering with normal playback
-                if (diff > 0.5 && current < 1) {
+                // Only seek if video is significantly off AND:
+                // 1. At 0 or very early (< 1 second), OR
+                // 2. Before the startTime (for initial load)
+                // This preserves the paused position if video was paused mid-playback
+                if (diff > 0.5 && (current < 1 || current < desired)) {
                   this.videoElement.currentTime = desired;
                   this.startTimeEnforced = true;
                   
@@ -1491,6 +1502,78 @@ export class NativeVideoPlayer {
       return; // Not unloaded or no original URL
     }
 
+    // Clean up duplicates FIRST, before any other operations
+    // Remove any duplicate playerWrapper elements (keep only the first one)
+    const allPlayerWrappers = this.container.querySelectorAll('.video-player');
+    if (allPlayerWrappers.length > 1) {
+      // Keep the first one, remove the rest
+      for (let i = 1; i < allPlayerWrappers.length; i++) {
+        const duplicate = allPlayerWrappers[i];
+        if (duplicate.parentNode) {
+          duplicate.parentNode.removeChild(duplicate);
+        }
+      }
+    }
+    
+    // Remove any duplicate video elements (keep only the one we're managing)
+    const allVideoElements = this.container.querySelectorAll('video.video-player__element');
+    if (allVideoElements.length > 1) {
+      for (let i = 0; i < allVideoElements.length; i++) {
+        const video = allVideoElements[i];
+        if (video !== this.videoElement && video.parentNode) {
+          video.parentNode.removeChild(video);
+        }
+      }
+    }
+
+    // Ensure video element structure is correct before reloading
+    // Find or create the playerWrapper (div.video-player) that should contain the video element
+    let playerWrapper = this.videoElement.parentElement;
+    
+    // Check if parent is the correct playerWrapper (has class 'video-player')
+    if (!playerWrapper || !playerWrapper.classList.contains('video-player')) {
+      // Find existing playerWrapper in container
+      playerWrapper = this.container.querySelector('.video-player') as HTMLElement;
+      
+      // If no playerWrapper exists, create it
+      if (!playerWrapper) {
+        playerWrapper = document.createElement('div');
+        playerWrapper.className = 'video-player';
+        playerWrapper.style.position = 'absolute';
+        playerWrapper.style.top = '0';
+        playerWrapper.style.left = '0';
+        playerWrapper.style.width = '100%';
+        playerWrapper.style.height = '100%';
+        playerWrapper.style.zIndex = '1';
+        playerWrapper.style.backgroundColor = 'transparent';
+        playerWrapper.style.transform = 'translateZ(0)';
+        playerWrapper.style.willChange = 'transform';
+        
+        // Insert playerWrapper before controlsContainer if it exists
+        if (this.controlsContainer && this.controlsContainer.parentNode === this.container) {
+          this.container.insertBefore(playerWrapper, this.controlsContainer);
+        } else {
+          this.container.appendChild(playerWrapper);
+        }
+      }
+    }
+    
+    // Ensure video element is in the playerWrapper (remove from any other parent first)
+    if (this.videoElement.parentElement !== playerWrapper) {
+      if (this.videoElement.parentElement) {
+        this.videoElement.parentElement.removeChild(this.videoElement);
+      }
+      playerWrapper.appendChild(this.videoElement);
+    }
+    
+    // Ensure loadingIndicator is in playerWrapper if it exists
+    if (this.loadingIndicator && this.loadingIndicator.parentElement !== playerWrapper) {
+      if (this.loadingIndicator.parentElement) {
+        this.loadingIndicator.parentElement.removeChild(this.loadingIndicator);
+      }
+      playerWrapper.appendChild(this.loadingIndicator);
+    }
+
     // Recreate video element with original URL and settings
     this.videoElement.src = this.originalVideoUrl;
     this.videoElement.load();
@@ -1664,6 +1747,29 @@ export class NativeVideoPlayer {
         } catch (e) {
           // Element already removed, ignore
         }
+      }
+      
+      // Also remove the playerWrapper (div.video-player) that contains the video element
+      // This ensures complete cleanup of the player structure
+      if (parent && parent instanceof HTMLElement && parent.classList.contains('video-player')) {
+        const playerWrapper = parent;
+        const wrapperParent = playerWrapper.parentNode;
+        if (wrapperParent && wrapperParent.contains(playerWrapper)) {
+          try {
+            wrapperParent.removeChild(playerWrapper);
+          } catch (e) {
+            // Wrapper may have been removed already, ignore
+          }
+        }
+      }
+    }
+    
+    // Also remove controlsContainer if it exists
+    if (this.controlsContainer && this.controlsContainer.parentNode) {
+      try {
+        this.controlsContainer.parentNode.removeChild(this.controlsContainer);
+      } catch (e) {
+        // Controls may have been removed already, ignore
       }
     }
     

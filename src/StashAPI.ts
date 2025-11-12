@@ -582,7 +582,6 @@ export class StashAPI {
     if (signal?.aborted) return [];
     
     console.log('[StashAPI] fetchSceneMarkers called with filters:', {
-      primary_tags: filters?.primary_tags,
       tags: filters?.tags,
       performers: filters?.performers,
       query: filters?.query,
@@ -609,7 +608,7 @@ export class StashAPI {
       
       // Check if any filters are active (tags, saved filter, or query)
       // Note: When tags are searched, we filter by tags but still use random sorting
-      const hasActiveFilters = !!(filters?.primary_tags?.length || filters?.tags?.length || filters?.savedFilterId || (filters?.query && filters.query.trim() !== ''));
+      const hasActiveFilters = !!(filters?.tags?.length || filters?.savedFilterId || (filters?.query && filters.query.trim() !== ''));
       
       // If we want random and no offset, get count first to calculate random page
       // Skip random page selection when filters are active - start from page 1 instead
@@ -630,10 +629,10 @@ export class StashAPI {
         const countSceneFilter = this.normalizeMarkerFilter(countSceneFilterRaw);
         
         // If a saved filter is active, ONLY use its criteria (don't combine with manual filters)
-        // Otherwise, apply manual tag filters (primary_tags or tags)
+        // Otherwise, apply manual tag filters (only tags - primary_tags is deprecated)
         if (!filters?.savedFilterId) {
-          // Use tags if provided, otherwise fall back to primary_tags
-          const tagFilter = filters?.tags || filters?.primary_tags;
+          // Only use tags filter - the GraphQL tags filter checks the tags array (which includes primary tag)
+          const tagFilter = filters?.tags;
           if (tagFilter && tagFilter.length > 0) {
             const tagIds = tagFilter
               .map((v) => parseInt(String(v), 10))
@@ -705,10 +704,10 @@ export class StashAPI {
         const sceneMarkerFilter: any = this.normalizeMarkerFilter(sceneMarkerFilterRaw);
         
         // If a saved filter is active, ONLY use its criteria (don't combine with manual filters)
-        // Otherwise, apply manual tag filters (primary_tags or tags)
+        // Otherwise, apply manual tag filters (only tags - primary_tags is deprecated)
         if (!filters?.savedFilterId) {
-          // Use tags if provided, otherwise fall back to primary_tags
-          const tagFilter = filters?.tags || filters?.primary_tags;
+          // Only use tags filter - the GraphQL tags filter checks the tags array (which includes primary tag)
+          const tagFilter = filters?.tags;
           if (tagFilter && tagFilter.length > 0) {
             const tagIds = tagFilter
               .map((v) => parseInt(String(v), 10))
@@ -1038,7 +1037,18 @@ export class StashAPI {
         variables,
       });
       const tags = result.data?.findTags?.tags || [];
-      return tags.length > 0 ? tags[0] : null;
+      if (tags.length > 0) {
+        const tag = tags[0];
+        // Validate exact match (case-insensitive) - EQUALS modifier might not work as expected
+        if (tag.name.toLowerCase() === tagName.toLowerCase()) {
+          console.log('[StashAPI] Found tag:', { searched: tagName, found: tag.name, id: tag.id });
+          return tag;
+        } else {
+          console.warn('[StashAPI] Tag name mismatch:', { searched: tagName, found: tag.name, id: tag.id });
+          return null;
+        }
+      }
+      return null;
     } catch (error) {
       console.error('StashAPI: Failed to find tag', error);
       return null;

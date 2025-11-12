@@ -142,8 +142,13 @@ export class FeedContainer {
     } catch {
       this.shuffleMode = 0;
     }
-    // Always default to muted (volume mode disabled)
-    this.useVolumeMode = false;
+    // Load volume mode preference (default OFF -> all videos muted)
+    try {
+      const savedVolumeMode = localStorage.getItem('stashgifs-useVolumeMode');
+      this.useVolumeMode = savedVolumeMode === 'true' ? true : false;
+    } catch {
+      this.useVolumeMode = false;
+    }
     
     // Create header bar with unified search
     this.createHeaderBar();
@@ -841,6 +846,14 @@ export class FeedContainer {
     const onVolToggleClick = async () => {
       this.useVolumeMode = !this.useVolumeMode;
       setVolToggleVisualState();
+      
+      // Persist the new volume mode preference to localStorage
+      try {
+        localStorage.setItem('stashgifs-useVolumeMode', this.useVolumeMode ? 'true' : 'false');
+      } catch (e) {
+        console.error('Failed to save volume mode preference:', e);
+      }
+      
       // Apply to visibility manager
       this.visibilityManager.setExclusiveAudio(this.useVolumeMode);
       this.visibilityManager.reevaluateAudioFocus();
@@ -1323,11 +1336,27 @@ export class FeedContainer {
         }
 
         // Playback & Shuffle options (moved from header into popup)
+        // Align with search bar: get actual search bar position
+        const searchInput = this.container.querySelector('.feed-filters__input') as HTMLElement;
+        let alignmentOffset = 0;
+        if (searchInput) {
+          const searchRect = searchInput.getBoundingClientRect();
+          const containerRect = container.getBoundingClientRect();
+          alignmentOffset = searchRect.left - containerRect.left - horizontalPadding;
+        } else {
+          // Fallback: approximate alignment (header padding + logo + gap - filter padding)
+          const headerPadding = 12;
+          const logoWidth = 120; // Approximate logo width
+          const headerGap = 12;
+          alignmentOffset = headerPadding + logoWidth + headerGap - horizontalPadding;
+        }
         const playbackSection = document.createElement('div');
         playbackSection.style.display = 'flex';
         playbackSection.style.flexDirection = 'row';
         playbackSection.style.alignItems = 'center';
         playbackSection.style.gap = '8px';
+        playbackSection.style.flexWrap = 'wrap';
+        playbackSection.style.marginLeft = `${alignmentOffset}px`; // Align with search bar
 
         // HD toggle button
         const hdBtn = document.createElement('button');
@@ -1339,17 +1368,10 @@ export class FeedContainer {
         hdBtn.style.background = this.useHDMode ? 'rgba(76, 175, 80, 0.25)' : 'rgba(28, 28, 30, 0.95)';
         hdBtn.style.color = this.useHDMode ? '#C8E6C9' : 'rgba(255,255,255,0.85)';
         hdBtn.style.cursor = 'pointer';
-        hdBtn.addEventListener('click', () => {
-          // Toggle HD mode with existing logic
-          onHDToggleClick();
-          // Reflect state
-          hdBtn.textContent = this.useHDMode ? 'HD Video: On' : 'HD Video: Off';
-          hdBtn.style.background = this.useHDMode ? 'rgba(76, 175, 80, 0.25)' : 'rgba(28, 28, 30, 0.95)';
-          hdBtn.style.color = this.useHDMode ? '#C8E6C9' : 'rgba(255,255,255,0.85)';
-          // Update random toggle visibility based on HD (only in HD)
-          randomBtn.style.display = this.useHDMode ? 'inline-flex' : 'none';
-        });
-        // Random positions toggle (appears only when HD is ON)
+        hdBtn.style.display = 'inline-flex';
+        hdBtn.style.alignItems = 'center';
+        
+        // Random positions toggle (always visible)
         const randomBtn = document.createElement('button');
         randomBtn.type = 'button';
         const setRandomBtnState = () => {
@@ -1362,14 +1384,42 @@ export class FeedContainer {
         randomBtn.style.borderRadius = '10px';
         randomBtn.style.border = '1px solid rgba(255,255,255,0.12)';
         randomBtn.style.cursor = 'pointer';
+        randomBtn.style.display = 'inline-flex';
+        randomBtn.style.alignItems = 'center';
         setRandomBtnState();
-        randomBtn.style.display = this.useHDMode ? 'inline-flex' : 'none';
+
+        // Helper function to update both button states
+        const updateButtonStates = () => {
+          hdBtn.textContent = this.useHDMode ? 'HD Video: On' : 'HD Video: Off';
+          hdBtn.style.background = this.useHDMode ? 'rgba(76, 175, 80, 0.25)' : 'rgba(28, 28, 30, 0.95)';
+          hdBtn.style.color = this.useHDMode ? '#C8E6C9' : 'rgba(255,255,255,0.85)';
+          setRandomBtnState();
+        };
+
+        hdBtn.addEventListener('click', () => {
+          // Toggle HD mode with existing logic
+          onHDToggleClick();
+          // Update both button states
+          updateButtonStates();
+        });
+
         randomBtn.addEventListener('click', async () => {
+          // Check if we're turning Random Positions ON (before toggling)
+          const willBeOn = this.shuffleMode === 0;
+          
+          // If turning ON and HD mode is off, enable HD mode first
+          if (willBeOn && !this.useHDMode) {
+            onHDToggleClick();
+          }
+          
           // Toggle shuffleMode between 0 (off) and 1 (on) for random positions
           this.shuffleMode = this.shuffleMode > 0 ? 0 : 1;
           try { localStorage.setItem('stashgifs-shuffleMode', String(this.shuffleMode)); } catch {}
-          setRandomBtnState();
+          
+          // Update both button states
+          updateButtonStates();
           updateSearchBarDisplay();
+          
           // Apply changes
           this.clearPosts();
           if (this.postsContainer) this.postsContainer.innerHTML = '';
@@ -1393,6 +1443,7 @@ export class FeedContainer {
         filtersSection.style.display = 'flex';
         filtersSection.style.flexDirection = 'column';
         filtersSection.style.gap = '12px';
+        filtersSection.style.marginLeft = `${alignmentOffset}px`; // Align with search bar
         filtersSection.appendChild(createSectionLabel('Saved Filters', true));
 
         const pillRow = document.createElement('div');
@@ -1556,6 +1607,7 @@ export class FeedContainer {
           tagsSection.style.display = 'flex';
           tagsSection.style.flexDirection = 'column';
           tagsSection.style.gap = '8px';
+          tagsSection.style.marginLeft = `${alignmentOffset}px`; // Align with search bar
           tagsSection.appendChild(createSectionLabel('Suggested Tags'));
           availableTags.forEach((tag) => {
             tagsSection.appendChild(
@@ -1588,6 +1640,7 @@ export class FeedContainer {
           performersSection.style.display = 'flex';
           performersSection.style.flexDirection = 'column';
           performersSection.style.gap = '8px';
+          performersSection.style.marginLeft = `${alignmentOffset}px`; // Align with search bar
           performersSection.appendChild(createSectionLabel('Suggested Performers'));
           availablePerformers.forEach((performer) => {
                 const performerId = parseInt(performer.id, 10);
@@ -1648,6 +1701,21 @@ export class FeedContainer {
       }
       // Load saved filters if needed
       await this.loadSavedFiltersIfNeeded();
+      
+      // Calculate alignment for search results path (used by all sections)
+      const searchInputForResults = this.container.querySelector('.feed-filters__input') as HTMLElement;
+      let alignmentOffsetForResults = 0;
+      if (searchInputForResults) {
+        const searchRectForResults = searchInputForResults.getBoundingClientRect();
+        const containerRectForResults = container.getBoundingClientRect();
+        alignmentOffsetForResults = searchRectForResults.left - containerRectForResults.left - horizontalPadding;
+      } else {
+        const headerPaddingForResults = 12;
+        const logoWidthForResults = 120;
+        const headerGapForResults = 12;
+        alignmentOffsetForResults = headerPaddingForResults + logoWidthForResults + headerGapForResults - horizontalPadding;
+      }
+      
       const matchingSavedFilters = this.savedFiltersCache
         .filter((filter) => filter.name.toLowerCase().includes(trimmedText.toLowerCase()))
         .slice(0, 6);
@@ -1657,6 +1725,7 @@ export class FeedContainer {
         savedSection.style.display = 'flex';
         savedSection.style.flexDirection = 'column';
         savedSection.style.gap = '8px';
+        savedSection.style.marginLeft = `${alignmentOffsetForResults}px`; // Align with search bar
         savedSection.appendChild(createSectionLabel('Matching Saved Filters'));
         matchingSavedFilters.forEach((filter) => {
           savedSection.appendChild(
@@ -1704,6 +1773,7 @@ export class FeedContainer {
         tagsSection.style.display = 'flex';
         tagsSection.style.flexDirection = 'column';
         tagsSection.style.gap = '8px';
+        tagsSection.style.marginLeft = `${alignmentOffsetForResults}px`; // Align with search bar
         tagsSection.appendChild(createSectionLabel('Tags'));
         filteredTags.forEach((tag) => {
           tagsSection.appendChild(
@@ -1734,6 +1804,7 @@ export class FeedContainer {
         performersSection.style.display = 'flex';
         performersSection.style.flexDirection = 'column';
         performersSection.style.gap = '8px';
+        performersSection.style.marginLeft = `${alignmentOffsetForResults}px`; // Align with search bar
         performersSection.appendChild(createSectionLabel('Performers'));
         filteredPerformers.forEach((performer) => {
           const performerId = parseInt(performer.id, 10);
@@ -1760,59 +1831,6 @@ export class FeedContainer {
         container.appendChild(performersSection);
       }
 
-      // Append Playback & Shuffle options for non-empty searches as well
-      const playbackSection2 = document.createElement('div');
-      playbackSection2.style.display = 'flex';
-      playbackSection2.style.flexDirection = 'row';
-      playbackSection2.style.alignItems = 'center';
-      playbackSection2.style.gap = '8px';
-      const hdBtn2 = document.createElement('button');
-      hdBtn2.type = 'button';
-      hdBtn2.textContent = this.useHDMode ? 'HD Video: On' : 'HD Video: Off';
-      hdBtn2.style.padding = '10px 12px';
-      hdBtn2.style.borderRadius = '10px';
-      hdBtn2.style.border = '1px solid rgba(255,255,255,0.12)';
-      hdBtn2.style.background = this.useHDMode ? 'rgba(76, 175, 80, 0.25)' : 'rgba(28, 28, 30, 0.95)';
-      hdBtn2.style.color = this.useHDMode ? '#C8E6C9' : 'rgba(255,255,255,0.85)';
-      hdBtn2.style.cursor = 'pointer';
-      hdBtn2.addEventListener('click', () => {
-        onHDToggleClick();
-        hdBtn2.textContent = this.useHDMode ? 'HD Video: On' : 'HD Video: Off';
-        hdBtn2.style.background = this.useHDMode ? 'rgba(76, 175, 80, 0.25)' : 'rgba(28, 28, 30, 0.95)';
-        hdBtn2.style.color = this.useHDMode ? '#C8E6C9' : 'rgba(255,255,255,0.85)';
-        randomBtn2.style.display = this.useHDMode ? 'inline-flex' : 'none';
-      });
-      // Random positions toggle (inline)
-      const randomBtn2 = document.createElement('button');
-      randomBtn2.type = 'button';
-      const setRandom2 = () => {
-        const isOn = this.shuffleMode > 0;
-        randomBtn2.textContent = isOn ? 'Random Positions: On' : 'Random Positions: Off';
-        randomBtn2.style.background = isOn ? 'rgba(33, 150, 243, 0.25)' : 'rgba(28, 28, 30, 0.95)';
-        randomBtn2.style.color = isOn ? '#BBDEFB' : 'rgba(255,255,255,0.85)';
-      };
-      randomBtn2.style.padding = '10px 12px';
-      randomBtn2.style.borderRadius = '10px';
-      randomBtn2.style.border = '1px solid rgba(255,255,255,0.12)';
-      randomBtn2.style.cursor = 'pointer';
-      setRandom2();
-      randomBtn2.style.display = this.useHDMode ? 'inline-flex' : 'none';
-      randomBtn2.addEventListener('click', async () => {
-        this.shuffleMode = this.shuffleMode > 0 ? 0 : 1;
-        try { localStorage.setItem('stashgifs-shuffleMode', String(this.shuffleMode)); } catch {}
-        setRandom2();
-        updateSearchBarDisplay();
-        this.clearPosts();
-        if (this.postsContainer) this.postsContainer.innerHTML = '';
-        this.currentPage = 1;
-        this.hasMore = true;
-        this.isLoading = false;
-        await this.loadVideos(this.currentFilters, false, undefined, true);
-      });
-
-      playbackSection2.appendChild(hdBtn2);
-      playbackSection2.appendChild(randomBtn2);
-      container.appendChild(playbackSection2);
 
       if (container.children.length === 0) {
         appendEmptyState(container, `No matches found for "${trimmedText}".`);
@@ -1952,12 +1970,6 @@ export class FeedContainer {
       queryInput.style.borderColor = 'rgba(255,255,255,0.12)';
     });
     
-    // Debounced unified apply on typing when selection was cleared and term is substantive
-    const debouncedUnifiedApply = debounce(() => {
-      // Don't block UI; use new abort controller to align with apply()
-      void apply();
-    }, 300);
-
     queryInput.addEventListener('input', () => {
       const text = queryInput.value;
       // Clear selected tag/filter when user types (they're searching for something new)
@@ -1968,12 +1980,9 @@ export class FeedContainer {
         this.selectedPerformerName = undefined;
         this.selectedSavedFilter = undefined;
       }
-      // Use debounced function for better performance
+      // Use debounced function for better performance - only fetch suggestions, don't apply
       debouncedFetchSuggestions(text, false);
-      // Auto-apply if user is entering a new free-text search
-      if (text.trim().length >= 2) {
-        debouncedUnifiedApply();
-      }
+      // Don't auto-apply while typing - only apply when user presses Enter or selects a suggestion
     });
 
     suggestions.addEventListener('click', (e) => {
@@ -2080,48 +2089,40 @@ export class FeedContainer {
 
     // Build filters similar to header bar robust logic
     let queryValue: string | undefined = undefined;
-    let primaryTags: string[] | undefined = undefined;
+    let tags: string[] | undefined = undefined;
     let performers: string[] | undefined = undefined;
 
-    const useExactMatch = this.selectedTagName?.toLowerCase() === 'cowgirl';
-
-    if (this.selectedTagName) {
-      if (useExactMatch && this.selectedTagId) {
-        primaryTags = [String(this.selectedTagId)];
-      } else {
+    if (this.selectedPerformerId) {
+      // Use performer ID for filtering
+      performers = [String(this.selectedPerformerId)];
+    } else if (this.selectedTagId || this.selectedTagName) {
+      // Use tag filtering - always use tags filter (checks tags array, which includes primary tag)
+      if (this.selectedTagId) {
+        // Use exact tag ID if available
+        tags = [String(this.selectedTagId)];
+      } else if (this.selectedTagName) {
+        // Use exact tag name matching - no fuzzy search
         try {
-          const matchingTags = await this.api.searchMarkerTags(this.selectedTagName, 50, loadSignal);
+          const exactTag = await this.api.findTagByName(this.selectedTagName);
           if (loadSignal?.aborted) return;
-          const matchingTagIds = (matchingTags || [])
-            .map(tag => parseInt(tag.id, 10))
-            .filter(id => !Number.isNaN(id))
-            .map(id => String(id));
-          if (matchingTagIds.length > 0) {
-            primaryTags = matchingTagIds;
-          } else if (this.selectedTagId) {
-            primaryTags = [String(this.selectedTagId)];
+          if (exactTag) {
+            tags = [String(exactTag.id)];
           }
         } catch {
-          if (this.selectedTagId) {
-            primaryTags = [String(this.selectedTagId)];
-          }
+          // If tag lookup fails, don't set tags filter
         }
       }
-    } else if (this.selectedPerformerId) {
-      performers = [String(this.selectedPerformerId)];
     } else if (q && !this.selectedSavedFilter) {
       try {
-        const matchingTags = await this.api.searchMarkerTags(q, 50, loadSignal);
+        // Try exact tag match first
+        const exactTag = await this.api.findTagByName(q);
         if ((loadSignal as any)?.aborted) return;
-        const matchingTagIds = (matchingTags || [])
-          .map(tag => parseInt(tag.id, 10))
-          .filter(id => !Number.isNaN(id))
-          .map(id => String(id));
-        if (matchingTagIds.length > 0) {
-          primaryTags = matchingTagIds;
-          this.selectedTagName = q;
-          this.selectedTagId = undefined;
+        if (exactTag) {
+          tags = [String(exactTag.id)];
+          this.selectedTagName = exactTag.name;
+          this.selectedTagId = parseInt(exactTag.id, 10);
         } else {
+          // If no exact tag match, try performer search
           const matchingPerformers = await this.api.searchPerformers(q, 10, loadSignal);
           if (loadSignal?.aborted) return;
           if (matchingPerformers && matchingPerformers.length > 0 && matchingPerformers[0]) {
@@ -2139,7 +2140,7 @@ export class FeedContainer {
 
     const newFilters: FilterOptions = {
       query: queryValue,
-      primary_tags: primaryTags,
+      tags: tags,
       performers: performers,
       savedFilterId: this.selectedSavedFilter?.id || undefined,
       limit: this.initialLoadLimit,
@@ -2175,53 +2176,42 @@ export class FeedContainer {
     // Apply the filters using the same logic as in createHeaderBar
     // Check performer first to ensure it takes priority
     let queryValue: string | undefined = undefined;
-    let primaryTags: string[] | undefined = undefined;
+    let tags: string[] | undefined = undefined;
     let performers: string[] | undefined = undefined;
-    
+
     if (this.selectedPerformerId) {
       // Use performer ID for filtering
       performers = [String(this.selectedPerformerId)];
     } else if (this.selectedTagId || this.selectedTagName) {
-      // Use tag filtering
-      const useExactMatch = this.selectedTagName?.toLowerCase() === 'cowgirl';
-      
-      if (useExactMatch && this.selectedTagId) {
-        // Use exact tag ID matching for "cowgirl" to exclude "reverse cowgirl"
-        primaryTags = [String(this.selectedTagId)];
+      // Use tag filtering - always use tags filter (checks tags array, which includes primary tag)
+      if (this.selectedTagId) {
+        // Use exact tag ID if available
+        tags = [String(this.selectedTagId)];
       } else if (this.selectedTagName) {
-        // For fuzzy matching: search for tags matching the name, then use their IDs
-        // This allows "finger" to match "fingers", "finger - pov", etc.
+        // Use exact tag name matching - no fuzzy search
         try {
-          const matchingTags = await this.api.searchMarkerTags(this.selectedTagName, 50);
-          const matchingTagIds = matchingTags
-            .map(tag => parseInt(tag.id, 10))
-            .filter(id => !Number.isNaN(id))
-            .map(id => String(id));
-          
-          if (matchingTagIds.length > 0) {
-            primaryTags = matchingTagIds;
+          const exactTag = await this.api.findTagByName(this.selectedTagName);
+          if (exactTag) {
+            tags = [String(exactTag.id)];
           } else {
             // Fallback: use the selected tag ID if no matches found
             if (this.selectedTagId) {
-              primaryTags = [String(this.selectedTagId)];
+              tags = [String(this.selectedTagId)];
             }
           }
         } catch (error) {
-          console.error('Failed to search for matching tags', error);
+          console.error('Failed to find exact tag', error);
           // Fallback: use the selected tag ID
           if (this.selectedTagId) {
-            primaryTags = [String(this.selectedTagId)];
+            tags = [String(this.selectedTagId)];
           }
         }
-      } else if (this.selectedTagId) {
-        // Fallback: just use the tag ID if we have it
-        primaryTags = [String(this.selectedTagId)];
       }
     }
     
     const newFilters: FilterOptions = {
       query: queryValue,
-      primary_tags: primaryTags,
+      tags: tags,
       performers: performers,
       savedFilterId: this.selectedSavedFilter?.id || undefined,
       limit: this.initialLoadLimit,
@@ -2465,10 +2455,6 @@ export class FeedContainer {
     const debouncedFetchSuggestions2 = debounce((text: string, page: number, forceShow: boolean) => {
       fetchSuggestions(text, page, forceShow);
     }, 150);
-    // Debounced unified apply for filter sheet typing
-    const debouncedUnifiedApply2 = debounce(() => {
-      apply();
-    }, 300);
     const updateSearchBarDisplay = () => {
       // Show the active search term in the search bar
       if (this.selectedTagName) {
@@ -2493,11 +2479,12 @@ export class FeedContainer {
       tagHeader.style.display = 'none';
     };
 
-    // Auto-apply on typing when entering a substantive term
+    // Don't auto-apply while typing - only apply when user presses Enter or selects a suggestion
     queryInput.addEventListener('input', () => {
       const val = queryInput.value.trim();
+      // Only fetch suggestions, don't apply search
       if (val.length >= 2) {
-        debouncedUnifiedApply2();
+        fetchSuggestions(val, 1, false);
       }
     });
 
@@ -4317,9 +4304,9 @@ export class FeedContainer {
   private aggressiveVideoUnload(): void {
     const viewportTop = window.scrollY || window.pageYOffset;
     const viewportBottom = viewportTop + window.innerHeight;
-    // Extremely aggressive: unload videos that are more than 100px from viewport
-    // In HD mode, be even more aggressive: 50px
-    const unloadDistance = this.useHDMode ? 50 : 100;
+    // Unload videos that are more than 100px from viewport
+    // Same threshold for both HD and normal mode
+    const unloadDistance = this.useHDMode ? 100 : 100;
     
     // Also limit concurrent loaded videos to prevent memory buildup
     const maxLoadedVideos = this.useHDMode ? 2 : 3;
