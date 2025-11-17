@@ -173,10 +173,6 @@
   line-height: var(--line-height-relaxed);
 }
 
-.feed-error {
-  color: #ff4444;
-}
-
 /* Skeleton Loaders */
 .video-post-skeleton {
   opacity: 0.6;

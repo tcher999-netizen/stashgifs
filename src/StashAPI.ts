@@ -863,7 +863,7 @@ export class StashAPI {
       };
 
       const sceneFilter = this.buildShuffleSceneFilter(filters);
-      const scenes = await this.fetchScenesForShuffleQuery(filter, sceneFilter, signal);
+      const scenes = await this.fetchScenesQuery(filter, sceneFilter, signal);
       
       if (this.isAborted(signal)) return [];
 
@@ -923,9 +923,9 @@ export class StashAPI {
   }
 
   /**
-   * Fetch scenes query for shuffle mode
+   * Fetch scenes query (shared by shuffle mode and short-form content)
    */
-  private async fetchScenesForShuffleQuery(
+  private async fetchScenesQuery(
     filter: FindFilterInput,
     sceneFilter: SceneFilterInput | null,
     signal?: AbortSignal
@@ -949,6 +949,289 @@ export class StashAPI {
       id: `synthetic-${scene.id}-${Date.now()}-${Math.random()}`,
       title: scene.title || 'Untitled',
       seconds: 0,
+      stream: undefined,
+      scene: scene,
+      primary_tag: undefined,
+      tags: [],
+    }));
+  }
+
+  /**
+   * Fetch short-form videos (videos with duration < maxDuration)
+   * @param filters Filter options
+   * @param maxDuration Maximum duration in seconds (default: 120)
+   * @param limit Maximum number of scenes to return
+   * @param offset Offset for pagination
+   * @param signal Abort signal
+   * @returns Array of synthetic scene markers for short-form content
+   */
+  async fetchShortFormVideos(
+    filters?: FilterOptions,
+    maxDuration: number = 120,
+    limit: number = 20,
+    offset: number = 0,
+    signal?: AbortSignal
+  ): Promise<SceneMarker[]> {
+    if (this.isAborted(signal)) return [];
+
+    try {
+      if (this.isAborted(signal)) return [];
+
+      const scenesPerPage = 100; // 100 scenes per page
+      const pagesToFetch = 20; // Fetch 20 different random pages to get a larger pool
+      
+      const sceneFilter = this.buildShortFormSceneFilter(filters);
+      console.log('[ShortForm] Scene filter:', JSON.stringify(sceneFilter, null, 2));
+      
+      const maxPage = await this.getMaxPageForShortForm(sceneFilter, scenesPerPage, signal);
+      if (maxPage === 0) {
+        return [];
+      }
+      
+      const selectedPages = this.generateUniqueRandomPages(pagesToFetch, maxPage);
+      const allPageResults = await this.fetchShortFormPages(selectedPages, scenesPerPage, sceneFilter, maxPage, signal);
+      
+      if (this.isAborted(signal)) return [];
+
+      const allScenes = this.combineAndDeduplicateScenes(allPageResults);
+      const shortFormScenes = this.filterAndShuffleShortFormScenes(allScenes, maxDuration, limit);
+
+      const markers = this.createShortFormMarkers(shortFormScenes);
+      console.log('[ShortForm] Created', markers.length, 'markers');
+      
+      return markers;
+    } catch (e: unknown) {
+      if (isAbortError(e) || this.isAborted(signal)) {
+        return [];
+      }
+      console.error('[ShortForm] Error fetching short-form videos', e);
+      return [];
+    }
+  }
+
+  /**
+   * Get maximum valid page number for short-form content
+   */
+  private async getMaxPageForShortForm(
+    sceneFilter: SceneFilterInput | null,
+    scenesPerPage: number,
+    signal?: AbortSignal
+  ): Promise<number> {
+    let maxPage = 100; // Default fallback
+    try {
+      const countFilter: FindFilterInput = { per_page: 1, page: 1 };
+      const countResult = await this.gqlClient.query<FindScenesResponse>({
+        query: queries.GET_SCENE_COUNT,
+        variables: { filter: countFilter, ...(sceneFilter && { scene_filter: sceneFilter }) },
+        signal,
+      });
+      
+      if (this.isAborted(signal)) return 0;
+      
+      const totalCount = countResult.data?.findScenes?.count || 0;
+      console.log('[ShortForm] Total scenes matching filter:', totalCount);
+      
+      if (totalCount > 0) {
+        maxPage = Math.max(1, Math.ceil(totalCount / scenesPerPage));
+        console.log('[ShortForm] Max valid page:', maxPage, '(scenes per page:', scenesPerPage, ')');
+      } else {
+        console.warn('[ShortForm] No scenes found matching filter');
+        return 0;
+      }
+    } catch (countError: unknown) {
+      console.warn('[ShortForm] Failed to get scene count, using default max page:', maxPage, countError);
+    }
+    return maxPage;
+  }
+
+  /**
+   * Generate unique random page numbers
+   */
+  private generateUniqueRandomPages(pagesToFetch: number, maxPage: number): number[] {
+    const selectedPages = new Set<number>();
+    
+    // Generate unique random pages
+    while (selectedPages.size < pagesToFetch && selectedPages.size < maxPage) {
+      const randomPage = Math.floor(Math.random() * maxPage) + 1;
+      selectedPages.add(randomPage);
+    }
+    
+    // If we don't have enough unique pages, fill with sequential pages
+    if (selectedPages.size < pagesToFetch) {
+      for (let page = 1; page <= maxPage && selectedPages.size < pagesToFetch; page++) {
+        selectedPages.add(page);
+      }
+    }
+    
+    return Array.from(selectedPages);
+  }
+
+  /**
+   * Fetch multiple pages of scenes with error handling
+   */
+  private async fetchShortFormPages(
+    selectedPages: number[],
+    scenesPerPage: number,
+    sceneFilter: SceneFilterInput | null,
+    maxPage: number,
+    signal?: AbortSignal
+  ): Promise<Array<{ scenes: Scene[]; page: number }>> {
+    const fetchPromises: Array<Promise<{ scenes: Scene[]; page: number }>> = [];
+    
+    for (const randomPage of selectedPages) {
+      const filter: FindFilterInput = {
+        per_page: scenesPerPage,
+        page: randomPage,
+        sort: generateRandomSortSeed(), // Different random seed for each page
+      };
+      
+      console.log('[ShortForm] Fetching page', randomPage, 'of', maxPage);
+      
+      // Wrap fetchScenesQuery with error handling
+      fetchPromises.push(
+        this.fetchScenesQuery(filter, sceneFilter, signal)
+          .then((scenes) => {
+            console.log('[ShortForm] Page', randomPage, 'returned', scenes.length, 'scenes');
+            return { scenes, page: randomPage };
+          })
+          .catch((error: unknown) => {
+            console.error('[ShortForm] Error fetching page', randomPage, ':', error);
+            return { scenes: [], page: randomPage };
+          })
+      );
+    }
+    
+    return await Promise.all(fetchPromises);
+  }
+
+  /**
+   * Combine scenes from multiple pages and remove duplicates
+   */
+  private combineAndDeduplicateScenes(
+    allPageResults: Array<{ scenes: Scene[]; page: number }>
+  ): Scene[] {
+    const sceneMap = new Map<string, Scene>();
+    let totalFetched = 0;
+    
+    for (const { scenes } of allPageResults) {
+      totalFetched += scenes.length;
+      for (const scene of scenes) {
+        if (scene.id) {
+          sceneMap.set(scene.id, scene);
+        }
+      }
+    }
+    
+    const allScenes = Array.from(sceneMap.values());
+    console.log('[ShortForm] Fetched', totalFetched, 'scenes total,', allScenes.length, 'unique scenes');
+    return allScenes;
+  }
+
+  /**
+   * Filter scenes by duration, shuffle, and limit
+   */
+  private filterAndShuffleShortFormScenes(
+    allScenes: Scene[],
+    maxDuration: number,
+    limit: number
+  ): Scene[] {
+    const shortFormScenes = this.filterShortFormScenes(allScenes, maxDuration);
+    console.log('[ShortForm] Filtered', shortFormScenes.length, 'scenes from', allScenes.length, 'total (maxDuration:', maxDuration, 's)');
+    
+    if (shortFormScenes.length === 0) {
+      console.warn('[ShortForm] No scenes match duration criteria');
+      return [];
+    }
+    
+    // Shuffle the filtered results with a fresh random seed each time
+    const shuffled = this.shuffleArray([...shortFormScenes]);
+    
+    // Limit to requested amount
+    const limitedScenes = shuffled.slice(0, limit);
+    console.log('[ShortForm] After shuffle and limit', limit, ':', limitedScenes.length, 'scenes');
+    
+    return limitedScenes;
+  }
+
+  /**
+   * Shuffle an array using Fisher-Yates algorithm
+   */
+  private shuffleArray<T>(array: T[]): T[] {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
+  }
+
+  /**
+   * Build scene filter for short-form content
+   */
+  private buildShortFormSceneFilter(filters?: FilterOptions): SceneFilterInput | null {
+    const sceneFilter: SceneFilterInput = {
+      file_count: {
+        value: 0,
+        modifier: 'GREATER_THAN'
+      }
+    };
+
+    // Apply performer filter if provided
+    if (filters?.performers && filters.performers.length > 0) {
+      const performerIds = this.parseTagIds(filters.performers);
+      if (performerIds.length > 0) {
+        sceneFilter.performers = {
+          value: performerIds,
+          modifier: performerIds.length > 1 ? 'INCLUDES_ALL' : 'INCLUDES'
+        };
+      }
+    }
+
+    // Apply tag filter if provided
+    if (filters?.tags && filters.tags.length > 0) {
+      const tagIds = this.parseTagIds(filters.tags);
+      if (tagIds.length > 0) {
+        sceneFilter.tags = {
+          value: tagIds.map(String),
+          modifier: tagIds.length === 1 ? 'INCLUDES_ALL' : 'INCLUDES'
+        };
+      }
+    }
+
+    return Object.keys(sceneFilter).length > 0 ? sceneFilter : null;
+  }
+
+
+  /**
+   * Filter scenes for short-form content (duration < maxDuration)
+   */
+  private filterShortFormScenes(scenes: Scene[], maxDuration: number): Scene[] {
+    return scenes.filter((scene) => {
+      const file = scene.files?.[0];
+      if (!file) return false;
+
+      const duration = file.duration;
+
+      // Must have valid duration
+      if (!duration) return false;
+
+      // Must be shorter than max duration
+      if (duration >= maxDuration) return false;
+
+      return true;
+    });
+  }
+
+  /**
+   * Create synthetic markers for short-form content
+   * These play from start to end (seconds: 0, no end_seconds)
+   */
+  private createShortFormMarkers(scenes: Scene[]): SceneMarker[] {
+    return scenes.map((scene) => ({
+      id: `shortform-${scene.id}-${Date.now()}-${Math.random()}`,
+      title: scene.title || 'Untitled',
+      seconds: 0,
+      end_seconds: undefined,
       stream: undefined,
       scene: scene,
       primary_tag: undefined,

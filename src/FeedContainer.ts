@@ -33,6 +33,11 @@ const DEFAULT_SETTINGS: FeedSettings = {
   enabledFileTypes: ['.gif'], // Default file types to include
   includeImagesInFeed: true, // Whether to include images in feed
   imagesOnly: false,
+  includeShortFormContent: false, // Enable/disable short-form content
+  shortFormInHDMode: true, // Include short-form in HD mode
+  shortFormInNonHDMode: true, // Include short-form in non-HD mode
+  shortFormMaxDuration: 120, // Maximum duration in seconds for short-form content
+  shortFormOnly: false, // When true, only load short-form content and skip regular markers
 };
 
 /**
@@ -1487,12 +1492,7 @@ export class FeedContainer {
     });
     
     brandContainer.addEventListener('click', () => {
-      sessionStorage.setItem('stashgifs-scroll-to-top', 'true');
-      globalThis.scrollTo(0, 0);
-      if (this.scrollContainer) {
-        this.scrollContainer.scrollTop = 0;
-      }
-      globalThis.location.reload();
+      this.refreshFeed().catch((e) => console.error('Failed to refresh feed', e));
     });
     
     brandContainer.appendChild(brand);
@@ -1897,11 +1897,15 @@ export class FeedContainer {
       (newSettings) => {
         // Update settings
         this.settings = { ...this.settings, ...newSettings };
-        // Reload feed if images settings changed
+        // Reload feed if images or short-form settings changed
         if (
           newSettings.includeImagesInFeed !== undefined ||
           newSettings.enabledFileTypes ||
-          newSettings.imagesOnly !== undefined
+          newSettings.imagesOnly !== undefined ||
+          newSettings.shortFormInHDMode !== undefined ||
+          newSettings.shortFormInNonHDMode !== undefined ||
+          newSettings.shortFormMaxDuration !== undefined ||
+          newSettings.shortFormOnly !== undefined
         ) {
           this.loadVideos(this.currentFilters, false, undefined, true).catch(e => {
             console.error('Failed to reload feed after settings change', e);
@@ -1912,6 +1916,8 @@ export class FeedContainer {
         // On close, remove settings container and clear reference
         this.settingsContainer?.remove();
         this.settingsContainer = undefined;
+        // Refresh feed to apply any settings changes
+        this.refreshFeed().catch((e) => console.error('Failed to refresh feed after settings close', e));
       }
     );
   }
@@ -1993,7 +1999,11 @@ export class FeedContainer {
         console.error('Failed to save HD mode preference:', e);
       }
       
-      globalThis.location.reload();
+      // Update HD mode state
+      this.useHDMode = newHDMode;
+      
+      // Refresh feed to apply HD mode changes
+      this.refreshFeed().catch((e) => console.error('Failed to refresh feed after HD mode change', e));
     };
 
     hdToggle.addEventListener('click', (e) => {
@@ -3822,10 +3832,7 @@ export class FeedContainer {
    */
   private handleEmptyMarkers(append: boolean): void {
     if (!append) {
-      const message = this.settings.imagesOnly
-        ? 'No images found. Try adjusting your filters.'
-        : 'No scene markers found. Try adjusting your filters.';
-      this.showError(message);
+      this.showError("It's empty");
     }
     this.hideSkeletonLoaders();
   }
@@ -3868,6 +3875,39 @@ export class FeedContainer {
     });
   }
 
+  /**
+   * Refresh the entire feed by clearing all posts and reloading from the beginning
+   */
+  async refreshFeed(): Promise<void> {
+    // Clear all existing posts
+    this.clearPosts();
+    
+    // Clear posts container
+    if (this.postsContainer) {
+      this.postsContainer.innerHTML = '';
+    }
+    
+    // Recreate load more trigger
+    if (this.loadMoreTrigger && this.postsContainer) {
+      this.postsContainer.appendChild(this.loadMoreTrigger);
+    }
+    
+    // Scroll to top
+    globalThis.scrollTo(0, 0);
+    if (this.scrollContainer) {
+      this.scrollContainer.scrollTop = 0;
+    }
+    
+    // Reset pagination state
+    this.currentPage = 1;
+    this.hasMore = true;
+    this.markers = [];
+    this.images = [];
+    
+    // Reload feed with current filters
+    await this.loadVideos(this.currentFilters, false, undefined, true);
+  }
+
   async loadVideos(filters?: FilterOptions, append: boolean = false, signal?: AbortSignal, force: boolean = false): Promise<void> {
     signal = this.prepareLoadVideos(signal);
 
@@ -3885,32 +3925,52 @@ export class FeedContainer {
         return;
       }
 
+      // Check if short-form is enabled for current mode
+      const shortFormEnabledForCurrentMode = this.shouldLoadShortFormContent();
+      
+      // shortFormOnly only applies if short-form is enabled for current mode
+      const shortFormOnlyActive = this.settings.shortFormOnly === true && shortFormEnabledForCurrentMode;
+      
       // Load both markers and images in parallel if images are enabled
-      const shouldLoadMarkers = !this.settings.imagesOnly;
+      const shouldLoadMarkers = !this.settings.imagesOnly && !shortFormOnlyActive;
       const shouldLoadImages = this.shouldLoadImages() || this.settings.imagesOnly;
-      const [markers, images] = await Promise.all([
+      
+      // Check if short-form content should be loaded
+      const shouldLoadShortForm = shortFormEnabledForCurrentMode || shortFormOnlyActive;
+      
+      // Debug logging for short-form content
+      this.logShortFormSettings(shouldLoadShortForm);
+      
+      const [markers, images, shortFormMarkers] = await Promise.all([
         shouldLoadMarkers ? this.fetchMarkersForLoad(currentFilters, limit, offset, signal) : Promise.resolve<SceneMarker[]>([]),
         shouldLoadImages ? this.loadImages(currentFilters, limit, offset, signal) : Promise.resolve<Image[]>([]),
+        shouldLoadShortForm ? this.fetchShortFormVideosForLoad(currentFilters, limit, offset, signal) : Promise.resolve<SceneMarker[]>([]),
       ]);
+      
+      // Debug logging for short-form results
+      if (shouldLoadShortForm) {
+        console.log('[ShortForm] Fetched', shortFormMarkers.length, 'short-form markers');
+      }
 
       if (this.checkAbortAndCleanup(signal)) {
         return;
       }
 
-      // Merge markers and images chronologically
-      const mergedContent = this.mergeMarkersAndImages(markers, images);
+      // Merge regular markers, short-form markers, and images chronologically
+      const mergedContent = this.mergeMarkersShortFormAndImages(markers, shortFormMarkers, images);
 
       const expectedLimit = append ? this.subsequentLoadLimit : (currentFilters.limit || this.initialLoadLimit);
       
-      this.processLoadedContent(markers, images, shouldLoadMarkers, append, expectedLimit);
+      const allMarkers = [...markers, ...shortFormMarkers];
+      this.processLoadedContent(allMarkers, images, shouldLoadMarkers, append, expectedLimit);
 
       if (mergedContent.length === 0) {
         this.handleEmptyMarkers(append);
         return;
       }
 
-      if (shouldLoadMarkers && markers.length > 0) {
-        this.prefetchPosters(markers, append, currentFilters);
+      if (shouldLoadMarkers && allMarkers.length > 0) {
+        this.prefetchPosters(allMarkers, append, currentFilters);
       }
 
       const renderChunkSize = 6;
@@ -3967,6 +4027,58 @@ export class FeedContainer {
     const imagesOnly = this.settings.imagesOnly ?? false;
     const hasFileTypes = (this.settings.enabledFileTypes?.length ?? 0) > 0;
     return (imagesEnabled || imagesOnly) && hasFileTypes;
+  }
+
+  /**
+   * Check if short-form content should be loaded based on settings and HD mode
+   */
+  private shouldLoadShortFormContent(): boolean {
+    if (this.useHDMode) {
+      return this.settings.shortFormInHDMode === true;
+    } else {
+      return this.settings.shortFormInNonHDMode !== false;
+    }
+  }
+
+  /**
+   * Log short-form content settings for debugging
+   */
+  private logShortFormSettings(shouldLoadShortForm: boolean): void {
+    const shortFormEnabledForCurrentMode = this.shouldLoadShortFormContent();
+    if (this.settings.shortFormInHDMode || this.settings.shortFormInNonHDMode !== false || this.settings.shortFormOnly) {
+      console.log('[ShortForm] Settings:', {
+        shortFormInHDMode: this.settings.shortFormInHDMode,
+        shortFormInNonHDMode: this.settings.shortFormInNonHDMode,
+        useHDMode: this.useHDMode,
+        shortFormOnly: this.settings.shortFormOnly,
+        shortFormEnabledForCurrentMode,
+        shortFormOnlyActive: this.settings.shortFormOnly === true && shortFormEnabledForCurrentMode,
+        shouldLoadShortForm,
+      });
+    }
+  }
+
+  /**
+   * Fetch short-form videos for loading
+   */
+  private async fetchShortFormVideosForLoad(
+    currentFilters: FilterOptions,
+    limit: number,
+    offset: number,
+    signal?: AbortSignal
+  ): Promise<SceneMarker[]> {
+    if (!this.api) {
+      return [];
+    }
+
+    const maxDuration = this.settings.shortFormMaxDuration || 120;
+    return await this.api.fetchShortFormVideos(
+      currentFilters,
+      maxDuration,
+      limit,
+      offset,
+      signal
+    );
   }
 
   /**
@@ -4121,6 +4233,159 @@ export class FeedContainer {
 
       // Add chunk of images
       const imagesToAdd = Math.min(imageChunkSize, imageCount - imageIndex);
+      for (let i = 0; i < imagesToAdd; i++) {
+        const image = images[imageIndex++];
+        content.push({
+          type: 'image',
+          data: image,
+          date: image.date,
+        });
+      }
+    }
+
+    return content;
+  }
+
+  /**
+   * Merge regular markers, short-form markers, and images chronologically
+   * Interleaves all three types to create a mixed feed
+   */
+  private mergeMarkersShortFormAndImages(
+    markers: SceneMarker[],
+    shortFormMarkers: SceneMarker[],
+    images: Image[]
+  ): Array<{ type: 'marker' | 'image'; data: SceneMarker | Image; date?: string }> {
+    // If only one type, return it in original order
+    if (markers.length === 0 && shortFormMarkers.length === 0) {
+      return this.createImageContentArray(images);
+    }
+
+    if (images.length === 0 && shortFormMarkers.length === 0) {
+      return this.createMarkerContentArray(markers);
+    }
+
+    if (markers.length === 0 && images.length === 0) {
+      return this.createMarkerContentArray(shortFormMarkers);
+    }
+
+    // Multiple types present - interleave in chunks
+    const allVideos = this.interleaveMarkersAndShortForm(markers, shortFormMarkers);
+    const { videoChunkSize, imageChunkSize } = this.calculateChunkSizes(
+      markers.length,
+      shortFormMarkers.length,
+      images.length
+    );
+
+    return this.interleaveVideosWithImages(allVideos, images, videoChunkSize, imageChunkSize);
+  }
+
+  /**
+   * Create content array from images
+   */
+  private createImageContentArray(images: Image[]): Array<{ type: 'image'; data: Image; date?: string }> {
+    return images.map(image => ({
+      type: 'image' as const,
+      data: image,
+      date: image.date,
+    }));
+  }
+
+  /**
+   * Create content array from markers
+   */
+  private createMarkerContentArray(markers: SceneMarker[]): Array<{ type: 'marker'; data: SceneMarker; date?: string }> {
+    return markers.map(marker => ({
+      type: 'marker' as const,
+      data: marker,
+      date: marker.scene.date,
+    }));
+  }
+
+  /**
+   * Interleave regular markers and short-form markers
+   */
+  private interleaveMarkersAndShortForm(
+    markers: SceneMarker[],
+    shortFormMarkers: SceneMarker[]
+  ): SceneMarker[] {
+    const allVideos: SceneMarker[] = [];
+    const markerCount = markers.length;
+    const shortFormCount = shortFormMarkers.length;
+    let markerIndex = 0;
+    let shortFormIndex = 0;
+
+    while (markerIndex < markerCount || shortFormIndex < shortFormCount) {
+      const totalRemaining = (markerCount - markerIndex) + (shortFormCount - shortFormIndex);
+      if (totalRemaining === 0) break;
+
+      const random = Math.random();
+      const markerRatio = (markerCount - markerIndex) / totalRemaining;
+
+      if (random < markerRatio && markerIndex < markerCount) {
+        allVideos.push(markers[markerIndex++]);
+      } else if (shortFormIndex < shortFormCount) {
+        allVideos.push(shortFormMarkers[shortFormIndex++]);
+      } else if (markerIndex < markerCount) {
+        allVideos.push(markers[markerIndex++]);
+      }
+    }
+
+    return allVideos;
+  }
+
+  /**
+   * Calculate chunk sizes for interleaving videos and images
+   */
+  private calculateChunkSizes(
+    markerCount: number,
+    shortFormCount: number,
+    imageCount: number
+  ): { videoChunkSize: number; imageChunkSize: number } {
+    const totalVideoCount = markerCount + shortFormCount;
+    const imageChunkSize = 1 + Math.floor(Math.random() * 2); // Always 1-2 images between videos
+
+    let videoChunkSize: number;
+    if (totalVideoCount > imageCount) {
+      // More videos: larger video chunks
+      videoChunkSize = 4 + Math.floor(Math.random() * 2); // 4-5
+    } else if (imageCount > totalVideoCount) {
+      // More images: smaller video chunks
+      videoChunkSize = 2 + Math.floor(Math.random() * 2); // 2-3
+    } else {
+      // Roughly equal: balanced chunks
+      videoChunkSize = 3 + Math.floor(Math.random() * 2); // 3-4
+    }
+
+    return { videoChunkSize, imageChunkSize };
+  }
+
+  /**
+   * Interleave videos with images in chunks
+   */
+  private interleaveVideosWithImages(
+    allVideos: SceneMarker[],
+    images: Image[],
+    videoChunkSize: number,
+    imageChunkSize: number
+  ): Array<{ type: 'marker' | 'image'; data: SceneMarker | Image; date?: string }> {
+    const content: Array<{ type: 'marker' | 'image'; data: SceneMarker | Image; date?: string }> = [];
+    let videoIndex = 0;
+    let imageIndex = 0;
+
+    while (videoIndex < allVideos.length || imageIndex < images.length) {
+      // Add chunk of videos
+      const videosToAdd = Math.min(videoChunkSize, allVideos.length - videoIndex);
+      for (let i = 0; i < videosToAdd; i++) {
+        const marker = allVideos[videoIndex++];
+        content.push({
+          type: 'marker',
+          data: marker,
+          date: marker.scene.date,
+        });
+      }
+
+      // Add chunk of images
+      const imagesToAdd = Math.min(imageChunkSize, images.length - imageIndex);
       for (let i = 0; i < imagesToAdd; i++) {
         const image = images[imageIndex++];
         content.push({

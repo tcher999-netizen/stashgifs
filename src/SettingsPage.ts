@@ -166,7 +166,7 @@ export class SettingsPage {
     imageSection.style.marginBottom = '32px';
 
     const imageSectionTitle = document.createElement('h3');
-    imageSectionTitle.textContent = 'Image Feed Settings';
+    imageSectionTitle.textContent = 'Image feed';
     imageSectionTitle.style.margin = '0 0 16px 0';
     imageSectionTitle.style.color = '#FFFFFF';
     imageSectionTitle.style.fontSize = '18px';
@@ -187,7 +187,8 @@ export class SettingsPage {
     includeImagesContainer.appendChild(includeImagesLabel);
 
     const { container: includeImagesToggleContainer, input: includeImagesToggle } = this.createToggleSwitch(
-      this.settings.includeImagesInFeed !== false
+      this.settings.includeImagesInFeed !== false,
+      () => this.saveSettings()
     );
     includeImagesContainer.appendChild(includeImagesToggleContainer);
 
@@ -213,6 +214,7 @@ export class SettingsPage {
           includeImagesToggle.checked = true;
           includeImagesToggle.dispatchEvent(new Event('change'));
         }
+        this.saveSettings();
       }
     );
     imagesOnlyContainer.appendChild(imagesOnlyToggleContainer);
@@ -281,74 +283,164 @@ export class SettingsPage {
       regexPreview.textContent = `Regex: ${regex}`;
     };
 
-    fileTypesInput.addEventListener('input', updateRegexPreview);
+    fileTypesInput.addEventListener('input', () => {
+      updateRegexPreview();
+      // Debounce the save to avoid too many saves while typing
+      clearTimeout((fileTypesInput as any).saveTimeout);
+      (fileTypesInput as any).saveTimeout = setTimeout(() => {
+        this.saveSettings();
+      }, 500);
+    });
     updateRegexPreview();
 
     imageSection.appendChild(fileTypesContainer);
 
     modal.appendChild(imageSection);
 
-    // Save button
-    const saveButton = document.createElement('button');
-    saveButton.textContent = 'Save Settings';
-    saveButton.style.width = '100%';
-    saveButton.style.padding = '12px';
-    saveButton.style.borderRadius = '8px';
-    saveButton.style.border = 'none';
-    saveButton.style.backgroundColor = '#F5C518';
-    saveButton.style.color = '#000000';
-    saveButton.style.fontSize = '16px';
-    saveButton.style.fontWeight = '600';
-    saveButton.style.cursor = 'pointer';
-    saveButton.style.transition = 'background-color 0.2s ease';
-    saveButton.addEventListener('mouseenter', () => {
-      saveButton.style.backgroundColor = '#FFD700';
-    });
-    saveButton.addEventListener('mouseleave', () => {
-      saveButton.style.backgroundColor = '#F5C518';
-    });
-    saveButton.addEventListener('click', () => {
-      const extensions = fileTypesInput.value
-        .split(',')
-        .map(ext => ext.trim())
-        .filter(ext => ext.length > 0)
-        .map(ext => ext.startsWith('.') ? ext : `.${ext}`);
+    // Short Form Content Settings Section
+    const shortFormSection = document.createElement('div');
+    shortFormSection.style.marginBottom = '32px';
 
-      const newSettings: Partial<FeedSettings> = {
-        includeImagesInFeed: includeImagesToggle.checked,
-        enabledFileTypes: extensions.length > 0 ? extensions : ['.gif'],
-        imagesOnly: imagesOnlyToggle.checked,
-      };
+    const shortFormSectionTitle = document.createElement('h3');
+    shortFormSectionTitle.textContent = 'Short form content';
+    shortFormSectionTitle.style.margin = '0 0 16px 0';
+    shortFormSectionTitle.style.color = '#FFFFFF';
+    shortFormSectionTitle.style.fontSize = '18px';
+    shortFormSectionTitle.style.fontWeight = '600';
+    shortFormSection.appendChild(shortFormSectionTitle);
 
-      if (this.onSave) {
-        this.onSave(newSettings);
+    // Include in HD mode toggle
+    const shortFormHDContainer = document.createElement('div');
+    shortFormHDContainer.style.display = 'flex';
+    shortFormHDContainer.style.justifyContent = 'space-between';
+    shortFormHDContainer.style.alignItems = 'center';
+    shortFormHDContainer.style.marginBottom = '16px';
+
+    const shortFormHDLabel = document.createElement('span');
+    shortFormHDLabel.textContent = 'Include in HD mode';
+    shortFormHDLabel.style.color = '#FFFFFF';
+    shortFormHDLabel.style.fontSize = '14px';
+    shortFormHDContainer.appendChild(shortFormHDLabel);
+
+    const { container: shortFormHDToggleContainer, input: shortFormHDToggle } = this.createToggleSwitch(
+      this.settings.shortFormInHDMode === true,
+      () => this.saveSettings()
+    );
+    shortFormHDContainer.appendChild(shortFormHDToggleContainer);
+
+    shortFormSection.appendChild(shortFormHDContainer);
+
+    // Include in non-HD mode toggle
+    const shortFormNonHDContainer = document.createElement('div');
+    shortFormNonHDContainer.style.display = 'flex';
+    shortFormNonHDContainer.style.justifyContent = 'space-between';
+    shortFormNonHDContainer.style.alignItems = 'center';
+    shortFormNonHDContainer.style.marginBottom = '16px';
+
+    const shortFormNonHDLabel = document.createElement('span');
+    shortFormNonHDLabel.textContent = 'Include in non-HD mode';
+    shortFormNonHDLabel.style.color = '#FFFFFF';
+    shortFormNonHDLabel.style.fontSize = '14px';
+    shortFormNonHDContainer.appendChild(shortFormNonHDLabel);
+
+    const { container: shortFormNonHDToggleContainer, input: shortFormNonHDToggle } = this.createToggleSwitch(
+      this.settings.shortFormInNonHDMode !== false,
+      () => this.saveSettings()
+    );
+    shortFormNonHDContainer.appendChild(shortFormNonHDToggleContainer);
+
+    shortFormSection.appendChild(shortFormNonHDContainer);
+
+    // Max duration input
+    const maxDurationContainer = document.createElement('div');
+    maxDurationContainer.style.marginBottom = '16px';
+
+    const maxDurationLabel = document.createElement('label');
+    maxDurationLabel.textContent = 'Maximum duration (seconds)';
+    maxDurationLabel.style.display = 'block';
+    maxDurationLabel.style.color = '#FFFFFF';
+    maxDurationLabel.style.fontSize = '14px';
+    maxDurationLabel.style.marginBottom = '8px';
+    maxDurationLabel.style.fontWeight = '500';
+    maxDurationContainer.appendChild(maxDurationLabel);
+
+    const maxDurationInput = document.createElement('input');
+    maxDurationInput.type = 'number';
+    maxDurationInput.value = String(this.settings.shortFormMaxDuration || 120);
+    maxDurationInput.min = '1';
+    maxDurationInput.max = '600';
+    maxDurationInput.style.width = '100%';
+    maxDurationInput.style.padding = '12px';
+    maxDurationInput.style.borderRadius = '8px';
+    maxDurationInput.style.border = '1px solid rgba(255, 255, 255, 0.2)';
+    maxDurationInput.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+    maxDurationInput.style.color = '#FFFFFF';
+    maxDurationInput.style.fontSize = '14px';
+    maxDurationInput.style.boxSizing = 'border-box';
+    maxDurationInput.addEventListener('input', () => {
+      // Debounce the save to avoid too many saves while typing
+      clearTimeout((maxDurationInput as any).saveTimeout);
+      (maxDurationInput as any).saveTimeout = setTimeout(() => {
+        this.saveSettings();
+      }, 500);
+    });
+    maxDurationContainer.appendChild(maxDurationInput);
+
+    shortFormSection.appendChild(maxDurationContainer);
+
+    // Only short form content toggle
+    const shortFormOnlyContainer = document.createElement('div');
+    shortFormOnlyContainer.style.display = 'flex';
+    shortFormOnlyContainer.style.justifyContent = 'space-between';
+    shortFormOnlyContainer.style.alignItems = 'center';
+    shortFormOnlyContainer.style.marginBottom = '16px';
+
+    const shortFormOnlyLabel = document.createElement('span');
+    shortFormOnlyLabel.textContent = 'Only load short form content (skip regular videos)';
+    shortFormOnlyLabel.style.color = '#FFFFFF';
+    shortFormOnlyLabel.style.fontSize = '14px';
+    shortFormOnlyContainer.appendChild(shortFormOnlyLabel);
+
+    const { container: shortFormOnlyToggleContainer, input: shortFormOnlyToggle } = this.createToggleSwitch(
+      this.settings.shortFormOnly === true,
+      (checked) => {
+        if (checked) {
+          // When "only load short form content" is enabled, enable both HD and non-HD modes
+          shortFormHDToggle.checked = true;
+          shortFormHDToggle.dispatchEvent(new Event('change'));
+          shortFormNonHDToggle.checked = true;
+          shortFormNonHDToggle.dispatchEvent(new Event('change'));
+        }
+        this.saveSettings();
       }
+    );
+    shortFormOnlyContainer.appendChild(shortFormOnlyToggleContainer);
 
-      // Save to localStorage
-      try {
-        const savedSettings = localStorage.getItem('stashgifs-settings');
-        const currentSettings = savedSettings ? JSON.parse(savedSettings) : {};
-        const updatedSettings = { ...currentSettings, ...newSettings };
-        localStorage.setItem('stashgifs-settings', JSON.stringify(updatedSettings));
-      } catch (error) {
-        console.error('Failed to save settings to localStorage', error);
-      }
+    shortFormSection.appendChild(shortFormOnlyContainer);
 
-      this.close();
-      
-      // Refresh the page to apply settings
-      globalThis.location.reload();
-    });
+    modal.appendChild(shortFormSection);
 
-    modal.appendChild(saveButton);
+    // Store references to inputs for saveSettings method
+    (this as any).fileTypesInput = fileTypesInput;
+    (this as any).maxDurationInput = maxDurationInput;
+    (this as any).includeImagesToggle = includeImagesToggle;
+    (this as any).imagesOnlyToggle = imagesOnlyToggle;
+    (this as any).shortFormHDToggle = shortFormHDToggle;
+    (this as any).shortFormNonHDToggle = shortFormNonHDToggle;
+    (this as any).shortFormOnlyToggle = shortFormOnlyToggle;
 
     this.container.appendChild(modal);
 
-    // Close on background click
+    // Close on background click (but not when clicking inside modal)
     this.container.addEventListener('click', (e) => {
       if (e.target === this.container) {
         this.close();
       }
+    });
+    
+    // Prevent clicks inside modal from closing
+    modal.addEventListener('click', (e) => {
+      e.stopPropagation();
     });
 
     // Close on Escape key
@@ -359,6 +451,58 @@ export class SettingsPage {
       }
     };
     document.addEventListener('keydown', escapeHandler);
+  }
+
+  /**
+   * Save settings automatically when toggles/inputs change
+   */
+  private saveSettings(): void {
+    const fileTypesInput = (this as any).fileTypesInput as HTMLInputElement | undefined;
+    const maxDurationInput = (this as any).maxDurationInput as HTMLInputElement | undefined;
+    const includeImagesToggle = (this as any).includeImagesToggle as HTMLInputElement | undefined;
+    const imagesOnlyToggle = (this as any).imagesOnlyToggle as HTMLInputElement | undefined;
+    const shortFormHDToggle = (this as any).shortFormHDToggle as HTMLInputElement | undefined;
+    const shortFormNonHDToggle = (this as any).shortFormNonHDToggle as HTMLInputElement | undefined;
+    const shortFormOnlyToggle = (this as any).shortFormOnlyToggle as HTMLInputElement | undefined;
+
+    if (!fileTypesInput || !maxDurationInput || !includeImagesToggle || !imagesOnlyToggle || 
+        !shortFormHDToggle || !shortFormNonHDToggle || !shortFormOnlyToggle) {
+      return; // Settings not fully initialized yet
+    }
+
+    const extensions = fileTypesInput.value
+      .split(',')
+      .map(ext => ext.trim())
+      .filter(ext => ext.length > 0)
+      .map(ext => ext.startsWith('.') ? ext : `.${ext}`);
+
+    const maxDuration = Number.parseInt(maxDurationInput.value, 10);
+    const validMaxDuration = !Number.isNaN(maxDuration) && maxDuration > 0 ? maxDuration : 120;
+
+    const newSettings: Partial<FeedSettings> = {
+      includeImagesInFeed: includeImagesToggle.checked,
+      enabledFileTypes: extensions.length > 0 ? extensions : ['.gif'],
+      imagesOnly: imagesOnlyToggle.checked,
+      shortFormInHDMode: shortFormHDToggle.checked,
+      shortFormInNonHDMode: shortFormNonHDToggle.checked,
+      shortFormMaxDuration: validMaxDuration,
+      shortFormOnly: shortFormOnlyToggle.checked,
+    };
+
+    // Save to localStorage first
+    try {
+      const savedSettings = localStorage.getItem('stashgifs-settings');
+      const currentSettings = savedSettings ? JSON.parse(savedSettings) : {};
+      const updatedSettings = { ...currentSettings, ...newSettings };
+      localStorage.setItem('stashgifs-settings', JSON.stringify(updatedSettings));
+    } catch (error) {
+      console.error('Failed to save settings to localStorage', error);
+    }
+
+    // Notify parent to update settings and reload feed if needed
+    if (this.onSave) {
+      this.onSave(newSettings);
+    }
   }
 
   private close(): void {

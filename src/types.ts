@@ -103,6 +103,11 @@ export interface FeedSettings {
   includeImagesInFeed?: boolean; // Whether to include images in feed, default: true
   imagesOnly?: boolean; // When true, only load images and skip videos
   orientationFilter?: ('landscape' | 'portrait' | 'square')[]; // Filter content by orientation
+  includeShortFormContent?: boolean; // Enable/disable short-form content (videos < duration)
+  shortFormInHDMode?: boolean; // Include short-form in HD mode
+  shortFormInNonHDMode?: boolean; // Include short-form in non-HD mode
+  shortFormMaxDuration?: number; // Maximum duration in seconds for short-form content, default: 120
+  shortFormOnly?: boolean; // When true, only load short-form content and skip regular markers
 }
 
 export interface VideoPostData {

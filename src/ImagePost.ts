@@ -187,7 +187,7 @@ export class ImagePost {
   private createHeader(): HTMLElement {
     const header = document.createElement('div');
     header.className = 'video-post__header';
-    header.style.padding = '0';
+    header.style.padding = '2px 16px';
     header.style.marginBottom = '0';
     header.style.borderBottom = 'none';
 
@@ -197,7 +197,7 @@ export class ImagePost {
     chips.style.flexWrap = 'wrap';
     chips.style.gap = '4px';
     chips.style.margin = '0';
-    chips.style.padding = '0 16px';
+    chips.style.padding = '0';
     
     this.addPerformerChips(chips);
     this.addTagChipsToHeader(chips);
@@ -558,7 +558,7 @@ export class ImagePost {
   private createFooter(): HTMLElement {
     const footer = document.createElement('div');
     footer.className = 'video-post__footer';
-    footer.style.padding = '0';
+    footer.style.padding = '2px 16px';
     footer.style.position = 'relative';
     footer.style.zIndex = '10';
 

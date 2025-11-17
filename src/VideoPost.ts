@@ -242,7 +242,7 @@ export class VideoPost {
   private createHeader(): HTMLElement {
     const header = document.createElement('div');
     header.className = 'video-post__header';
-    header.style.padding = '0';
+    header.style.padding = '2px 16px';
     header.style.marginBottom = '0';
     header.style.borderBottom = 'none';
 
@@ -252,7 +252,7 @@ export class VideoPost {
     chips.style.flexWrap = 'wrap';
     chips.style.gap = '4px';
     chips.style.margin = '0';
-    chips.style.padding = '0 16px';
+    chips.style.padding = '0';
     
     // Add performer chips
     if (this.data.marker.scene.performers && this.data.marker.scene.performers.length > 0) {
@@ -660,13 +660,23 @@ export class VideoPost {
   }
 
   /**
+   * Check if this is a short-form content marker
+   */
+  private isShortFormContent(): boolean {
+    return typeof this.data.marker.id === 'string' && this.data.marker.id.startsWith('shortform-');
+  }
+
+  /**
    * Add action buttons (heart/marker/add tag) to button group
    */
   private addActionButtons(buttonGroup: HTMLElement): void {
+    // Don't show favorite button for short-form content
+    const isShortForm = this.isShortFormContent();
+    
     // Hide favorite button in shuffle mode, show marker button instead
     // But if marker was already created, show heart button instead
     if (this.useShuffleMode) {
-      if (this.hasCreatedMarker && this.favoritesManager) {
+      if (this.hasCreatedMarker && this.favoritesManager && !isShortForm) {
         // Marker was created, show heart button and "+" button
         const heartBtn = this.createHeartButton();
         buttonGroup.appendChild(heartBtn);
@@ -680,8 +690,8 @@ export class VideoPost {
         buttonGroup.appendChild(markerBtn);
       }
     } else {
-      // Non-shuffle mode: show heart and "+" buttons for real markers
-      if (this.favoritesManager) {
+      // Non-shuffle mode: show heart and "+" buttons for real markers (but not short-form)
+      if (this.favoritesManager && !isShortForm) {
         const heartBtn = this.createHeartButton();
         buttonGroup.appendChild(heartBtn);
       }
@@ -698,7 +708,7 @@ export class VideoPost {
   private createFooter(): HTMLElement {
     const footer = document.createElement('div');
     footer.className = 'video-post__footer';
-    footer.style.padding = '0';
+    footer.style.padding = '2px 16px';
 
     const info = document.createElement('div');
     info.className = 'video-post__info';
