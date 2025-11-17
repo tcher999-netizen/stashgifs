@@ -2,7 +2,7 @@
   name: StashGifs
   metadata:
     description: A gif vertical scroller interface for Stash. Forked from Stash Reels.
-  version: 4.1.0
-  date: "2025-11-17 21:03:58"
+  version: 4.1.1
+  date: "2025-11-17 21:16:24"
   path: stashgifs.zip
-  sha256: 9e85bdcad6c5518f9cf06f1dca833e96a2752c252d5bed8cfdc43fcb689e48f4
+  sha256: 05b878b53962254356ce0eba75c38fb81c1360e6b723ae9de231ecba303952e0
