@@ -9,7 +9,7 @@ import { FavoritesManager } from './FavoritesManager.js';
 import { StashAPI } from './StashAPI.js';
 import { VisibilityManager } from './VisibilityManager.js';
 import { getAspectRatioClass, showToast, toAbsoluteUrl } from './utils.js';
-import { HEART_SVG_OUTLINE, HEART_SVG_FILLED, ADD_TAG_SVG, OCOUNT_SVG, IMAGE_BADGE_SVG } from './icons.js';
+import { IMAGE_BADGE_SVG } from './icons.js';
 import { BasePost } from './BasePost.js';
 
 // Constants

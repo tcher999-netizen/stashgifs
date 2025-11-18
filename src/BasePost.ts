@@ -532,9 +532,6 @@ export abstract class BasePost {
    * Create O-count button - shared implementation
    */
   protected createOCountButton(): HTMLElement {
-    const OCOUNT_MIN_WIDTH_PX = 14;
-    const OCOUNT_DIGIT_WIDTH_PX = 8;
-    
     const oCountBtn = document.createElement('button');
     oCountBtn.className = 'icon-btn icon-btn--ocount';
     oCountBtn.type = 'button';

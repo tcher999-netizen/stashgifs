@@ -631,35 +631,90 @@ export class VideoPost extends BasePost {
    */
   protected async updateLocalTagsAfterFavoriteToggle(newFavoriteState: boolean): Promise<void> {
     const isShortForm = this.isShortFormContent();
-    const favoriteTagId = await this.favoritesManager?.getFavoriteTagId();
+    const favoriteTagId = await this.favoritesManager?.getFavoriteTagId() ?? null;
+    const tagId = favoriteTagId ?? undefined;
     
     if (isShortForm) {
-      // For shortform content, update scene tags
-      this.data.marker.scene.tags ??= [];
-      
-      if (newFavoriteState) {
-        if (favoriteTagId && !this.data.marker.scene.tags.some(tag => tag.id === favoriteTagId || tag.name === FAVORITE_TAG_NAME)) {
-          this.data.marker.scene.tags.push({ id: favoriteTagId, name: FAVORITE_TAG_NAME });
-        }
-      } else {
-        this.data.marker.scene.tags = this.data.marker.scene.tags.filter(
-          tag => tag.id !== favoriteTagId && tag.name !== FAVORITE_TAG_NAME
-        );
-      }
+      this.updateSceneTagsAfterFavoriteToggle(newFavoriteState, tagId);
     } else {
-      // For regular markers, update marker tags
-      this.data.marker.tags ??= [];
-      
-      if (newFavoriteState) {
-        if (favoriteTagId && !this.data.marker.tags.some(tag => tag.id === favoriteTagId || tag.name === FAVORITE_TAG_NAME)) {
-          this.data.marker.tags.push({ id: favoriteTagId, name: FAVORITE_TAG_NAME });
-        }
-      } else {
-        this.data.marker.tags = this.data.marker.tags.filter(
-          tag => tag.id !== favoriteTagId && tag.name !== FAVORITE_TAG_NAME
-        );
-      }
+      this.updateMarkerTagsAfterFavoriteToggle(newFavoriteState, tagId);
     }
+  }
+
+  /**
+   * Update scene tags after favorite toggle (for shortform content)
+   */
+  private updateSceneTagsAfterFavoriteToggle(newFavoriteState: boolean, favoriteTagId: string | undefined): void {
+    this.data.marker.scene.tags ??= [];
+    const tags = this.data.marker.scene.tags;
+    if (!tags) return;
+    
+    if (newFavoriteState) {
+      this.addFavoriteTagToScene(tags, favoriteTagId);
+    } else {
+      this.removeFavoriteTagFromScene(tags, favoriteTagId);
+    }
+  }
+
+  /**
+   * Update marker tags after favorite toggle (for regular markers)
+   */
+  private updateMarkerTagsAfterFavoriteToggle(newFavoriteState: boolean, favoriteTagId: string | undefined): void {
+    this.data.marker.tags ??= [];
+    const tags = this.data.marker.tags;
+    if (!tags) return;
+    
+    if (newFavoriteState) {
+      this.addFavoriteTagToMarker(tags, favoriteTagId);
+    } else {
+      this.removeFavoriteTagFromMarker(tags, favoriteTagId);
+    }
+  }
+
+  /**
+   * Add favorite tag to tags array
+   */
+  private addFavoriteTag(tags: Array<{ id: string; name: string }>, favoriteTagId: string | undefined): void {
+    if (favoriteTagId && !tags.some(tag => tag.id === favoriteTagId || tag.name === FAVORITE_TAG_NAME)) {
+      tags.push({ id: favoriteTagId, name: FAVORITE_TAG_NAME });
+    }
+  }
+
+  /**
+   * Remove favorite tag from tags array
+   */
+  private removeFavoriteTag(tags: Array<{ id: string; name: string }>, favoriteTagId: string | undefined): Array<{ id: string; name: string }> {
+    return tags.filter(
+      tag => tag.id !== favoriteTagId && tag.name !== FAVORITE_TAG_NAME
+    );
+  }
+
+  /**
+   * Add favorite tag to scene tags
+   */
+  private addFavoriteTagToScene(tags: Array<{ id: string; name: string }>, favoriteTagId: string | undefined): void {
+    this.addFavoriteTag(tags, favoriteTagId);
+  }
+
+  /**
+   * Remove favorite tag from scene tags
+   */
+  private removeFavoriteTagFromScene(tags: Array<{ id: string; name: string }>, favoriteTagId: string | undefined): void {
+    this.data.marker.scene.tags = this.removeFavoriteTag(tags, favoriteTagId);
+  }
+
+  /**
+   * Add favorite tag to marker tags
+   */
+  private addFavoriteTagToMarker(tags: Array<{ id: string; name: string }>, favoriteTagId: string | undefined): void {
+    this.addFavoriteTag(tags, favoriteTagId);
+  }
+
+  /**
+   * Remove favorite tag from marker tags
+   */
+  private removeFavoriteTagFromMarker(tags: Array<{ id: string; name: string }>, favoriteTagId: string | undefined): void {
+    this.data.marker.tags = this.removeFavoriteTag(tags, favoriteTagId);
   }
 
 
