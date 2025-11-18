@@ -214,15 +214,6 @@
 
 @keyframes spin {
   0% {
-    transform: translateY(-50%) rotate(0deg);
-  }
-  100% {
-    transform: translateY(-50%) rotate(360deg);
-  }
-}
-
-@keyframes suggestions-spin {
-  0% {
     transform: rotate(0deg);
   }
   100% {
@@ -371,12 +362,6 @@
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   will-change: transform;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 /* Error Placeholder */
@@ -1014,8 +999,7 @@
 /* Suggestions Dropdown - Full Screen Overlay */
 .feed-filters__suggestions {
   position: fixed !important;
-  inset: 0 !important; /* Cover full viewport */
-  top: 0 !important; /* Start from top of screen */
+  top: 0 !important;
   left: 0 !important;
   right: 0 !important;
   bottom: 0 !important;
@@ -1034,7 +1018,6 @@
 /* Desktop: Constrain content width and add padding */
 @media (min-width: 768px) {
   .feed-filters__suggestions {
-    padding-top: 80px !important; /* Account for header bar */
     padding-left: 16px !important;
     padding-right: 16px !important;
   }

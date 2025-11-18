@@ -16,7 +16,7 @@ function addButton() {
 
   const button = document.createElement('div');
   button.id = BUTTON_ID;
-  button.setAttribute('data-rb-event-key', PLUGIN_PATH);
+  button.dataset.rbEventKey = PLUGIN_PATH;
   button.className = 'col-4 col-sm-3 col-md-2 col-lg-auto nav-link';
   button.innerHTML = `
     <a href="${PLUGIN_PATH}" class="minimal p-4 p-xl-2 d-flex d-xl-inline-block flex-column justify-content-between align-items-center btn btn-primary" target="_blank">
