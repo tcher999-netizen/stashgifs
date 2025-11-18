@@ -5,9 +5,9 @@ package.ps1
 # Dependencies
 node_modules/
 
-# Compiled TypeScript output
-stashgifs/app/assets/*.js
-stashgifs/app/assets/*.js.map
+# Compiled TypeScript output - ignore all JavaScript files
+**/*.js
+**/*.js.map
 
 # IDE/Editor files
 .cursor/
@@ -20,4 +20,8 @@ stashgifs/app/assets/*.js.map
 # OS files
 .DS_Store
 Thumbs.db
+
+# Build artifacts
+stashgifs.zip
+stashgifs.zip.sha256
 

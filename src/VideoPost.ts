@@ -631,11 +631,11 @@ export class VideoPost extends BasePost {
    */
   protected async updateLocalTagsAfterFavoriteToggle(newFavoriteState: boolean): Promise<void> {
     const isShortForm = this.isShortFormContent();
+    const favoriteTagId = await this.favoritesManager?.getFavoriteTagId();
     
     if (isShortForm) {
       // For shortform content, update scene tags
       this.data.marker.scene.tags ??= [];
-      const favoriteTagId = await this.favoritesManager?.getFavoriteTagId();
       
       if (newFavoriteState) {
         if (favoriteTagId && !this.data.marker.scene.tags.some(tag => tag.id === favoriteTagId || tag.name === FAVORITE_TAG_NAME)) {
@@ -651,12 +651,12 @@ export class VideoPost extends BasePost {
       this.data.marker.tags ??= [];
       
       if (newFavoriteState) {
-        if (!this.data.marker.tags.some(tag => tag.name === FAVORITE_TAG_NAME)) {
-          this.data.marker.tags.push({ id: '', name: FAVORITE_TAG_NAME });
+        if (favoriteTagId && !this.data.marker.tags.some(tag => tag.id === favoriteTagId || tag.name === FAVORITE_TAG_NAME)) {
+          this.data.marker.tags.push({ id: favoriteTagId, name: FAVORITE_TAG_NAME });
         }
       } else {
         this.data.marker.tags = this.data.marker.tags.filter(
-          tag => tag.name !== FAVORITE_TAG_NAME
+          tag => tag.id !== favoriteTagId && tag.name !== FAVORITE_TAG_NAME
         );
       }
     }
