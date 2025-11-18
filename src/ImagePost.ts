@@ -24,12 +24,6 @@ export class ImagePost extends BasePost {
   private readonly data: ImagePostData;
   private player?: ImagePlayer;
   private isLoaded: boolean = false;
-  private heartButton?: HTMLElement;
-  private addTagButton?: HTMLElement;
-  private oCountButton?: HTMLElement;
-  private isFavorite: boolean = false;
-  private oCount: number = 0;
-  private isTogglingFavorite: boolean = false;
   
   private playerContainer?: HTMLElement;
   private footer?: HTMLElement;
@@ -328,7 +322,7 @@ export class ImagePost extends BasePost {
 
     // Add tag button
     if (this.api) {
-      this.addTagButton = this.createAddTagButton();
+      this.addTagButton = this.createAddTagButton('Add tag to image');
       buttonGroup.appendChild(this.addTagButton);
     }
 
@@ -346,150 +340,32 @@ export class ImagePost extends BasePost {
 
 
   /**
-   * Create heart button for favorites
+   * Perform favorite toggle action for ImagePost
    */
-  private createHeartButton(): HTMLElement {
-    const heartBtn = document.createElement('button');
-    heartBtn.className = 'icon-btn icon-btn--heart';
-    heartBtn.type = 'button';
-    heartBtn.setAttribute('aria-label', 'Toggle favorite');
-    heartBtn.title = 'Add to favorites';
-    this.applyIconButtonStyles(heartBtn);
-    heartBtn.style.padding = '0';
-    heartBtn.style.width = '56px';
-    heartBtn.style.height = '56px';
-    heartBtn.style.minWidth = '56px';
-    heartBtn.style.minHeight = '56px';
-    heartBtn.style.flexShrink = '0';
-
-    this.updateHeartButton(heartBtn);
-
-    const clickHandler = async (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      
-      if (this.isTogglingFavorite) {
-        return;
-      }
-
-      this.isTogglingFavorite = true;
-      heartBtn.disabled = true;
-      heartBtn.style.opacity = '0.5';
-
-      try {
-        await this.toggleFavorite();
-      } catch (error) {
-        console.error('ImagePost: Error in click handler', error);
-      } finally {
-        this.isTogglingFavorite = false;
-        heartBtn.disabled = false;
-        heartBtn.style.opacity = '1';
-      }
-    };
-
-    heartBtn.addEventListener('click', clickHandler);
-    this.addHoverEffect(heartBtn);
-    this.heartButton = heartBtn;
-    return heartBtn;
+  protected async toggleFavoriteAction(): Promise<boolean> {
+    await this.toggleFavorite();
+    return this.isFavorite;
   }
 
-  /**
-   * Create add tag button
-   */
-  private createAddTagButton(): HTMLElement {
-    const addTagBtn = document.createElement('button');
-    addTagBtn.className = 'icon-btn icon-btn--add-tag';
-    addTagBtn.type = 'button';
-    addTagBtn.setAttribute('aria-label', 'Add tag');
-    addTagBtn.title = 'Add tag to image';
-    this.applyIconButtonStyles(addTagBtn);
-    addTagBtn.style.padding = '0';
-    addTagBtn.innerHTML = ADD_TAG_SVG;
-
-    const clickHandler = (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.openAddTagDialog();
-    };
-
-    addTagBtn.addEventListener('click', clickHandler);
-    this.addHoverEffect(addTagBtn);
-    this.addTagButton = addTagBtn;
-    return addTagBtn;
-  }
 
   /**
-   * Create O-count button
+   * Perform O-count increment action for ImagePost
    */
-  private createOCountButton(): HTMLElement {
-    const oCountBtn = document.createElement('button');
-    oCountBtn.className = 'icon-btn icon-btn--ocount';
-    oCountBtn.type = 'button';
-    oCountBtn.setAttribute('aria-label', 'Increment o count');
-    oCountBtn.title = 'Increment o-count';
-    this.applyIconButtonStyles(oCountBtn);
-    oCountBtn.style.padding = '5px 7px';
-    oCountBtn.style.gap = '3px';
-    oCountBtn.style.flexShrink = '1';
-    oCountBtn.style.minHeight = '44px';
-    oCountBtn.style.height = 'auto';
-    oCountBtn.style.fontSize = '16px';
-    oCountBtn.style.width = 'auto';
-    oCountBtn.style.minWidth = '44px';
-    
-    this.oCountButton = oCountBtn;
-    this.updateOCountButton();
-
-    const clickHandler = async (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      
-      if (!this.api) return;
-
-      oCountBtn.disabled = true;
-      oCountBtn.style.opacity = '0.5';
-
-      try {
-        await this.incrementOCount();
-      } finally {
-        oCountBtn.disabled = false;
-        oCountBtn.style.opacity = '1';
-      }
-    };
-
-    oCountBtn.addEventListener('click', clickHandler);
-    this.addHoverEffect(oCountBtn);
-    return oCountBtn;
-  }
-
-  /**
-   * Update O-count button display
-   */
-  private updateOCountButton(): void {
-    if (!this.oCountButton) return;
-    
-    const digitCount = this.oCount > 0 ? this.oCount.toString().length : 0;
-    const minWidth = digitCount > 0 ? `${Math.max(OCOUNT_MIN_WIDTH_PX, digitCount * OCOUNT_DIGIT_WIDTH_PX)}px` : `${OCOUNT_MIN_WIDTH_PX}px`;
-    
-    // Find existing countSpan or create new one
-    let countSpan = this.oCountButton.querySelector('span') as HTMLSpanElement;
-    if (!countSpan) {
-      countSpan = document.createElement('span');
-      countSpan.style.fontSize = '14px';
-      countSpan.style.fontWeight = '500';
-      countSpan.style.textAlign = 'left';
-      countSpan.style.display = 'inline-block';
-      this.oCountButton.innerHTML = OCOUNT_SVG;
-      this.oCountButton.appendChild(countSpan);
+  protected async incrementOCountAction(): Promise<void> {
+    if (!this.api) {
+      throw new Error('API not available');
     }
-    
-    countSpan.style.minWidth = minWidth;
-    countSpan.textContent = this.oCount > 0 ? this.oCount.toString() : '-';
-    
-    if (digitCount >= 3) {
-      this.oCountButton.style.paddingRight = `${OCOUNT_THREE_DIGIT_PADDING}px`;
-    } else {
-      this.oCountButton.style.paddingRight = `${OCOUNT_DEFAULT_PADDING}px`;
+    const newOCount = await this.api.incrementImageOCount(this.data.image.id);
+    this.oCount = newOCount;
+    this.data.image.o_counter = newOCount;
+    // ImagePost-specific: adjust padding for 3-digit numbers
+    if (this.oCountButton) {
+      const digitCount = this.oCount > 0 ? this.oCount.toString().length : 0;
+      if (digitCount >= 3) {
+        this.oCountButton.style.paddingRight = `${OCOUNT_THREE_DIGIT_PADDING}px`;
+      } else {
+        this.oCountButton.style.paddingRight = `${OCOUNT_DEFAULT_PADDING}px`;
+      }
     }
   }
 
@@ -557,48 +433,13 @@ export class ImagePost extends BasePost {
     }
   }
 
-  /**
-   * Update heart button appearance based on favorite state
-   */
-  private updateHeartButton(button?: HTMLElement): void {
-    const btn = button || this.heartButton;
-    if (!btn) return;
-    
-    if (this.isFavorite) {
-      btn.innerHTML = HEART_SVG_FILLED;
-      btn.style.color = '#ff6b9d';
-      btn.title = 'Remove from favorites';
-    } else {
-      btn.innerHTML = HEART_SVG_OUTLINE;
-      btn.style.color = 'rgba(255, 255, 255, 0.7)';
-      btn.title = 'Add to favorites';
-    }
-  }
+
 
   /**
-   * Increment O-count
+   * Get favorite tag source for ImagePost
    */
-  private async incrementOCount(): Promise<void> {
-    if (!this.api) return;
-    
-    try {
-      // Image ID is already a string
-      const newOCount = await this.api.incrementImageOCount(this.data.image.id);
-      this.oCount = newOCount;
-      this.data.image.o_counter = newOCount;
-      this.updateOCountButton();
-    } catch (error) {
-      console.error('ImagePost: Failed to increment O-count', error);
-      showToast('Failed to update o-count. Please try again.');
-    }
-  }
-
-  /**
-   * Check favorite status
-   */
-  private async checkFavoriteStatus(): Promise<void> {
-    this.isFavorite = this.data.image.tags?.some((tag) => tag.name === FAVORITE_TAG_NAME) ?? false;
-    this.updateHeartButton();
+  protected getFavoriteTagSource(): Array<{ name: string }> | undefined {
+    return this.data.image.tags;
   }
 
   private async resolveFavoriteTagId(createIfMissing: boolean): Promise<string | null> {
@@ -626,7 +467,7 @@ export class ImagePost extends BasePost {
   /**
    * Open add tag dialog
    */
-  private openAddTagDialog(): void {
+  protected openAddTagDialog(): void {
     if (this.isAddTagDialogOpen) return;
 
     if (!this.addTagDialog) {

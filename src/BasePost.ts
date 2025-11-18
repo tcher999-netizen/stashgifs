@@ -6,8 +6,8 @@
 import { FavoritesManager } from './FavoritesManager.js';
 import { StashAPI } from './StashAPI.js';
 import { VisibilityManager } from './VisibilityManager.js';
-import { toAbsoluteUrl } from './utils.js';
-import { VERIFIED_CHECKMARK_SVG } from './icons.js';
+import { toAbsoluteUrl, showToast } from './utils.js';
+import { VERIFIED_CHECKMARK_SVG, ADD_TAG_SVG, HEART_SVG_OUTLINE, HEART_SVG_FILLED, OCOUNT_SVG } from './icons.js';
 
 interface HoverHandlers {
   mouseenter: () => void;
@@ -26,6 +26,12 @@ export abstract class BasePost {
   protected readonly hoverHandlers: Map<HTMLElement, HoverHandlers> = new Map();
   protected readonly onPerformerChipClick?: (performerId: number, performerName: string) => void;
   protected readonly onTagChipClick?: (tagId: number, tagName: string) => void;
+  protected addTagButton?: HTMLElement;
+  protected heartButton?: HTMLElement;
+  protected isFavorite: boolean = false;
+  protected isTogglingFavorite: boolean = false;
+  protected oCountButton?: HTMLElement;
+  protected oCount: number = 0;
 
   constructor(
     container: HTMLElement,
@@ -394,6 +400,224 @@ export abstract class BasePost {
     
     hashtag.appendChild(document.createTextNode(`#${tag.name}`));
     return hashtag;
+  }
+
+  /**
+   * Abstract method to open add tag dialog - must be implemented by subclasses
+   */
+  protected abstract openAddTagDialog(): void;
+
+  /**
+   * Abstract method to perform favorite toggle action - must be implemented by subclasses
+   */
+  protected abstract toggleFavoriteAction(): Promise<boolean>;
+
+  /**
+   * Abstract method to increment O-count - must be implemented by subclasses
+   */
+  protected abstract incrementOCountAction(): Promise<void>;
+
+  /**
+   * Abstract method to get favorite tag source - must be implemented by subclasses
+   * Returns the tags array to check for favorite tag
+   */
+  protected abstract getFavoriteTagSource(): Array<{ name: string }> | undefined;
+
+  /**
+   * Optional method to update local tags after favorite toggle - only VideoPost implements this
+   */
+  protected async updateLocalTagsAfterFavoriteToggle(newFavoriteState: boolean): Promise<void> {
+    // Default implementation does nothing - VideoPost overrides this
+  }
+
+  /**
+   * Create add tag button - shared implementation
+   */
+  protected createAddTagButton(title: string = 'Add tag'): HTMLElement {
+    const addTagBtn = document.createElement('button');
+    addTagBtn.className = 'icon-btn icon-btn--add-tag';
+    addTagBtn.type = 'button';
+    addTagBtn.setAttribute('aria-label', 'Add tag');
+    addTagBtn.title = title;
+    this.applyIconButtonStyles(addTagBtn);
+    addTagBtn.style.padding = '0';
+    addTagBtn.innerHTML = ADD_TAG_SVG;
+
+    const clickHandler = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.openAddTagDialog();
+    };
+
+    addTagBtn.addEventListener('click', clickHandler);
+    this.addHoverEffect(addTagBtn);
+    this.addTagButton = addTagBtn;
+    return addTagBtn;
+  }
+
+  /**
+   * Create heart button for favorites - shared implementation
+   */
+  protected createHeartButton(): HTMLElement {
+    const heartBtn = document.createElement('button');
+    heartBtn.className = 'icon-btn icon-btn--heart';
+    heartBtn.type = 'button';
+    heartBtn.setAttribute('aria-label', 'Toggle favorite');
+    heartBtn.title = 'Add to favorites';
+    this.applyIconButtonStyles(heartBtn);
+    heartBtn.style.padding = '0';
+    heartBtn.style.width = '56px';
+    heartBtn.style.height = '56px';
+    heartBtn.style.minWidth = '56px';
+    heartBtn.style.minHeight = '56px';
+    heartBtn.style.flexShrink = '0';
+
+    this.updateHeartButton(heartBtn);
+
+    const clickHandler = async (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      if (this.isTogglingFavorite) {
+        return;
+      }
+
+      this.isTogglingFavorite = true;
+      heartBtn.disabled = true;
+      heartBtn.style.opacity = '0.5';
+
+      try {
+        const newFavoriteState = await this.toggleFavoriteAction();
+        this.isFavorite = newFavoriteState;
+        await this.updateLocalTagsAfterFavoriteToggle(newFavoriteState);
+        this.updateHeartButton(heartBtn);
+      } catch (error) {
+        console.error('Failed to toggle favorite', error);
+        showToast('Failed to update favorite. Please try again.');
+        // Revert UI state
+        this.isFavorite = !this.isFavorite;
+        this.updateHeartButton(heartBtn);
+      } finally {
+        this.isTogglingFavorite = false;
+        heartBtn.disabled = false;
+        heartBtn.style.opacity = '1';
+      }
+    };
+
+    heartBtn.addEventListener('click', clickHandler);
+    this.addHoverEffect(heartBtn);
+    this.heartButton = heartBtn;
+    return heartBtn;
+  }
+
+  /**
+   * Update heart button appearance based on favorite state - shared implementation
+   */
+  protected updateHeartButton(button?: HTMLElement): void {
+    const btn = button || this.heartButton;
+    if (!btn) return;
+    
+    if (this.isFavorite) {
+      btn.innerHTML = HEART_SVG_FILLED;
+      btn.style.color = '#ff6b9d';
+      btn.title = 'Remove from favorites';
+    } else {
+      btn.innerHTML = HEART_SVG_OUTLINE;
+      btn.style.color = 'rgba(255, 255, 255, 0.7)';
+      btn.title = 'Add to favorites';
+    }
+  }
+
+  /**
+   * Create O-count button - shared implementation
+   */
+  protected createOCountButton(): HTMLElement {
+    const OCOUNT_MIN_WIDTH_PX = 14;
+    const OCOUNT_DIGIT_WIDTH_PX = 8;
+    
+    const oCountBtn = document.createElement('button');
+    oCountBtn.className = 'icon-btn icon-btn--ocount';
+    oCountBtn.type = 'button';
+    oCountBtn.setAttribute('aria-label', 'Increment o count');
+    oCountBtn.title = 'Increment o-count';
+    this.applyIconButtonStyles(oCountBtn);
+    oCountBtn.style.padding = '5px 7px';
+    oCountBtn.style.gap = '3px';
+    oCountBtn.style.flexShrink = '1';
+    oCountBtn.style.minHeight = '44px';
+    oCountBtn.style.height = 'auto';
+    oCountBtn.style.fontSize = '16px';
+    oCountBtn.style.width = 'auto';
+    oCountBtn.style.minWidth = '44px';
+    
+    this.oCountButton = oCountBtn;
+    this.updateOCountButton();
+
+    const clickHandler = async (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      if (!this.api) return;
+
+      oCountBtn.disabled = true;
+      oCountBtn.style.opacity = '0.5';
+
+      try {
+        await this.incrementOCountAction();
+        this.updateOCountButton();
+      } catch (error) {
+        console.error('Failed to increment o count', error);
+        showToast('Failed to update o-count. Please try again.');
+      } finally {
+        oCountBtn.disabled = false;
+        oCountBtn.style.opacity = '1';
+      }
+    };
+
+    oCountBtn.addEventListener('click', clickHandler);
+    this.addHoverEffect(oCountBtn);
+    return oCountBtn;
+  }
+
+  /**
+   * Update O-count button display - shared implementation
+   */
+  protected updateOCountButton(): void {
+    if (!this.oCountButton) return;
+    
+    const OCOUNT_MIN_WIDTH_PX = 14;
+    const OCOUNT_DIGIT_WIDTH_PX = 8;
+    
+    const digitCount = this.oCount > 0 ? this.oCount.toString().length : 0;
+    const minWidth = digitCount > 0 ? `${Math.max(OCOUNT_MIN_WIDTH_PX, digitCount * OCOUNT_DIGIT_WIDTH_PX)}px` : `${OCOUNT_MIN_WIDTH_PX}px`;
+    
+    // Find existing countSpan or create new one
+    let countSpan = this.oCountButton.querySelector('span') as HTMLSpanElement;
+    if (!countSpan) {
+      countSpan = document.createElement('span');
+      countSpan.style.fontSize = '14px';
+      countSpan.style.fontWeight = '500';
+      countSpan.style.textAlign = 'left';
+      countSpan.style.display = 'inline-block';
+      this.oCountButton.innerHTML = OCOUNT_SVG;
+      this.oCountButton.appendChild(countSpan);
+    }
+    
+    countSpan.style.minWidth = minWidth;
+    countSpan.textContent = this.oCount > 0 ? this.oCount.toString() : '-';
+  }
+
+  /**
+   * Check favorite status - shared implementation
+   */
+  protected async checkFavoriteStatus(): Promise<void> {
+    const tags = this.getFavoriteTagSource();
+    this.isFavorite = tags?.some((tag) => tag.name === 'StashGifs Favorite') ?? false;
+    
+    // Update heart button if it exists
+    if (this.heartButton) {
+      this.updateHeartButton(this.heartButton);
+    }
   }
 }
 

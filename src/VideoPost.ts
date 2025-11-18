@@ -10,7 +10,7 @@ import { StashAPI } from './StashAPI.js';
 import { VisibilityManager } from './VisibilityManager.js';
 import { calculateAspectRatio, getAspectRatioClass, isValidMediaUrl, showToast, throttle, toAbsoluteUrl } from './utils.js';
 import { posterPreloader } from './PosterPreloader.js';
-import { HEART_SVG_OUTLINE, HEART_SVG_FILLED, HQ_SVG_OUTLINE, HQ_SVG_FILLED, PLAY_SVG, MARKER_SVG, ADD_TAG_SVG, STAR_SVG, STAR_SVG_OUTLINE, OCOUNT_SVG, MARKER_BADGE_SVG, SCENE_BADGE_SVG } from './icons.js';
+import { HQ_SVG_OUTLINE, HQ_SVG_FILLED, PLAY_SVG, MARKER_SVG, STAR_SVG, STAR_SVG_OUTLINE, MARKER_BADGE_SVG, SCENE_BADGE_SVG } from './icons.js';
 import { BasePost } from './BasePost.js';
 
 // Constants for magic numbers and strings
@@ -38,14 +38,9 @@ export class VideoPost extends BasePost {
   private readonly data: VideoPostData;
   private player?: NativeVideoPlayer;
   private isLoaded: boolean = false;
-  private heartButton?: HTMLElement;
   private markerButton?: HTMLElement;
-  private addTagButton?: HTMLElement;
-  private oCountButton?: HTMLElement;
   private hqButton?: HTMLElement;
   private playButton?: HTMLElement;
-  private isFavorite: boolean = false;
-  private oCount: number = 0;
   private isHQMode: boolean = false;
   private ratingValue: number = 0;
   private hasRating: boolean = false;
@@ -57,7 +52,6 @@ export class VideoPost extends BasePost {
   private ratingStarButtons: HTMLButtonElement[] = [];
   private isRatingDialogOpen: boolean = false;
   private isSavingRating: boolean = false;
-  private isTogglingFavorite: boolean = false;
   private markerDialog?: HTMLElement;
   private markerDialogInput?: HTMLInputElement;
   private markerDialogSuggestions?: HTMLElement;
@@ -451,7 +445,7 @@ export class VideoPost extends BasePost {
         const heartBtn = this.createHeartButton();
         buttonGroup.appendChild(heartBtn);
         if (this.api && (this.isRealMarker() || isShortForm)) {
-          const addTagBtn = this.createAddTagButton();
+          const addTagBtn = this.createAddTagButton('Add tag to marker');
           buttonGroup.appendChild(addTagBtn);
         }
       } else if (this.api) {
@@ -466,7 +460,7 @@ export class VideoPost extends BasePost {
         buttonGroup.appendChild(heartBtn);
       }
       if (this.api && (this.isRealMarker() || isShortForm)) {
-        const addTagBtn = this.createAddTagButton();
+        const addTagBtn = this.createAddTagButton('Add tag to marker');
         buttonGroup.appendChild(addTagBtn);
       }
     }
@@ -556,56 +550,13 @@ export class VideoPost extends BasePost {
 
 
   /**
-   * Create heart button for favorites
+   * Perform favorite toggle action for VideoPost
    */
-  private createHeartButton(): HTMLElement {
-    const heartBtn = document.createElement('button');
-    heartBtn.className = 'icon-btn icon-btn--heart';
-    heartBtn.type = 'button';
-    heartBtn.setAttribute('aria-label', 'Toggle favorite');
-    heartBtn.title = 'Add to favorites';
-    this.applyIconButtonStyles(heartBtn);
-    heartBtn.style.padding = '0';
-    heartBtn.style.width = '56px';
-    heartBtn.style.height = '56px';
-    heartBtn.style.minWidth = '56px';
-    heartBtn.style.minHeight = '56px';
-    heartBtn.style.flexShrink = '0';
-
-    this.updateHeartButton(heartBtn);
-
-    const clickHandler = async (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      
-      if (!this.favoritesManager || this.isTogglingFavorite) return;
-
-      this.isTogglingFavorite = true;
-      heartBtn.disabled = true;
-      heartBtn.style.opacity = '0.5';
-
-      try {
-        const newFavoriteState = await this.favoritesManager.toggleFavorite(this.data.marker);
-        this.isFavorite = newFavoriteState;
-        await this.updateLocalTagsAfterFavoriteToggle(newFavoriteState);
-        this.updateHeartButton(heartBtn);
-      } catch (error) {
-        console.error('Failed to toggle favorite', error);
-        showToast('Failed to update favorite. Please try again.');
-        // Revert UI state
-        this.isFavorite = !this.isFavorite;
-        this.updateHeartButton(heartBtn);
-      } finally {
-        this.isTogglingFavorite = false;
-        heartBtn.disabled = false;
-        heartBtn.style.opacity = '1';
-      }
-    };
-
-    heartBtn.addEventListener('click', clickHandler);
-    this.addHoverEffect(heartBtn);
-    this.heartButton = heartBtn;
-    return heartBtn;
+  protected async toggleFavoriteAction(): Promise<boolean> {
+    if (!this.favoritesManager) {
+      throw new Error('FavoritesManager not available');
+    }
+    return await this.favoritesManager.toggleFavorite(this.data.marker);
   }
 
   /**
@@ -633,30 +584,6 @@ export class VideoPost extends BasePost {
     return markerBtn;
   }
 
-  /**
-   * Create add tag button for adding tags to existing markers
-   */
-  private createAddTagButton(): HTMLElement {
-    const addTagBtn = document.createElement('button');
-    addTagBtn.className = 'icon-btn icon-btn--add-tag';
-    addTagBtn.type = 'button';
-    addTagBtn.setAttribute('aria-label', 'Add tag');
-    addTagBtn.title = 'Add tag to marker';
-    this.applyIconButtonStyles(addTagBtn);
-    addTagBtn.style.padding = '0';
-    addTagBtn.innerHTML = ADD_TAG_SVG;
-
-    const clickHandler = (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.openAddTagDialog();
-    };
-
-    addTagBtn.addEventListener('click', clickHandler);
-    this.addHoverEffect(addTagBtn);
-    this.addTagButton = addTagBtn;
-    return addTagBtn;
-  }
 
   /**
    * Check if marker has a real ID (not synthetic)
@@ -702,7 +629,7 @@ export class VideoPost extends BasePost {
   /**
    * Update local tags after favorite toggle
    */
-  private async updateLocalTagsAfterFavoriteToggle(newFavoriteState: boolean): Promise<void> {
+  protected async updateLocalTagsAfterFavoriteToggle(newFavoriteState: boolean): Promise<void> {
     const isShortForm = this.isShortFormContent();
     
     if (isShortForm) {
@@ -735,95 +662,17 @@ export class VideoPost extends BasePost {
     }
   }
 
+
   /**
-   * Update heart button appearance based on favorite state
+   * Perform O-count increment action for VideoPost
    */
-  private updateHeartButton(button: HTMLElement): void {
-    if (this.isFavorite) {
-      button.innerHTML = HEART_SVG_FILLED;
-      button.style.color = '#ff6b9d';
-      button.title = 'Remove from favorites';
-    } else {
-      button.innerHTML = HEART_SVG_OUTLINE;
-      button.style.color = 'rgba(255, 255, 255, 0.7)';
-      button.title = 'Add to favorites';
+  protected async incrementOCountAction(): Promise<void> {
+    if (!this.api) {
+      throw new Error('API not available');
     }
-  }
-
-  /**
-   * Create O-count button
-   */
-  private createOCountButton(): HTMLElement {
-    const oCountBtn = document.createElement('button');
-    oCountBtn.className = 'icon-btn icon-btn--ocount';
-    oCountBtn.type = 'button';
-    oCountBtn.setAttribute('aria-label', 'Increment o count');
-    oCountBtn.title = 'Increment o-count';
-    this.applyIconButtonStyles(oCountBtn);
-    oCountBtn.style.padding = '5px 7px';
-    oCountBtn.style.gap = '3px';
-    oCountBtn.style.flexShrink = '1';
-    oCountBtn.style.minHeight = '44px';
-    oCountBtn.style.height = 'auto';
-    oCountBtn.style.fontSize = '16px';
-    // Keep 44px height but allow width to be auto for text content
-    oCountBtn.style.width = 'auto';
-    oCountBtn.style.minWidth = '44px';
-    
-    this.oCountButton = oCountBtn;
-    this.updateOCountButton();
-
-    const clickHandler = async (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      
-      if (!this.api) return;
-
-      oCountBtn.disabled = true;
-      oCountBtn.style.opacity = '0.5';
-
-      try {
-        const result = await this.api.incrementOCount(this.data.marker.scene.id);
-        this.oCount = result.count;
-        this.data.marker.scene.o_counter = result.count;
-        this.updateOCountButton();
-      } catch (error) {
-        console.error('Failed to increment o count', error);
-        showToast('Failed to update o-count. Please try again.');
-      } finally {
-        oCountBtn.disabled = false;
-        oCountBtn.style.opacity = '1';
-      }
-    };
-
-    oCountBtn.addEventListener('click', clickHandler);
-    this.addHoverEffect(oCountBtn);
-    return oCountBtn;
-  }
-
-  /**
-   * Update O-count button display
-   */
-  private updateOCountButton(): void {
-    if (!this.oCountButton) return;
-    
-    const digitCount = this.oCount > 0 ? this.oCount.toString().length : 0;
-    const minWidth = digitCount > 0 ? `${Math.max(OCOUNT_MIN_WIDTH_PX, digitCount * OCOUNT_DIGIT_WIDTH_PX)}px` : `${OCOUNT_MIN_WIDTH_PX}px`;
-    
-    // Find existing countSpan or create new one
-    let countSpan = this.oCountButton.querySelector('span') as HTMLSpanElement;
-    if (!countSpan) {
-      countSpan = document.createElement('span');
-      countSpan.style.fontSize = '14px';
-      countSpan.style.fontWeight = '500';
-      countSpan.style.textAlign = 'left';
-      countSpan.style.display = 'inline-block';
-      this.oCountButton.innerHTML = OCOUNT_SVG;
-      this.oCountButton.appendChild(countSpan);
-    }
-    
-    countSpan.style.minWidth = minWidth;
-    countSpan.textContent = this.oCount > 0 ? this.oCount.toString() : '-';
+    const result = await this.api.incrementOCount(this.data.marker.scene.id);
+    this.oCount = result.count;
+    this.data.marker.scene.o_counter = result.count;
   }
 
   /**
@@ -1589,35 +1438,18 @@ export class VideoPost extends BasePost {
   /**
    * Check favorite status from marker tags or scene tags
    */
-  private async checkFavoriteStatus(): Promise<void> {
-    if (!this.favoritesManager) return;
-
-    try {
-      const isShortForm = this.isShortFormContent();
-      
-      if (isShortForm) {
-        // For shortform content, check scene tags
-        const hasFavoriteTag = this.data.marker.scene?.tags?.some(
-          tag => tag.name === FAVORITE_TAG_NAME
-        ) || false;
-        
-        this.isFavorite = hasFavoriteTag;
-      } else {
-        // For regular markers, check marker tags
-        const hasFavoriteTag = this.data.marker.tags?.some(
-          tag => tag.name === FAVORITE_TAG_NAME
-        ) || false;
-
-        this.isFavorite = hasFavoriteTag;
-      }
-
-      // Update heart button if it exists
-      if (this.heartButton) {
-        this.updateHeartButton(this.heartButton);
-      }
-    } catch (error) {
-      console.error('Failed to check favorite status', error);
-      // Don't show toast for background check failures
+  /**
+   * Get favorite tag source for VideoPost
+   */
+  protected getFavoriteTagSource(): Array<{ name: string }> | undefined {
+    const isShortForm = this.isShortFormContent();
+    
+    if (isShortForm) {
+      // For shortform content, check scene tags
+      return this.data.marker.scene?.tags;
+    } else {
+      // For regular markers, check marker tags
+      return this.data.marker.tags;
     }
   }
 
@@ -2776,7 +2608,7 @@ export class VideoPost extends BasePost {
   /**
    * Open add tag dialog
    */
-  private openAddTagDialog(): void {
+  protected openAddTagDialog(): void {
     this.openMarkerDialog('add');
   }
 
