@@ -4,7 +4,7 @@
  */
 
 import { VideoPlayerState } from './types.js';
-import { formatDuration, isValidMediaUrl, hasWebkitFullscreen, hasMozFullscreen, hasMsFullscreen, hasWebkitFullscreenHTMLElement, hasMozFullscreenHTMLElement, hasMsFullscreenHTMLElement, hasWebkitFullscreenDocument, hasMozFullscreenDocument, hasMsFullscreenDocument, type ElementWebkitFullscreen, type ElementMozFullscreen, type ElementMsFullscreen } from './utils.js';
+import { formatDuration, isValidMediaUrl, hasWebkitFullscreen, hasMozFullscreen, hasMsFullscreen, hasWebkitFullscreenHTMLElement, hasMozFullscreenHTMLElement, hasMsFullscreenHTMLElement, hasWebkitFullscreenDocument, hasMozFullscreenDocument, hasMsFullscreenDocument, type ElementWebkitFullscreen, type ElementMozFullscreen, type ElementMsFullscreen, isMobileDevice, getNetworkInfo, isSlowNetwork, isCellularConnection } from './utils.js';
 import { VOLUME_MUTED_SVG, VOLUME_UNMUTED_SVG } from './icons.js';
 
 /**
@@ -28,6 +28,7 @@ export class NativeVideoPlayer {
   private fullscreenButton!: HTMLElement;
   private readonly state: VideoPlayerState;
   private onStateChange?: (state: VideoPlayerState) => void;
+  // onMuteToggle removed - mute is now controlled by overlay button in VideoPost
   private externalStateListener?: (state: VideoPlayerState) => void;
   private readyResolver?: () => void;
   private readyPromise: Promise<void>;
@@ -39,6 +40,8 @@ export class NativeVideoPlayer {
   private originalStartTime?: number; // Store original start time for reload
   private originalEndTime?: number; // Store original end time for reload
   private readonly isHDMode: boolean = false; // Track if this is HD mode (affects mute button visibility)
+  private posterImage?: HTMLImageElement; // Fallback poster image for mobile
+  private shouldExtractFirstFrame: boolean = false; // Track if we need to extract first frame as poster
   // Store event handlers for proper cleanup
   private fullscreenChangeHandler?: () => void;
   private webkitFullscreenChangeHandler?: () => void;
@@ -55,6 +58,29 @@ export class NativeVideoPlayer {
   private waitingHandler?: () => void;
   private progressHandler?: () => void;
   private loadingIndicator?: HTMLElement; // Loading spinner indicator
+  // Overlay and touch handling
+  private overlay?: HTMLElement; // Play/pause overlay
+  private overlayTimeoutId?: ReturnType<typeof setTimeout>; // Timeout for overlay fade
+  // Double tap detection
+  private lastTapTime: number = 0;
+  private lastTapX: number = 0;
+  private lastTapY: number = 0;
+  // Touch tracking for play/pause
+  private touchStartX: number = 0;
+  private touchStartY: number = 0;
+  private touchStartTime: number = 0;
+  private isScrolling: boolean = false;
+  // Manual pause tracking - tracks when user manually pauses to prevent autoplay from resuming
+  private manuallyPaused: boolean = false;
+  // Hover state tracking for overlay visibility
+  private isHovered: boolean = false;
+  private hoverEnterHandler?: (e: MouseEvent) => void;
+  private hoverLeaveHandler?: (e: MouseEvent) => void;
+  // Mobile scroll detection
+  private isScrollingMobile: boolean = false;
+  private scrollTimeoutId?: ReturnType<typeof setTimeout>;
+  private scrollHandler?: () => void;
+  private playerWrapper?: HTMLElement; // Store reference to player wrapper for hover handlers
 
   constructor(container: HTMLElement, videoUrl: string, options?: {
     autoplay?: boolean;
@@ -65,6 +91,7 @@ export class NativeVideoPlayer {
     aggressivePreload?: boolean; // Use 'auto' preload for non-HD videos
     isHDMode?: boolean; // Whether this is HD mode (affects mute button visibility)
     posterUrl?: string; // Poster image URL to display before video loads
+    // onMuteToggle removed - mute is now controlled by overlay button in VideoPost
   }) {
     // Validate video URL before proceeding
     if (!videoUrl || !isValidMediaUrl(videoUrl)) {
@@ -79,6 +106,7 @@ export class NativeVideoPlayer {
 
     this.container = container;
     this.onStateChange = options?.onStateChange;
+    // onMuteToggle removed - mute is now controlled by overlay button in VideoPost
     this.isHDMode = options?.isHDMode ?? false;
 
     this.state = {
@@ -107,6 +135,8 @@ export class NativeVideoPlayer {
     });
     this.createControls();
     this.attachEventListeners();
+    this.setupHoverHandlers();
+    this.setupMobileScrollDetection();
   }
 
   private resolveReady(): void {
@@ -182,18 +212,50 @@ export class NativeVideoPlayer {
    */
   private setupVideoElementBasicProperties(options?: { startTime?: number; muted?: boolean; posterUrl?: string }): void {
     // Set poster image if provided
+    const isMobile = isMobileDevice();
     if (options?.posterUrl) {
-      this.videoElement.poster = options.posterUrl;
+      // On mobile, don't use video element's poster attribute - use fallback image instead
+      // This prevents browser from showing video preview/thumbnail instead of static image
+      if (!isMobile) {
+        this.videoElement.poster = options.posterUrl;
+      }
+      
+      // On mobile, create fallback poster image element and don't use video element's poster
+      // This ensures we always show the static image, not a video preview
+      if (isMobile) {
+        this.createPosterFallback(options.posterUrl);
+      }
+    } else {
+      // No poster URL provided - will extract first frame from video as fallback
+      // This is handled after video metadata loads
+      // Don't set video element's poster attribute - we'll use extracted frame instead
+      this.shouldExtractFirstFrame = true;
     }
     
     // Set object-fit for proper video display
     this.videoElement.style.objectFit = 'cover';
     
-    // Set preload based on whether we have startTime
-    // For non-HD videos (no startTime), use 'auto' like the old version
-    // For HD videos (with startTime), use 'metadata' to prevent showing last frame
+    // On mobile, set video element to opacity 0 initially to prevent animated previews
+    // Video will fade in smoothly when playing event fires
+    if (isMobile) {
+      this.videoElement.style.opacity = '0';
+      this.videoElement.style.transition = 'opacity 0.3s ease-out';
+    }
+    
+    // Optimize preload strategy for mobile
+    // On mobile: use 'metadata' by default to reduce bandwidth
+    // On desktop: use 'auto' for non-HD videos, 'metadata' for HD videos
     const hasStartTimeForPreload = typeof options?.startTime === 'number' && Number.isFinite(options.startTime) && options.startTime > 0;
-    this.videoElement.preload = hasStartTimeForPreload ? 'metadata' : 'auto';
+    
+    if (isMobile) {
+      // Mobile: always start with 'metadata' to save bandwidth
+      // Will switch to 'auto' when video is about to play
+      this.videoElement.preload = 'metadata';
+    } else {
+      // Desktop: use 'auto' for non-HD videos, 'metadata' for HD videos
+      this.videoElement.preload = hasStartTimeForPreload ? 'metadata' : 'auto';
+    }
+    
     this.videoElement.playsInline = true; // Required for iOS inline playback
     this.videoElement.muted = options?.muted ?? false; // Default to unmuted (markers don't have sound anyway)
     this.videoElement.loop = true; // Enable looping
@@ -204,6 +266,251 @@ export class NativeVideoPlayer {
     this.videoElement.setAttribute('webkit-playsinline', 'true'); // Legacy iOS support
     this.videoElement.setAttribute('x5-playsinline', 'true'); // Android X5 browser
     this.videoElement.setAttribute('x-webkit-airplay', 'allow'); // AirPlay support
+    
+    // Apply adaptive buffering based on network conditions
+    this.applyAdaptiveBuffering();
+  }
+
+  /**
+   * Apply adaptive buffering based on network conditions
+   * Adjusts video buffering behavior for slow or cellular connections
+   */
+  private applyAdaptiveBuffering(): void {
+    if (!isMobileDevice()) {
+      return; // Only apply on mobile
+    }
+
+    const networkInfo = getNetworkInfo();
+    if (!networkInfo) {
+      return; // Network info not available
+    }
+
+    // On slow networks or cellular connections, be more conservative with buffering
+    if (isSlowNetwork() || isCellularConnection()) {
+      // Reduce buffering by setting a lower buffer target
+      // This is done implicitly by using 'metadata' preload
+      // We can also add additional optimizations here if needed
+      if (this.videoElement.preload === 'auto') {
+        // If we were going to use 'auto', consider using 'metadata' instead on slow networks
+        // But only if not about to play immediately
+        this.videoElement.preload = 'metadata';
+      }
+    }
+  }
+
+  /**
+   * Switch preload to 'auto' when video is about to play
+   * This optimizes bandwidth usage on mobile by only loading full video when needed
+   */
+  private switchToAutoPreload(): void {
+    if (this.videoElement.preload === 'metadata' && isMobileDevice()) {
+      // Only switch if on mobile and currently using metadata preload
+      this.videoElement.preload = 'auto';
+      // Hide fallback poster when switching to auto preload
+      this.hidePosterFallback();
+    }
+  }
+
+  /**
+   * Create a fallback poster image element for mobile
+   * This ensures the poster is visible even when the video element's poster attribute doesn't display
+   * Poster will fade out smoothly when video plays, and fade in when video pauses
+   */
+  private createPosterFallback(posterUrl: string): void {
+    // Remove existing poster fallback if any
+    if (this.posterImage) {
+      this.posterImage.remove();
+    }
+
+    const img = document.createElement('img');
+    img.src = posterUrl;
+    img.className = 'video-player__poster-fallback';
+    img.style.position = 'absolute';
+    img.style.top = '0';
+    img.style.left = '0';
+    img.style.width = '100%';
+    img.style.height = '100%';
+    img.style.objectFit = 'cover';
+    // On mobile, put poster above video element (z-index 2) to ensure it covers video
+    // Poster starts visible (opacity 1) and will fade out when video plays
+    const isMobile = isMobileDevice();
+    img.style.zIndex = isMobile ? '2' : '0'; // Above video element on mobile (z-index 2), behind on desktop
+    img.style.pointerEvents = 'none';
+    img.style.opacity = '1'; // Start visible - will fade out when video plays
+    img.style.transition = 'opacity 0.3s ease-out'; // Smooth fade transition
+    
+    // On mobile, video element starts with opacity 0 (set in setupVideoElementBasicProperties)
+    // Video will fade in smoothly when playing event fires
+    // We don't show video on loadeddata/canplay - only when actually playing to prevent animated previews
+    
+    // Add error handler - if poster fails to load, extract first frame from video
+    img.addEventListener('error', () => {
+      console.warn('NativeVideoPlayer: Poster image failed to load, extracting first frame from video', { posterUrl });
+      this.extractFirstFrameAsPoster();
+    }, { once: true });
+    
+    this.posterImage = img;
+    
+    // Insert before video element in the player wrapper
+    const playerWrapper = this.videoElement.parentElement;
+    if (playerWrapper) {
+      playerWrapper.insertBefore(img, this.videoElement);
+    } else {
+      // If no wrapper yet, store and insert later
+      this.container.appendChild(img);
+    }
+  }
+
+  /**
+   * Extract first frame from video and use as poster
+   * Used when screenshot poster is unavailable or fails to load
+   */
+  private extractFirstFrameAsPoster(): void {
+    // Only extract if video element exists and is valid
+    if (!this.videoElement || !this.videoElement.src) {
+      return;
+    }
+
+    // Remove existing poster fallback if any
+    if (this.posterImage) {
+      this.posterImage.remove();
+      this.posterImage = undefined;
+    }
+
+    // Store original currentTime to restore later
+    const originalCurrentTime = this.videoElement.currentTime;
+    const originalPaused = this.videoElement.paused;
+
+    // Ensure video is paused
+    this.videoElement.pause();
+
+    // Seek to first frame (0 seconds)
+    this.videoElement.currentTime = 0;
+
+    // Wait for seeked event to ensure frame is loaded
+    const handleSeeked = () => {
+      try {
+        // Get video dimensions - use actual dimensions if available, otherwise use reasonable defaults
+        const videoWidth = this.videoElement.videoWidth || this.videoElement.clientWidth || 1920;
+        const videoHeight = this.videoElement.videoHeight || this.videoElement.clientHeight || 1080;
+        
+        // Ensure we have valid dimensions
+        if (videoWidth === 0 || videoHeight === 0) {
+          console.warn('NativeVideoPlayer: Video dimensions not available for first frame extraction');
+          this.videoElement.removeEventListener('seeked', handleSeeked);
+          return;
+        }
+        
+        // Create canvas to capture frame
+        const canvas = document.createElement('canvas');
+        canvas.width = videoWidth;
+        canvas.height = videoHeight;
+        
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          console.warn('NativeVideoPlayer: Failed to get canvas context for first frame extraction');
+          this.videoElement.removeEventListener('seeked', handleSeeked);
+          return;
+        }
+
+        // Draw video frame to canvas
+        ctx.drawImage(this.videoElement, 0, 0, canvas.width, canvas.height);
+
+        // Convert to data URL
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        
+        // Create poster image from data URL
+        const img = document.createElement('img');
+        img.src = dataUrl;
+        img.className = 'video-player__poster-fallback';
+        img.style.position = 'absolute';
+        img.style.top = '0';
+        img.style.left = '0';
+        img.style.width = '100%';
+        img.style.height = '100%';
+        img.style.objectFit = 'cover';
+        const isMobile = isMobileDevice();
+        img.style.zIndex = isMobile ? '2' : '0';
+        img.style.pointerEvents = 'none';
+        img.style.opacity = '1';
+        img.style.transition = 'opacity 0.3s ease-out';
+
+        this.posterImage = img;
+
+        // Insert before video element in the player wrapper
+        const playerWrapper = this.videoElement.parentElement;
+        if (playerWrapper) {
+          playerWrapper.insertBefore(img, this.videoElement);
+        } else {
+          this.container.appendChild(img);
+        }
+
+        // Restore original state if needed
+        if (originalCurrentTime > 0 && !originalPaused) {
+          // Only restore if we had a startTime and video was playing
+          // For most cases, we want to stay at 0
+        }
+      } catch (error) {
+        console.warn('NativeVideoPlayer: Failed to extract first frame from video', error);
+      } finally {
+        this.videoElement.removeEventListener('seeked', handleSeeked);
+      }
+    };
+
+    // Add timeout to prevent hanging if seeked never fires
+    const timeoutId = setTimeout(() => {
+      this.videoElement.removeEventListener('seeked', handleSeeked);
+      console.warn('NativeVideoPlayer: Timeout waiting for video seeked event for first frame extraction');
+    }, 5000);
+
+    this.videoElement.addEventListener('seeked', () => {
+      clearTimeout(timeoutId);
+      handleSeeked();
+    }, { once: true });
+  }
+
+  /**
+   * Hide the fallback poster image (fade out)
+   * Called when video starts playing to create seamless crossfade
+   */
+  private hidePosterFallback(): void {
+    if (this.posterImage) {
+      const isMobile = isMobileDevice();
+      // Fade out poster smoothly
+      this.posterImage.style.opacity = '0';
+      
+      // On mobile, keep poster in DOM so we can show it again when video pauses
+      // On desktop, remove it after transition to save memory
+      if (!isMobile) {
+        // Remove after transition
+        setTimeout(() => {
+          if (this.posterImage) {
+            this.posterImage.remove();
+            this.posterImage = undefined;
+          }
+        }, 300);
+      }
+    }
+  }
+
+  /**
+   * Show the fallback poster image (mobile only)
+   * Used when video pauses to prevent black screen
+   * Fades in poster smoothly while video fades out
+   */
+  private showPosterFallback(): void {
+    const isMobile = isMobileDevice();
+    if (!isMobile || !this.posterImage) {
+      return;
+    }
+
+    // Check if poster is still in the DOM (should be on mobile since we don't remove it)
+    if (!this.posterImage.isConnected) {
+      return;
+    }
+
+    // Fade in poster smoothly (opacity 0 → 1)
+    this.posterImage.style.opacity = '1';
   }
 
   /**
@@ -399,6 +706,19 @@ export class NativeVideoPlayer {
     
     // Also clear timeout on loadedmetadata (video has metadata)
     this.videoElement.addEventListener('loadedmetadata', clearLoadTimeout, { once: true });
+    
+    // Extract first frame as poster if no poster URL was provided
+    if (this.shouldExtractFirstFrame) {
+      const extractFirstFrame = () => {
+        if (this.isVideoElementValid() && this.videoElement.readyState >= 1) {
+          this.extractFirstFrameAsPoster();
+        }
+      };
+      // Try to extract when metadata is loaded
+      this.videoElement.addEventListener('loadedmetadata', extractFirstFrame, { once: true });
+      // Also try when video can play (in case loadedmetadata fires too early)
+      this.videoElement.addEventListener('loadeddata', extractFirstFrame, { once: true });
+    }
   }
 
   /**
@@ -510,7 +830,7 @@ export class NativeVideoPlayer {
     
     // On mobile, also enforce startTime in timeupdate to catch browsers that reset on play()
     // Only enforce if we have a startTime > 0 and video is actually at the wrong position
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const isMobile = isMobileDevice();
     if (isMobile && this.desiredStartTime !== undefined && this.desiredStartTime > 0) {
       const enforceStartTime = () => {
         // Only enforce if we haven't successfully enforced yet, or if video reset to 0
@@ -679,8 +999,12 @@ export class NativeVideoPlayer {
     // Enable hardware acceleration for video wrapper
     playerWrapper.style.transform = 'translateZ(0)';
     playerWrapper.style.willChange = 'transform';
+    this.playerWrapper = playerWrapper; // Store reference for hover handlers
     
     this.videoElement.style.position = 'relative';
+    // On mobile, video z-index is 1 (below poster which is 2) to ensure poster covers video
+    // On desktop, z-index is 1 as well
+    const isMobile = isMobileDevice();
     this.videoElement.style.zIndex = '1';
     // Set background to transparent
     this.videoElement.style.backgroundColor = 'transparent';
@@ -692,6 +1016,12 @@ export class NativeVideoPlayer {
     this.videoElement.style.perspective = '1000px';
     
     playerWrapper.appendChild(this.videoElement);
+    
+    // Create play/pause overlay
+    this.createOverlay();
+    if (this.overlay) {
+      playerWrapper.appendChild(this.overlay);
+    }
     
     // Create loading indicator
     this.loadingIndicator = document.createElement('div');
@@ -711,11 +1041,12 @@ export class NativeVideoPlayer {
     // Ensure controls are always on top
     this.controlsContainer.style.zIndex = '10';
 
-    // Play/Pause button
+    // Play/Pause button (hidden - using click on video instead)
     this.playButton = document.createElement('button');
     this.playButton.className = 'video-player__play-button';
     this.playButton.setAttribute('aria-label', 'Play');
     this.playButton.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+    this.playButton.style.display = 'none'; // Hide play button
     this.controlsContainer.appendChild(this.playButton);
 
     // Progress bar
@@ -730,22 +1061,22 @@ export class NativeVideoPlayer {
     this.progressBar.setAttribute('aria-label', 'Video progress');
     progressContainer.appendChild(this.progressBar);
 
-    // Time display
+    // Time display (hidden - cleaner UI)
     this.timeDisplay = document.createElement('span');
     this.timeDisplay.className = 'video-player__time';
     this.timeDisplay.textContent = '0:00 / 0:00';
+    this.timeDisplay.style.display = 'none'; // Hide time display
     progressContainer.appendChild(this.timeDisplay);
     this.controlsContainer.appendChild(progressContainer);
 
-    // Mute button (hidden in HD mode - use global volume toggle instead)
+    // Mute button (hidden - using overlay button in VideoPost instead)
     this.muteButton = document.createElement('button');
     this.muteButton.className = 'video-player__mute-button';
     this.muteButton.setAttribute('aria-label', 'Mute');
     this.updateMuteButton();
-    // Hide mute button in HD mode - global volume toggle in header controls muting
-    // Also hide in non-HD mode (marker videos don't have audio)
+    // Hide mute button - overlay button in VideoPost controls global mute state
     this.muteButton.style.display = 'none';
-    this.controlsContainer.appendChild(this.muteButton); // Still append but hidden
+    this.controlsContainer.appendChild(this.muteButton);
 
     // Fullscreen button
     this.fullscreenButton = document.createElement('button');
@@ -860,8 +1191,17 @@ export class NativeVideoPlayer {
       }
     };
     this.videoElement.addEventListener('progress', clearStalledWaitingTimeouts);
-    this.videoElement.addEventListener('canplay', clearStalledWaitingTimeouts, { once: true });
-    this.videoElement.addEventListener('loadeddata', clearStalledWaitingTimeouts, { once: true });
+    
+    // Update overlay when video becomes ready (but don't show unless hovered)
+    const handleReady = () => {
+      clearStalledWaitingTimeouts();
+      // Only update overlay state if already hovered - don't show on initial ready
+      if (this.isHovered) {
+        this.updateOverlayState();
+      }
+    };
+    this.videoElement.addEventListener('canplay', handleReady, { once: true });
+    this.videoElement.addEventListener('loadeddata', handleReady, { once: true });
 
     // Fullscreen change events (desktop and Android)
     // Store handlers for proper cleanup
@@ -898,13 +1238,42 @@ export class NativeVideoPlayer {
       if (!this.isVideoElementValid()) return;
       this.state.isPlaying = true;
       this.updatePlayButton();
+      this.updateOverlayState();
+      
+      // On mobile, make video visible when play() is called to ensure audio works
+      // Some mobile browsers require video to be visible for audio playback
+      const isMobile = isMobileDevice();
+      if (isMobile) {
+        // Fade in video (opacity 0 → 1) when play() is called
+        // This ensures audio works on mobile while still preventing animated previews
+        this.videoElement.style.opacity = '1';
+      }
+      
       this.notifyStateChange();
+    });
+
+    // Use 'playing' event for poster crossfade - fires when video actually starts rendering
+    // This ensures poster fades out smoothly when video is actually playing
+    this.videoElement.addEventListener('playing', () => {
+      if (!this.isVideoElementValid()) return;
+      
+      // On mobile, fade out poster when video is actually playing
+      const isMobile = isMobileDevice();
+      if (isMobile) {
+        // Fade out poster (opacity 1 → 0) when video starts rendering
+        this.hidePosterFallback();
+      }
     });
 
     this.videoElement.addEventListener('pause', () => {
       if (!this.isVideoElementValid()) return;
       this.state.isPlaying = false;
       this.updatePlayButton();
+      this.updateOverlayState();
+      
+      // On pause, keep video visible to show current frame
+      // No need to fade to poster - video frame is already visible
+      
       this.notifyStateChange();
     });
 
@@ -918,7 +1287,7 @@ export class NativeVideoPlayer {
 
     // Control buttons
     this.playButton.addEventListener('click', () => this.togglePlay());
-    this.muteButton.addEventListener('click', () => this.toggleMute());
+    // Mute button click handler removed - using overlay button in VideoPost instead
     this.fullscreenButton.addEventListener('click', () => this.toggleFullscreen());
 
     // Progress bar
@@ -927,9 +1296,308 @@ export class NativeVideoPlayer {
       this.seekTo(Number.parseFloat(target.value));
     });
 
-    // Video element click/touch handlers removed
-    // Play/pause is now only controlled via the play button in the controls
-    // Videos will still pause automatically when removed from viewport (handled by VisibilityManager)
+    // Video element click/touch handlers for play/pause
+    this.setupVideoClickHandlers();
+    
+    // Don't show overlay initially - only show on hover
+    // Overlay will be shown when user hovers over video element
+  }
+
+  /**
+   * Create play/pause overlay element
+   */
+  private createOverlay(): void {
+    this.overlay = document.createElement('div');
+    this.overlay.className = 'video-player__overlay';
+    this.overlay.style.position = 'absolute';
+    this.overlay.style.top = '50%';
+    this.overlay.style.left = '50%';
+    this.overlay.style.transform = 'translate(-50%, -50%)';
+    this.overlay.style.width = '80px';
+    this.overlay.style.height = '80px';
+    this.overlay.style.borderRadius = '50%';
+    this.overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.6)';
+    this.overlay.style.display = 'flex';
+    this.overlay.style.alignItems = 'center';
+    this.overlay.style.justifyContent = 'center';
+    this.overlay.style.zIndex = '5';
+    this.overlay.style.pointerEvents = 'none';
+    // Start hidden - only show on hover
+    this.overlay.style.opacity = '0';
+    this.overlay.style.transition = 'opacity 0.3s ease-out';
+    this.overlay.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="white"><path d="M8 5v14l11-7z"/></svg>';
+  }
+
+  /**
+   * Show play/pause overlay (temporary, fades out after 1.5s)
+   */
+  private showOverlay(isPlaying: boolean): void {
+    if (!this.overlay) return;
+    
+    // Clear any existing timeout
+    if (this.overlayTimeoutId) {
+      clearTimeout(this.overlayTimeoutId);
+    }
+    
+    // Update icon based on play state
+    if (isPlaying) {
+      this.overlay.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="white"><path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/></svg>';
+    } else {
+      this.overlay.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="white"><path d="M8 5v14l11-7z"/></svg>';
+    }
+    
+    // Show overlay
+    this.overlay.style.opacity = '1';
+    
+    // Hide after 1.5 seconds
+    this.overlayTimeoutId = setTimeout(() => {
+      if (this.overlay) {
+        this.overlay.style.opacity = '0';
+      }
+      this.overlayTimeoutId = undefined;
+    }, 1500);
+  }
+
+  /**
+   * Update overlay state based on video play/pause state and hover state
+   * Shows play icon only when hovered, paused, and ready (and not scrolling on mobile)
+   */
+  private updateOverlayState(): void {
+    if (!this.overlay || !this.isVideoElementValid()) return;
+    
+    const isPaused = this.videoElement.paused;
+    const isReady = this.videoElement.readyState > 0;
+    const isMobile = isMobileDevice();
+    
+    // Clear any existing timeout (we want persistent display for paused state when hovered)
+    if (this.overlayTimeoutId) {
+      clearTimeout(this.overlayTimeoutId);
+      this.overlayTimeoutId = undefined;
+    }
+    
+    // Only show overlay when:
+    // 1. Video is paused and ready
+    // 2. User is hovering over the player
+    // 3. Not scrolling on mobile
+    if (isPaused && isReady && this.isHovered && (!isMobile || !this.isScrollingMobile)) {
+      // Video is paused and ready, and user is hovering - show play icon
+      this.overlay.innerHTML = '<svg viewBox="0 0 24 24" width="48" height="48" fill="white"><path d="M8 5v14l11-7z"/></svg>';
+      this.overlay.style.opacity = '1';
+    } else {
+      // Video is playing, not ready, not hovered, or scrolling on mobile - hide overlay
+      this.overlay.style.opacity = '0';
+    }
+  }
+
+  /**
+   * Setup hover handlers for video player overlay
+   */
+  private setupHoverHandlers(): void {
+    if (!this.isVideoElementValid()) return;
+    
+    this.hoverEnterHandler = (_e: MouseEvent) => {
+      // User is hovering over the video element
+      this.isHovered = true;
+      this.updateOverlayState();
+    };
+    
+    this.hoverLeaveHandler = (e: MouseEvent) => {
+      // Check if we're leaving to go to buttons/footer/header
+      const relatedTarget = e.relatedTarget as HTMLElement | null;
+      if (relatedTarget) {
+        // If moving to footer, header, or button elements, don't clear hover yet
+        // This prevents flicker when moving mouse from video to buttons
+        if (relatedTarget.closest('.video-post__footer') || 
+            relatedTarget.closest('.video-post__header') ||
+            relatedTarget.closest('button')) {
+          // Keep hover state but hide overlay since we're not over video anymore
+          this.isHovered = false;
+          this.updateOverlayState();
+          return;
+        }
+      }
+      // Leaving video area - clear hover
+      this.isHovered = false;
+      this.updateOverlayState();
+    };
+    
+    // Attach to video element itself - this ensures we only detect hover over the actual video
+    this.videoElement.addEventListener('mouseenter', this.hoverEnterHandler);
+    this.videoElement.addEventListener('mouseleave', this.hoverLeaveHandler);
+  }
+
+  /**
+   * Setup mobile scroll detection to prevent showing overlay during scrolling
+   */
+  private setupMobileScrollDetection(): void {
+    const isMobile = isMobileDevice();
+    if (!isMobile) return;
+    
+    let lastScrollY = globalThis.scrollY || globalThis.pageYOffset;
+    
+    this.scrollHandler = () => {
+      const currentScrollY = globalThis.scrollY || globalThis.pageYOffset;
+      const scrollDelta = Math.abs(currentScrollY - lastScrollY);
+      
+      // If scroll delta is significant, user is scrolling
+      if (scrollDelta > 5) {
+        this.isScrollingMobile = true;
+        this.updateOverlayState(); // Hide overlay during scroll
+        
+        // Clear existing timeout
+        if (this.scrollTimeoutId) {
+          clearTimeout(this.scrollTimeoutId);
+        }
+        
+        // Set timeout to clear scroll state after scroll ends
+        this.scrollTimeoutId = setTimeout(() => {
+          this.isScrollingMobile = false;
+          this.updateOverlayState(); // Show overlay again if hovered
+          this.scrollTimeoutId = undefined;
+        }, 150);
+      }
+      
+      lastScrollY = currentScrollY;
+    };
+    
+    // Use passive listener for better scroll performance
+    window.addEventListener('scroll', this.scrollHandler, { passive: true });
+  }
+
+  /**
+   * Setup click and touch handlers for video element
+   */
+  private setupVideoClickHandlers(): void {
+    const isMobile = isMobileDevice();
+    // Optimized thresholds for better mobile responsiveness
+    const touchMoveThreshold = 10; // Pixels - allow small movements
+    const touchDurationThreshold = 300; // ms - distinguish tap from long press
+    const doubleTapTimeThreshold = 300; // ms - time window for double tap
+    const doubleTapDistanceThreshold = 50; // Pixels - max distance between taps
+    
+    if (isMobile) {
+      // Mobile: use touch events with movement/duration detection
+      this.videoElement.addEventListener('touchstart', (e) => {
+        const touch = e.touches[0];
+        if (touch) {
+          this.touchStartX = touch.clientX;
+          this.touchStartY = touch.clientY;
+          this.touchStartTime = Date.now();
+          this.isScrolling = false;
+        }
+        // Stop propagation to prevent parent handlers from interfering
+        // Only stop if this looks like a tap (not a scroll)
+        if (e.touches.length === 1) {
+          e.stopPropagation();
+        }
+      }, { passive: true });
+      
+      this.videoElement.addEventListener('touchmove', (e) => {
+        if (e.touches.length > 0) {
+          const touch = e.touches[0];
+          if (touch) {
+            const deltaX = Math.abs(touch.clientX - this.touchStartX);
+            const deltaY = Math.abs(touch.clientY - this.touchStartY);
+            if (deltaX > touchMoveThreshold || deltaY > touchMoveThreshold) {
+              this.isScrolling = true;
+            }
+          }
+        }
+        // Stop propagation to prevent parent handlers from interfering with video controls
+        e.stopPropagation();
+      }, { passive: true });
+      
+      this.videoElement.addEventListener('touchend', (e) => {
+        const touch = e.changedTouches[0];
+        if (!touch) return;
+        
+        const deltaX = Math.abs(touch.clientX - this.touchStartX);
+        const deltaY = Math.abs(touch.clientY - this.touchStartY);
+        const touchDuration = Date.now() - this.touchStartTime;
+        const totalDistance = Math.hypot(deltaX, deltaY);
+        const currentTime = Date.now();
+        
+        // Check for double tap
+        const timeSinceLastTap = currentTime - this.lastTapTime;
+        const distanceFromLastTap = Math.hypot(
+          touch.clientX - this.lastTapX,
+          touch.clientY - this.lastTapY
+        );
+        
+        if (timeSinceLastTap < doubleTapTimeThreshold && 
+            distanceFromLastTap < doubleTapDistanceThreshold) {
+          // Double tap detected - toggle fullscreen
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation(); // Prevent any other handlers from running
+          
+          // Don't show overlay for double tap - just toggle fullscreen
+          this.toggleFullscreen();
+          this.lastTapTime = 0; // Reset to prevent triple tap
+          return;
+        }
+        
+        // Check if this is a valid tap (not scrolling)
+        if (!this.isScrolling && 
+            totalDistance < touchMoveThreshold && 
+            touchDuration < touchDurationThreshold) {
+          // Single tap - toggle play/pause
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation(); // Prevent any other handlers from running
+          
+          // Don't show overlay during tap - only show when actually paused
+          // The play/pause event handlers will update overlay state correctly
+          this.togglePlay();
+        } else {
+          // Not a tap - restore overlay state based on actual pause state
+          // Still stop propagation to prevent parent handlers from interfering
+          e.stopPropagation();
+          if (this.overlay) {
+            this.updateOverlayState();
+          }
+        }
+        
+        // Update last tap info for double tap detection
+        this.lastTapTime = currentTime;
+        this.lastTapX = touch.clientX;
+        this.lastTapY = touch.clientY;
+        
+        // Reset touch tracking
+        this.isScrolling = false;
+        this.touchStartX = 0;
+        this.touchStartY = 0;
+        this.touchStartTime = 0;
+      }, { passive: false });
+    } else {
+      // Desktop: use click event
+      let clickCount = 0;
+      let clickTimer: ReturnType<typeof setTimeout> | undefined;
+      
+      this.videoElement.addEventListener('click', (e) => {
+        clickCount++;
+        
+        if (clickCount === 1) {
+          // Wait to see if there's a second click
+          clickTimer = setTimeout(() => {
+            // Single click - toggle play/pause
+            this.togglePlay();
+            clickCount = 0;
+            clickTimer = undefined;
+          }, doubleTapTimeThreshold);
+        } else if (clickCount === 2) {
+          // Double click - toggle fullscreen
+          if (clickTimer) {
+            clearTimeout(clickTimer);
+            clickTimer = undefined;
+          }
+          e.preventDefault();
+          e.stopPropagation();
+          this.toggleFullscreen();
+          clickCount = 0;
+        }
+      });
+    }
   }
 
   private updatePlayButton(): void {
@@ -1120,7 +1788,11 @@ export class NativeVideoPlayer {
       throw new Error('Video element is not valid');
     }
     
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const isMobile = isMobileDevice();
+    
+    // Switch to auto preload when about to play (mobile optimization)
+    this.switchToAutoPreload();
+    
     await this.prepareForPlay(isMobile);
     
     // Ensure video element is in the DOM and visible
@@ -1145,6 +1817,9 @@ export class NativeVideoPlayer {
         // Update state after successful play
         if (this.isVideoElementValid()) {
           this.state.isPlaying = !this.videoElement.paused;
+          // Clear manual pause flag when play succeeds (user or autoplay)
+          // This allows autoplay to work, but manual pause will set it again
+          this.manuallyPaused = false;
           this.updatePlayButton();
           this.notifyStateChange();
         }
@@ -1157,6 +1832,31 @@ export class NativeVideoPlayer {
   pause(): void {
     if (!this.isVideoElementValid()) return;
     this.videoElement.pause();
+    // Don't set manuallyPaused here - only set it when called from user interaction (togglePlay)
+  }
+
+  /**
+   * Pause video and mark as manually paused by user
+   * This prevents autoplay from resuming the video
+   */
+  pauseManually(): void {
+    if (!this.isVideoElementValid()) return;
+    this.manuallyPaused = true;
+    this.videoElement.pause();
+  }
+
+  /**
+   * Check if video was manually paused by user
+   */
+  isManuallyPaused(): boolean {
+    return this.manuallyPaused;
+  }
+
+  /**
+   * Clear manual pause flag (called when user explicitly plays or video becomes invisible)
+   */
+  clearManualPause(): void {
+    this.manuallyPaused = false;
   }
 
   /**
@@ -1168,17 +1868,20 @@ export class NativeVideoPlayer {
   }
 
   togglePlay(): void {
-    if (this.state.isPlaying) {
-      this.pause();
+    const wasPlaying = this.state.isPlaying;
+    if (wasPlaying) {
+      // User manually paused - mark as manually paused
+      this.pauseManually();
     } else {
+      // User manually played - clear manual pause flag
+      this.clearManualPause();
       this.play();
     }
+    // Don't show overlay during interaction - play/pause event handlers will update overlay state
+    // Overlay will only show when video is actually paused (via updateOverlayState)
   }
 
-  toggleMute(): void {
-    if (!this.isVideoElementValid()) return;
-    this.videoElement.muted = !this.videoElement.muted;
-  }
+  // toggleMute() removed - mute is now controlled by overlay button in VideoPost
 
   setMuted(isMuted: boolean): void {
     if (!this.isVideoElementValid()) return;
@@ -1394,7 +2097,7 @@ export class NativeVideoPlayer {
   toggleFullscreen(): void {
     if (!this.isVideoElementValid()) return;
     
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const isMobile = isMobileDevice();
     const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
 
     if (isIOS) {
@@ -1470,9 +2173,11 @@ export class NativeVideoPlayer {
    * On mobile, accepts lower readyState to start playing faster
    */
   async waitUntilCanPlay(timeoutMs: number = 5000): Promise<void> {
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const isMobile = isMobileDevice();
     // On mobile, accept readyState >= 2 (HAVE_CURRENT_DATA) for faster start
-    const minReadyState = isMobile ? 2 : 4;
+    // On very slow networks, accept readyState >= 1 (HAVE_METADATA) for even faster start
+    const isSlow = isSlowNetwork();
+    const minReadyState = isMobile && isSlow ? 1 : (isMobile ? 2 : 4);
     
     // Check if already ready
     if (this.videoElement.readyState >= minReadyState) {
@@ -1582,6 +2287,10 @@ export class NativeVideoPlayer {
     if (this.progressCheckIntervalId) {
       clearInterval(this.progressCheckIntervalId);
       this.progressCheckIntervalId = undefined;
+    }
+    if (this.overlayTimeoutId) {
+      clearTimeout(this.overlayTimeoutId);
+      this.overlayTimeoutId = undefined;
     }
   }
 
@@ -1955,6 +2664,32 @@ export class NativeVideoPlayer {
     this.clearTimeoutsAndIntervals();
     this.removeVideoEventListeners();
 
+    // Remove hover handlers from video element
+    if (this.isVideoElementValid() && this.hoverEnterHandler && this.hoverLeaveHandler) {
+      this.videoElement.removeEventListener('mouseenter', this.hoverEnterHandler);
+      this.videoElement.removeEventListener('mouseleave', this.hoverLeaveHandler);
+      this.hoverEnterHandler = undefined;
+      this.hoverLeaveHandler = undefined;
+    }
+
+    // Remove scroll handler
+    if (this.scrollHandler) {
+      window.removeEventListener('scroll', this.scrollHandler);
+      this.scrollHandler = undefined;
+    }
+
+    // Clear scroll timeout
+    if (this.scrollTimeoutId) {
+      clearTimeout(this.scrollTimeoutId);
+      this.scrollTimeoutId = undefined;
+    }
+
+    // Remove poster fallback if exists
+    if (this.posterImage) {
+      this.posterImage.remove();
+      this.posterImage = undefined;
+    }
+
     // Aggressively clean up all resources to free RAM
     if (!this.isUnloaded) {
       this.unload();
@@ -1983,6 +2718,7 @@ export class NativeVideoPlayer {
     this.timeDisplay = null!;
     this.fullscreenButton = null!;
     this.loadingIndicator = undefined;
+    this.playerWrapper = undefined;
     this.onStateChange = undefined;
     this.externalStateListener = undefined;
     this.readyResolver = undefined;

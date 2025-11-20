@@ -12,7 +12,7 @@ import { ImagePlayer } from './ImagePlayer.js';
 import { VisibilityManager } from './VisibilityManager.js';
 import { FavoritesManager } from './FavoritesManager.js';
 import { SettingsPage } from './SettingsPage.js';
-import { debounce, isValidMediaUrl, detectDeviceCapabilities, DeviceCapabilities, isStandaloneNavigator } from './utils.js';
+import { debounce, isValidMediaUrl, detectDeviceCapabilities, DeviceCapabilities, isStandaloneNavigator, isMobileDevice, getNetworkInfo, isSlowNetwork, isCellularConnection } from './utils.js';
 import { posterPreloader } from './PosterPreloader.js';
 import { Image as GraphQLImage } from './graphql/types.js';
 import { HQ_SVG_OUTLINE, RANDOM_SVG, SETTINGS_SVG, VOLUME_MUTED_SVG, VOLUME_UNMUTED_SVG, SHUFFLE_CHECK_SVG, CLEAR_SVG } from './icons.js';
@@ -20,7 +20,7 @@ import { HQ_SVG_OUTLINE, RANDOM_SVG, SETTINGS_SVG, VOLUME_MUTED_SVG, VOLUME_UNMU
 const DEFAULT_SETTINGS: FeedSettings = {
   autoPlay: true, // Enable autoplay for markers
   autoPlayThreshold: 0.2, // Lower threshold - start playing when 20% visible instead of 50%
-  maxConcurrentVideos: 2, // Limit to 2 concurrent videos to prevent 8GB+ RAM usage
+  maxConcurrentVideos: 2, // Limit to 2 concurrent videos to prevent 8GB+ RAM usage (will be reduced on mobile)
   unloadDistance: 1000,
   cardMaxWidth: 800,
   aspectRatio: 'preserve',
@@ -31,7 +31,7 @@ const DEFAULT_SETTINGS: FeedSettings = {
   backgroundPreloadFastScrollDelay: 400, // ms, delay during fast scrolling
   backgroundPreloadScrollVelocityThreshold: 2, // pixels/ms, threshold for fast scroll detection
   enabledFileTypes: ['.gif'], // Default file types to include
-  includeImagesInFeed: true, // Whether to include images in feed
+  includeImagesInFeed: false, // Whether to include images in feed
   imagesOnly: false,
   includeShortFormContent: false, // Enable/disable short-form content
   shortFormInHDMode: true, // Include short-form in HD mode
@@ -74,6 +74,7 @@ export class FeedContainer {
   private settings: FeedSettings;
   private settingsPage?: SettingsPage;
   private settingsContainer?: HTMLElement;
+  private ratingSystemConfig: { type?: string; starPrecision?: string } | null | undefined;
   private markers: SceneMarker[] = [];
   private readonly imagesLoadedCount: number = 0; // Track how many images we've loaded
   private readonly markersLoadedCount: number = 0; // Track how many markers we've loaded
@@ -119,7 +120,7 @@ export class FeedContainer {
   private activeLoadVideosAbortController?: AbortController;
   private skeletonLoaders: HTMLElement[] = [];
   private useHDMode: boolean = false;
-  private useVolumeMode: boolean = false;
+  private globalMuteState: boolean = false; // Global mute state - all videos muted when true
   private shuffleMode: number = 0; // 0 = off, 1 = shuffle with markers only, 2 = shuffle all (including no markers)
   private readonly loadObservers: Map<string, IntersectionObserver> = new Map(); // Track load observers for cleanup
   private deviceCapabilities: DeviceCapabilities; // Device capabilities for adaptive quality
@@ -177,8 +178,7 @@ export class FeedContainer {
    * Initialize device detection and configuration
    */
   private initializeDeviceConfiguration(): void {
-    const userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent;
-    this.isMobileDevice = /iPhone|iPad|iPod|Android/i.test(userAgent);
+    this.isMobileDevice = isMobileDevice();
     
     // Mobile: reduce initial load for faster perceived performance
     this.initialLoadLimit = this.isMobileDevice ? 6 : 8; // Load 6 on mobile, 8 on desktop (reduced to prevent overload)
@@ -189,16 +189,62 @@ export class FeedContainer {
     this.maxSimultaneousPreloads = this.isMobileDevice ? 1 : 2;
 
     if (this.isMobileDevice) {
+      // Mobile: more aggressive memory management
       this.settings.backgroundPreloadDelay = 80;
       this.settings.backgroundPreloadFastScrollDelay = 200;
+      // Reduce max concurrent videos on mobile to save memory
+      // Use device capabilities to determine optimal value
+      this.deviceCapabilities = detectDeviceCapabilities();
+      if (this.deviceCapabilities.availableRAM < 2048) {
+        // Low RAM device: only 1 concurrent video
+        this.settings.maxConcurrentVideos = 1;
+      } else {
+        // Standard mobile: 1-2 concurrent videos
+        this.settings.maxConcurrentVideos = 1;
+      }
+      
+      // Network-aware optimizations for mobile
+      this.applyNetworkOptimizations();
+    } else {
+      // Desktop: use default settings
+      this.deviceCapabilities = detectDeviceCapabilities();
     }
     
     this.posts = new Map();
     this.postOrder = [];
     this.eagerPreloadedPosts = new Set();
-    
-    // Detect device capabilities for adaptive media quality
-    this.deviceCapabilities = detectDeviceCapabilities();
+  }
+
+  /**
+   * Apply network-aware optimizations based on connection quality
+   */
+  private applyNetworkOptimizations(): void {
+    const networkInfo = getNetworkInfo();
+    if (!networkInfo) {
+      return; // Network info not available
+    }
+
+    // On slow networks or cellular connections, reduce preloading
+    if (isSlowNetwork() || isCellularConnection()) {
+      // Increase delays to reduce bandwidth usage
+      this.settings.backgroundPreloadDelay = Math.max(this.settings.backgroundPreloadDelay || 80, 200);
+      this.settings.backgroundPreloadFastScrollDelay = Math.max(this.settings.backgroundPreloadFastScrollDelay || 200, 500);
+      
+      // Reduce max simultaneous preloads on slow networks
+      this.maxSimultaneousPreloads = 1;
+      
+      // Disable background preloading on very slow networks
+      if (networkInfo.effectiveType === 'slow-2g' || networkInfo.effectiveType === '2g') {
+        this.settings.backgroundPreloadEnabled = false;
+      }
+    }
+
+    // Adjust based on connection type
+    if (isCellularConnection() && networkInfo.saveData) {
+      // User has data saver enabled - be very conservative
+      this.settings.backgroundPreloadEnabled = false;
+      this.maxSimultaneousPreloads = 0;
+    }
   }
 
   /**
@@ -267,7 +313,7 @@ export class FeedContainer {
   private loadUserPreferences(): void {
     this.useHDMode = this.loadHDModePreference();
     this.shuffleMode = this.loadShuffleModePreference();
-    this.useVolumeMode = this.loadVolumeModePreference();
+    this.globalMuteState = this.loadGlobalMuteState();
   }
 
   /**
@@ -308,16 +354,90 @@ export class FeedContainer {
     return !Number.isNaN(value) && value >= 0 && value <= 2;
   }
 
-  /**
-   * Load volume mode preference from localStorage
-   */
-  private loadVolumeModePreference(): boolean {
+
+  private loadGlobalMuteState(): boolean {
     try {
-      const savedVolumeMode = localStorage.getItem('stashgifs-useVolumeMode');
-      return savedVolumeMode === 'true';
+      const savedMuteState = localStorage.getItem('stashgifs-globalMuteState');
+      if (savedMuteState === null) {
+        // Default to muted on first load
+        return true;
+      }
+      return savedMuteState === 'true';
     } catch {
-      return false;
+      // Default to muted on first load
+      return true;
     }
+  }
+
+  /**
+   * Set global mute state and apply to all videos
+   */
+  private setGlobalMuteState(isMuted: boolean): void {
+    this.globalMuteState = isMuted;
+    
+    // Save to localStorage
+    try {
+      localStorage.setItem('stashgifs-globalMuteState', isMuted ? 'true' : 'false');
+    } catch (e) {
+      console.error('Failed to save global mute state:', e);
+    }
+    
+    // Apply to all players
+    this.applyGlobalMuteState();
+    
+    // Update AudioManager
+    if (this.visibilityManager) {
+      const audioManager = (this.visibilityManager as any).audioManager;
+      if (audioManager) {
+        audioManager.setGlobalMuteState(isMuted);
+        // Also update all VideoPost mute buttons
+        this.updateAllMuteButtons();
+      }
+    }
+    
+    // AudioManager will automatically handle audio focus when global mute state changes
+  }
+
+  /**
+   * Apply global mute state to all existing video players
+   */
+  private applyGlobalMuteState(): void {
+    for (const post of this.posts.values()) {
+      if (post instanceof VideoPost) {
+        const player = post.getPlayer();
+        if (player) {
+          // Apply mute state immediately, even if video isn't playing
+          // This ensures the mute state is correct when user toggles it
+          player.setMuted(this.globalMuteState);
+        }
+        // Update overlay mute button appearance
+        post.updateMuteOverlayButton();
+      }
+    }
+    
+    // Also update AudioManager to ensure consistency
+    const audioManager = (this.visibilityManager as any).audioManager;
+    if (audioManager) {
+      audioManager.setGlobalMuteState(this.globalMuteState);
+    }
+  }
+
+  /**
+   * Update all mute buttons to reflect current global mute state
+   */
+  private updateAllMuteButtons(): void {
+    for (const post of this.posts.values()) {
+      if (post instanceof VideoPost) {
+        post.updateMuteOverlayButton();
+      }
+    }
+  }
+
+  /**
+   * Get current global mute state
+   */
+  getGlobalMuteState(): boolean {
+    return this.globalMuteState;
   }
 
   /**
@@ -334,11 +454,19 @@ export class FeedContainer {
       onHoverLoadRequest: (postId: string) => this.triggerVideoLoadOnHover(postId),
     });
 
-    // Apply saved volume mode state to visibility manager
-    this.visibilityManager.setExclusiveAudio(this.useVolumeMode);
-    
     // Set HD mode state for more aggressive unloading
     this.visibilityManager.setHDMode(this.useHDMode);
+    
+    // Initialize AudioManager with the loaded global mute state
+    const audioManager = (this.visibilityManager as any).audioManager;
+    if (audioManager) {
+      audioManager.setGlobalMuteState(this.globalMuteState);
+    }
+
+    // Apply global mute state to all existing players and update mute buttons
+    // This ensures the loaded state is applied to any posts that were created before managers were initialized
+    this.applyGlobalMuteState();
+    this.updateAllMuteButtons();
 
     // Initialize favorites manager
     this.favoritesManager = new FavoritesManager(this.api);
@@ -349,7 +477,7 @@ export class FeedContainer {
    * This allows subsequent videos to autoplay
    */
   private unlockMobileAutoplay(): void {
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const isMobile = isMobileDevice();
     if (!isMobile) return;
     
     let unlocked = false;
@@ -759,9 +887,6 @@ export class FeedContainer {
       await this.loadVideos(this.currentFilters, false, undefined, true);
     });
 
-    const settingsButton = this.createSettingsButton();
-    
-    playbackSection.appendChild(settingsButton);
     playbackSection.appendChild(hdBtn);
     playbackSection.appendChild(randomBtn);
     container.appendChild(playbackSection);
@@ -1855,7 +1980,6 @@ export class FeedContainer {
    */
   private setupHeaderButtons(): {
     buttonsContainer: HTMLElement;
-    volToggle: HTMLButtonElement;
     hdToggle: HTMLButtonElement;
     shuffleToggle: HTMLButtonElement;
     onHDToggleClick: () => void;
@@ -1869,14 +1993,12 @@ export class FeedContainer {
     const hdToggleResult = this.createHDToggleButton();
     const hdToggle = hdToggleResult.button;
     const onHDToggleClick = hdToggleResult.onClick;
-    const volToggle = this.createVolumeToggleButton();
     const shuffleToggle = this.createShuffleToggleButton(hdToggle);
 
-    buttonsContainer.appendChild(volToggle);
+    // Volume toggle removed - mute button is now on each video player
 
     return {
       buttonsContainer,
-      volToggle,
       hdToggle,
       shuffleToggle,
       onHDToggleClick,
@@ -2046,6 +2168,10 @@ export class FeedContainer {
       // Update HD mode state
       this.useHDMode = newHDMode;
       
+      // Update VisibilityManager settings immediately
+      this.visibilityManager.setHDMode(newHDMode);
+      this.visibilityManager.setAutoPlay(!newHDMode); // Enable autoplay in non-HD mode, disable in HD mode
+      
       // Refresh feed to apply HD mode changes
       this.refreshFeed().catch((e) => console.error('Failed to refresh feed after HD mode change', e));
     };
@@ -2063,89 +2189,6 @@ export class FeedContainer {
       button: hdToggle,
       onClick: onHDToggleClick,
     };
-  }
-
-  /**
-   * Create volume toggle button
-   */
-  private createVolumeToggleButton(): HTMLButtonElement {
-    const volToggle = document.createElement('button');
-    volToggle.type = 'button';
-    volToggle.title = 'Play audio for focused video only';
-    volToggle.setAttribute('aria-label', 'Toggle volume mode');
-    volToggle.style.height = '44px';
-    volToggle.style.minWidth = '44px';
-    volToggle.style.padding = '0 14px';
-    volToggle.style.borderRadius = '10px';
-    volToggle.style.border = '1px solid rgba(255,255,255,0.12)';
-    volToggle.style.background = 'rgba(28, 28, 30, 0.9)';
-    volToggle.style.color = 'rgba(255,255,255,0.85)';
-    volToggle.style.fontSize = '12px';
-    volToggle.style.fontWeight = '700';
-    volToggle.style.cursor = 'pointer';
-    volToggle.style.lineHeight = '1.2';
-    volToggle.style.userSelect = 'none';
-    volToggle.style.display = 'inline-flex';
-    volToggle.style.alignItems = 'center';
-    volToggle.style.justifyContent = 'center';
-    volToggle.style.transition = 'background 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s cubic-bezier(0.2, 0, 0, 1)';
-    
-    const getMutedIcon = () => {
-      return VOLUME_MUTED_SVG.replace('width="24"', 'width="16"').replace('height="24"', 'height="16"').replace('preserveAspectRatio="xMidYMid meet"', 'preserveAspectRatio="xMidYMid meet" style="display: block;"');
-    };
-    
-    const getUnmutedIcon = () => {
-      return VOLUME_UNMUTED_SVG.replace('width="24"', 'width="16"').replace('height="24"', 'height="16"').replace('preserveAspectRatio="xMidYMid meet"', 'preserveAspectRatio="xMidYMid meet" style="display: block;"');
-    };
-
-    const setVolToggleVisualState = () => {
-      if (this.useVolumeMode) {
-        volToggle.style.background = 'rgba(33, 150, 243, 0.25)';
-        volToggle.style.borderColor = 'rgba(33, 150, 243, 0.55)';
-        volToggle.style.color = '#BBDEFB';
-        volToggle.innerHTML = getUnmutedIcon();
-      } else {
-        volToggle.style.background = 'rgba(28, 28, 30, 0.9)';
-        volToggle.style.borderColor = 'rgba(255,255,255,0.16)';
-        volToggle.style.color = 'rgba(255,255,255,0.85)';
-        volToggle.innerHTML = getMutedIcon();
-      }
-    };
-
-    setVolToggleVisualState();
-
-    volToggle.addEventListener('mouseenter', () => {
-      volToggle.style.background = 'rgba(28, 28, 30, 0.95)';
-      volToggle.style.borderColor = 'rgba(255,255,255,0.16)';
-      volToggle.style.opacity = '0.9';
-    });
-
-    volToggle.addEventListener('mouseleave', () => {
-      setVolToggleVisualState();
-      volToggle.style.opacity = '1';
-    });
-
-    const onVolToggleClick = async () => {
-      this.useVolumeMode = !this.useVolumeMode;
-      setVolToggleVisualState();
-      
-      try {
-        localStorage.setItem('stashgifs-useVolumeMode', this.useVolumeMode ? 'true' : 'false');
-      } catch (e) {
-        console.error('Failed to save volume mode preference:', e);
-      }
-      
-      this.visibilityManager.setExclusiveAudio(this.useVolumeMode);
-      this.visibilityManager.reevaluateAudioFocus();
-    };
-
-    volToggle.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      void onVolToggleClick();
-    });
-
-    return volToggle;
   }
 
   /**
@@ -2269,7 +2312,25 @@ export class FeedContainer {
     this.createBrandContainer(headerInner);
 
     const searchArea = this.createSearchArea();
-    headerInner.appendChild(searchArea);
+    
+    // Create a container for search area and settings button
+    const searchAndSettingsContainer = document.createElement('div');
+    searchAndSettingsContainer.style.display = 'flex';
+    searchAndSettingsContainer.style.alignItems = 'center';
+    searchAndSettingsContainer.style.gap = '8px';
+    searchAndSettingsContainer.style.width = '100%';
+    searchAndSettingsContainer.style.minWidth = '0';
+    searchAndSettingsContainer.style.position = 'relative';
+    
+    // Add search area to container
+    searchAndSettingsContainer.appendChild(searchArea);
+    
+    // Create and add settings button to the right of search bar
+    const settingsButton = this.createSettingsButton();
+    searchAndSettingsContainer.appendChild(settingsButton);
+    
+    // Add the container to header inner (middle grid column)
+    headerInner.appendChild(searchAndSettingsContainer);
     header.appendChild(headerInner);
 
     const tagHeader = this.createTagHeader();
@@ -2615,7 +2676,7 @@ export class FeedContainer {
     };
     
     // Detect mobile device
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const isMobile = isMobileDevice();
     
     if (isMobile) {
       queryInput.addEventListener('touchend', handleMobileTouchEnd, { passive: false });
@@ -2654,7 +2715,7 @@ export class FeedContainer {
     
     // Use a single, debounced document click handler
     let clickHandlerTimeout: number | null = null;
-    document.addEventListener('click', (e) => {
+    const handleClickOutside = (e: Event) => {
       // Clear any pending handler
       if (clickHandlerTimeout !== null) {
         clearTimeout(clickHandlerTimeout);
@@ -2678,7 +2739,15 @@ export class FeedContainer {
           this.closeSuggestions();
         }
       }, 0);
-    });
+    };
+    
+    document.addEventListener('click', handleClickOutside);
+    
+    // On mobile, also listen to touch events to ensure suggestions close when tapping outside
+    const isMobileDeviceLocal = isMobileDevice();
+    if (isMobileDeviceLocal) {
+      document.addEventListener('touchend', handleClickOutside, { passive: true });
+    }
 
     // Initial render of search bar display (in case defaults are provided)
     updateSearchBarDisplay();
@@ -3333,7 +3402,7 @@ export class FeedContainer {
       // Use debounced function for better performance
       debouncedFetchSuggestions2(text, 1, false);
     });
-    document.addEventListener('click', (e) => {
+    const handleClickOutsideSearch = (e: Event) => {
       // Only close if suggestions are currently visible
       const isSuggestionsVisible = suggestions.style.display !== 'none' && suggestions.style.display !== '';
       
@@ -3341,7 +3410,15 @@ export class FeedContainer {
       if (isSuggestionsVisible && !searchWrapper.contains(e.target as Node) && !suggestions.contains(e.target as Node)) {
         this.closeSuggestions();
       }
-    });
+    };
+    
+    document.addEventListener('click', handleClickOutsideSearch);
+    
+    // On mobile, also listen to touch events to ensure suggestions close when tapping outside
+    const isMobileForSearch = isMobileDevice();
+    if (isMobileForSearch) {
+      document.addEventListener('touchend', handleClickOutsideSearch, { passive: true });
+    }
 
     clearBtn.addEventListener('click', () => {
       queryInput.value = '';
@@ -3474,6 +3551,14 @@ export class FeedContainer {
    * Initialize the feed
    */
   async init(filters?: FilterOptions): Promise<void> {
+    // Load rating system configuration
+    try {
+      const config = await this.api.getUIConfiguration();
+      this.ratingSystemConfig = config || { type: 'stars', starPrecision: 'full' };
+    } catch (error) {
+      console.warn('Failed to load rating system configuration, using defaults', error);
+      this.ratingSystemConfig = { type: 'stars', starPrecision: 'full' }; // Default fallback
+    }
     this.currentFilters = filters;
     await this.loadVideos(filters);
     
@@ -5302,7 +5387,10 @@ export class FeedContainer {
         onPerformerChipClick: (performerId, performerName) => this.handlePerformerChipClick(performerId, performerName),
         onTagChipClick: (tagId, tagName) => this.handleTagChipClick(tagId, tagName),
         useShuffleMode: this.shuffleMode > 0,
-        onCancelRequests: () => this.cancelAllPendingRequests()
+        onCancelRequests: () => this.cancelAllPendingRequests(),
+        onMuteToggle: (isMuted: boolean) => this.setGlobalMuteState(isMuted),
+        getGlobalMuteState: () => this.getGlobalMuteState(),
+        ratingSystemConfig: this.ratingSystemConfig
       }
     );
     
@@ -5407,7 +5495,9 @@ export class FeedContainer {
       // Only register video players with visibility manager
       this.visibilityManager.registerPlayer(marker.id, player);
     } else {
-      console.warn('FeedContainer: Player not created', { markerId: marker.id });
+      // Player creation failed - hide the post to avoid showing black screen
+      console.warn('FeedContainer: Player not created, hiding post', { markerId: marker.id });
+      post.hidePost();
     }
     
     loadObserver.disconnect();

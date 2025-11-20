@@ -4,6 +4,8 @@
  */
 
 import { NativeVideoPlayer } from './NativeVideoPlayer.js';
+import { AudioManager, AudioPriority } from './AudioManager.js';
+import { isMobileDevice } from './utils.js';
 
 interface HoverHandlers {
   handleEnter: () => void;
@@ -24,7 +26,7 @@ interface VisibilityEntry {
   hoverHandlers?: HoverHandlers;
 }
 
-type VideoState = 'loading' | 'ready' | 'playing' | 'paused';
+type VideoState = 'loading' | 'ready' | 'playing' | 'paused' | 'failed';
 type PlaybackOrigin = 'observer' | 'ready' | 'register' | 'retry';
 
 export class VisibilityManager {
@@ -41,12 +43,11 @@ export class VisibilityManager {
   private lastScrollTime: number = 0;
   private lastScrollTop: number = 0;
   private readonly isMobileDevice: boolean;
-  private exclusiveAudioEnabled: boolean = false;
-  private currentAudioPostId?: string;
+  private audioManager: AudioManager; // Centralized audio management
   private hoveredPostId?: string; // Track which post is currently hovered/touched
   private touchedPostId?: string; // Track which post is currently touched (separate from hover for mobile)
   private isHDMode: boolean = false; // Track HD mode for more aggressive unloading
-  private readonly manuallyStartedVideos: Set<string> = new Set(); // Track videos that were manually started by user
+  // Note: manuallyStartedVideos tracking moved to AudioManager for single source of truth
   // Cache for getBoundingClientRect results per frame to avoid layout thrashing
   private readonly rectCache: Map<HTMLElement, DOMRect> = new Map();
   private rectCacheFrame: number = 0;
@@ -72,7 +73,7 @@ export class VisibilityManager {
     onHoverLoadRequest?: (postId: string) => void; // Callback to trigger video loading when hovered before loaded
   }) {
     // On mobile, use larger rootMargin to start playing videos earlier
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const isMobile = isMobileDevice();
     this.isMobileDevice = isMobile;
     // Playback decisions rely on actual viewport visibility – keep root margin tight
     const defaultRootMargin = '0px';
@@ -99,6 +100,13 @@ export class VisibilityManager {
     this.debugEnabled = options?.debug ?? this.detectDebugPreference();
     this.logger = options?.logger;
     this.onHoverLoadRequest = options?.onHoverLoadRequest;
+
+    // Initialize AudioManager
+    this.audioManager = new AudioManager(this.entries, {
+      debug: this.debugEnabled,
+      logger: this.logger,
+      getHoveredPostId: () => this.hoveredPostId
+    });
 
     this.observer = new IntersectionObserver(
       (intersectionEntries) => this.handleIntersection(intersectionEntries),
@@ -159,61 +167,14 @@ export class VisibilityManager {
   }
 
   /**
-   * Set up scroll and visibility tracking for exclusive audio focus
+   * Set up scroll listener for exclusive audio re-evaluation
+   * Now uses event-driven approach via AudioManager
    */
   private setupAudioFocusTracking(): void {
     if (globalThis.window === undefined) return;
     
-    let scrollTimeout: ReturnType<typeof setTimeout> | undefined;
-    let lastAudioCheck = 0;
-    const AUDIO_CHECK_THROTTLE = 150; // Check audio focus every 150ms during scroll
-    
-    const checkAudioFocus = () => {
-      if (!this.exclusiveAudioEnabled) return;
-      const now = Date.now();
-      if (now - lastAudioCheck < AUDIO_CHECK_THROTTLE) return;
-      lastAudioCheck = now;
-      this.applyExclusiveAudioFocus();
-    };
-    
-    // Throttled scroll handler
     const handleScroll = () => {
-      if (scrollTimeout) {
-        clearTimeout(scrollTimeout);
-      }
-      scrollTimeout = setTimeout(() => {
-        checkAudioFocus();
-        scrollTimeout = undefined;
-      }, 50); // Debounce to 50ms
-    };
-    
-    // Also check on scroll using requestAnimationFrame for smoother updates
-    let rafHandle: number | undefined;
-    let audioRafActive: boolean = false;
-    
-    const rafCheck = () => {
-      if (!audioRafActive || !this.exclusiveAudioEnabled) {
-        rafHandle = undefined;
-        return; // Stop if deactivated or audio disabled
-      }
-      checkAudioFocus();
-      rafHandle = requestAnimationFrame(rafCheck);
-    };
-    
-    // Start RAF-based checking when exclusive audio is enabled
-    const startRafCheck = () => {
-      if (!rafHandle && this.exclusiveAudioEnabled) {
-        audioRafActive = true;
-        rafHandle = requestAnimationFrame(rafCheck);
-      }
-    };
-    
-    const stopRafCheck = () => {
-      audioRafActive = false;
-      if (rafHandle !== undefined) {
-        cancelAnimationFrame(rafHandle);
-        rafHandle = undefined;
-      }
+      // Scroll-based audio selection removed - using hover-based only
     };
     
     globalThis.window.addEventListener('scroll', handleScroll, { passive: true });
@@ -221,26 +182,6 @@ export class VisibilityManager {
     // Store cleanup function
     this.audioFocusCleanup = () => {
       globalThis.window.removeEventListener('scroll', handleScroll);
-      stopRafCheck();
-      if (scrollTimeout) {
-        clearTimeout(scrollTimeout);
-      }
-    };
-    
-    // Start RAF checking if exclusive audio is already enabled
-    if (this.exclusiveAudioEnabled) {
-      startRafCheck();
-    }
-    
-    // Override setExclusiveAudio to start/stop RAF checking
-    const originalSetExclusiveAudio = this.setExclusiveAudio.bind(this);
-    this.setExclusiveAudio = (enabled: boolean) => {
-      originalSetExclusiveAudio(enabled);
-      if (enabled) {
-        startRafCheck();
-      } else {
-        stopRafCheck();
-      }
     };
   }
 
@@ -357,14 +298,18 @@ export class VisibilityManager {
         // Track if this was a manual play (not from hover)
         // If video is playing but wasn't triggered by hover, mark as manual
         if (!entry.pendingVisibilityPlay && !this.activeVideos.has(postId) && this.hoveredPostId !== postId) {
-          this.manuallyStartedVideos.add(postId);
+          // Use AudioManager's tracking for single source of truth
+          this.audioManager.markManuallyStarted(postId);
         }
       } else {
+        const wasManuallyStarted = this.audioManager.isManuallyStarted(postId);
         this.videoStates.set(postId, 'paused');
         this.activeVideos.delete(postId);
-        // Remove from manually started set when paused
-        this.manuallyStartedVideos.delete(postId);
+        // Remove from manually started set when paused - use AudioManager
+        this.audioManager.unmarkManuallyStarted(postId);
         this.debugLog('state-paused', { postId });
+        
+        // Manual video pause handled by normal autoplay logic
       }
     });
 
@@ -378,17 +323,23 @@ export class VisibilityManager {
     }
     
     this.debugLog('register-player', { postId, visible: entry.isVisible, isCurrentlyVisible });
-    this.waitForPlayerReady(postId, player);
-
+    
     // Ensure video starts muted for autoplay compatibility
     // We'll apply exclusive audio AFTER play succeeds
     player.setMuted(true);
     
-    // Autoplay when player is registered if visible and autoplay is enabled
-    // In non-HD mode, don't check hover state - autoplay should work regardless
+    // Set pending autoplay if visible and autoplay is enabled
+    // This will be handled when the player becomes ready
     if (entry.isVisible && this.options.autoPlay) {
-      this.requestPlaybackIfReady(postId, entry, 'register');
+      entry.pendingVisibilityPlay = true;
+      this.debugLog('register-player-autoplay-pending', { postId });
     }
+    
+    // Add play/pause event listeners for AudioManager
+    this.setupPlayerEventListeners(postId, player);
+    
+    // Wait for player to be ready (this will trigger autoplay when ready)
+    this.waitForPlayerReady(postId, player);
     
     // If currently hovered, execute hover enter action (unmute + play)
     // Use executeHoverEnter directly since player is being registered now (no debounce needed)
@@ -407,17 +358,25 @@ export class VisibilityManager {
 
     // Apply audio focus if exclusive audio is enabled AND video is already playing
     // Don't apply before autoplay - we'll apply it after play succeeds
-    if (this.exclusiveAudioEnabled) {
-      const isCurrentlyPlaying = player.isPlaying();
-      if (isCurrentlyPlaying) {
-        // If video is already playing, apply audio focus
-        // Delay slightly to avoid interrupting playback
-        setTimeout(() => {
-          this.applyExclusiveAudioFocus();
-        }, 50);
-      }
-      // Don't apply audio focus if video is not playing yet - wait for autoplay to succeed
+    const isCurrentlyPlaying = player.isPlaying();
+    if (isCurrentlyPlaying) {
+      // If video is already playing, update audio focus
+      // Delay slightly to avoid interrupting playback
+      setTimeout(() => {
+        this.audioManager.updateAudioFocus();
+      }, 50);
     }
+    // Don't apply audio focus if video is not playing yet - wait for autoplay to succeed
+
+    // Apply global mute state immediately to newly registered videos
+    // This ensures videos respect the global mute setting as soon as they're registered
+    // But first, check if we need to respect the global mute state from FeedContainer
+    // The player was muted for autoplay, but we should apply the actual global mute state
+    this.audioManager.applyMuteStateToAll();
+    
+    // Also ensure the player respects the global mute state if it's available
+    // This is a fallback in case AudioManager hasn't been initialized with the global state yet
+    // The FeedContainer will call applyGlobalMuteState() which will update all posts
   }
 
   /**
@@ -425,7 +384,7 @@ export class VisibilityManager {
    */
   private async waitForPlayerReady(postId: string, player: NativeVideoPlayer): Promise<void> {
     try {
-      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      const isMobile = isMobileDevice();
       const timeout = isMobile ? 500 : 2000;
       await player.waitUntilCanPlay(timeout);
       this.videoStates.set(postId, 'ready');
@@ -485,15 +444,16 @@ export class VisibilityManager {
         }
       }
     }
-    // Also handle autoplay if enabled and visible (for non-HD mode)
-    // In non-HD mode, don't check hover state - autoplay should work regardless
-    if (entry.isVisible && this.options.autoPlay && !entry.pendingVisibilityPlay) {
+    // Also handle autoplay if enabled and visible
+    // In HD mode, uses AudioManager priority logic to determine which video should play
+    // But respect manual pause state - don't resume if user manually paused
+    if (entry.isVisible && this.options.autoPlay && !entry.pendingVisibilityPlay && !entry.player?.isManuallyPaused()) {
       this.requestPlaybackIfReady(postId, entry, 'ready');
     }
   }
 
   private computeVisibilityDelay(isEntering: boolean): number {
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const isMobile = isMobileDevice();
     const baseEnter = isMobile ? 40 : 60;
     const baseExit = isMobile ? 200 : 250; // Increased exit delay for more consistent pausing
     const base = isEntering ? baseEnter : baseExit;
@@ -546,6 +506,92 @@ export class VisibilityManager {
   }
 
   /**
+   * Determine which video should play based on AudioManager priority logic
+   * Returns the postId that should be playing, or undefined if none should play
+   * In HD mode, only the most centered visible video should autoplay
+   */
+  private getVideoThatShouldPlay(): string | undefined {
+    // Find most centered visible video (like audio logic)
+    let bestId: string | undefined;
+    let bestScore = Number.POSITIVE_INFINITY;
+    const viewportCenterY = globalThis.window.innerHeight / 2;
+    const viewportCenterX = globalThis.window.innerWidth / 2;
+
+    for (const [postId, entry] of this.entries) {
+      if (!entry.isVisible || !entry.player) continue;
+
+      const rect = this.getCachedRect(entry.element);
+      
+      // Only consider entries that are actually in viewport
+      if (rect.bottom < 0 || rect.top > globalThis.window.innerHeight) continue;
+      if (rect.right < 0 || rect.left > globalThis.window.innerWidth) continue;
+      
+      const centerY = rect.top + rect.height / 2;
+      const centerX = rect.left + rect.width / 2;
+      const dy = centerY - viewportCenterY;
+      const dx = centerX - viewportCenterX;
+      const distance = Math.hypot(dx, dy);
+      
+      if (distance < bestScore) {
+        bestScore = distance;
+        bestId = postId;
+      }
+    }
+
+    return bestId;
+  }
+
+  /**
+   * Check if a video should play based on AudioManager priority logic (for HD mode)
+   */
+  private shouldVideoPlay(postId: string): boolean {
+    if (!this.isHDMode) {
+      // In non-HD mode, use standard autoplay logic
+      return true;
+    }
+
+    // In HD mode, use AudioManager priority logic
+    const videoThatShouldPlay = this.getVideoThatShouldPlay();
+    return videoThatShouldPlay === postId;
+  }
+
+  /**
+   * Re-evaluate which video should play based on priority (for HD mode)
+   * Only the most centered video should autoplay, like audio logic
+   */
+  private reevaluatePlayback(): void {
+    if (!this.isHDMode || !this.options.autoPlay) {
+      return;
+    }
+
+    const videoThatShouldPlay = this.getVideoThatShouldPlay();
+    
+    // Pause any videos that shouldn't be playing (but respect manual pause)
+    // The most centered video takes priority, but don't pause manually paused videos
+    for (const [postId, entry] of this.entries) {
+      if (entry.player && entry.player.isPlaying() && postId !== videoThatShouldPlay) {
+        // Don't pause if video was manually paused - user's intent should be respected
+        // But if it's playing and shouldn't be, pause it (unless manually paused)
+        if (!entry.player.isManuallyPaused()) {
+          this.pauseVideo(postId);
+        }
+      }
+    }
+
+    // Start playback for the video that should be playing
+    if (videoThatShouldPlay) {
+      const entry = this.entries.get(videoThatShouldPlay);
+      if (entry?.isVisible && entry.player && !entry.player.isPlaying()) {
+        // Request playback for the video that should be playing
+        // But respect manual pause state
+        if (!entry.player.isManuallyPaused()) {
+          this.requestPlaybackIfReady(videoThatShouldPlay, entry, 'observer');
+        }
+      }
+    }
+  }
+
+  /**
    * Set autoplay state
    */
   setAutoPlay(enabled: boolean): void {
@@ -578,7 +624,7 @@ export class VisibilityManager {
    * meet the configured threshold, and overlap with the actual viewport rectangle.
    */
   private handleIntersection(entries: IntersectionObserverEntry[]): void {
-    let visibilityChanged = false;
+    const changedPostIds: string[] = [];
     
     for (const entry of entries) {
       const postId = this.findPostId(entry.target as HTMLElement);
@@ -588,12 +634,18 @@ export class VisibilityManager {
       if (!visibilityEntry) continue;
 
       if (this.processIntersectionEntry(entry, postId, visibilityEntry)) {
-        visibilityChanged = true;
+        changedPostIds.push(postId);
       }
     }
     
-    if (visibilityChanged && this.exclusiveAudioEnabled) {
-      this.handleVisibilityChangeForAudio();
+    // Notify AudioManager of visibility changes
+    if (changedPostIds.length > 0) {
+      for (const postId of changedPostIds) {
+        const changedEntry = this.entries.get(postId);
+        if (changedEntry) {
+          this.audioManager.onVisibilityChange(postId, changedEntry.isVisible);
+        }
+      }
     }
   }
 
@@ -625,7 +677,8 @@ export class VisibilityManager {
     }
     // Autoplay when entering viewport (if enabled)
     // In non-HD mode, don't check hover state - autoplay should work regardless
-    if (this.options.autoPlay) {
+    // But respect manual pause state - don't resume if user manually paused
+    if (this.options.autoPlay && !currentEntry.player?.isManuallyPaused()) {
       this.requestPlaybackIfReady(postId, currentEntry, 'observer');
     }
   }
@@ -639,7 +692,8 @@ export class VisibilityManager {
       currentEntry.isVisible = true;
       // Autoplay when re-entering viewport (if enabled)
       // In non-HD mode, don't check hover state - autoplay should work regardless
-      if (this.options.autoPlay) {
+      // But respect manual pause state - don't resume if user manually paused
+      if (this.options.autoPlay && !currentEntry.player?.isManuallyPaused()) {
         this.requestPlaybackIfReady(postId, currentEntry, 'observer');
       }
       return;
@@ -692,26 +746,6 @@ export class VisibilityManager {
   /**
    * Handle visibility changes for audio focus
    */
-  private handleVisibilityChangeForAudio(): void {
-    // Only apply audio focus if videos are already playing
-    // Don't apply during autoplay - we'll apply after play succeeds
-    // Check if any video is currently playing before applying audio focus
-    let hasPlayingVideo = false;
-    for (const [, entry] of this.entries) {
-      if (entry.player?.isPlaying()) {
-        hasPlayingVideo = true;
-        break;
-      }
-    }
-    
-    if (hasPlayingVideo) {
-      // Use a small delay to ensure visibility states are updated
-      setTimeout(() => {
-        this.applyExclusiveAudioFocus();
-      }, 50);
-    }
-    // If no videos are playing, don't apply audio focus yet - wait for autoplay
-  }
 
   private findPostId(element: HTMLElement): string | null {
     // Traverse up to find the post container
@@ -728,7 +762,8 @@ export class VisibilityManager {
   private handlePostEnteredViewport(postId: string, entry: VisibilityEntry): void {
     // Autoplay when entering viewport (if enabled)
     // In non-HD mode, don't check hover state - autoplay should work regardless
-    if (this.options.autoPlay) {
+    // But respect manual pause state - don't resume if user manually paused
+    if (this.options.autoPlay && !entry.player?.isManuallyPaused()) {
       this.requestPlaybackIfReady(postId, entry, 'observer');
     }
   }
@@ -742,6 +777,12 @@ export class VisibilityManager {
     this.debugLog('visibility-exit', { postId });
     entry.pendingVisibilityPlay = false;
     this.pauseVideo(postId);
+    
+    // Clear manual pause flag when video becomes invisible
+    // This allows autoplay to work again when video becomes visible
+    if (entry.player) {
+      entry.player.clearManualPause();
+    }
     
     // Unload video if it's far enough from viewport
     this.checkAndUnloadVideo(postId, entry);
@@ -779,12 +820,12 @@ export class VisibilityManager {
       distanceFromViewport = rect.left - viewportWidth;
     }
     
-    // Unload threshold to save RAM: 100px in both HD and normal mode
-    // This prevents 8GB+ RAM usage when scrolling
-    const unloadThreshold = 100;
+    // Unload threshold to save RAM: more aggressive on mobile
+    // Mobile devices have less RAM, so unload sooner
+    const unloadThreshold = this.isMobileDevice ? 50 : 100;
     
     if (distanceFromViewport > unloadThreshold) {
-      this.debugLog('unloading-video', { postId, distanceFromViewport, isHDMode: this.isHDMode });
+      this.debugLog('unloading-video', { postId, distanceFromViewport, isHDMode: this.isHDMode, isMobile: this.isMobileDevice });
       entry.player.unload();
       entry.isUnloaded = true;
     }
@@ -800,6 +841,8 @@ export class VisibilityManager {
     entry.pendingVisibilityPlay = false;
 
     if (entry.player) {
+      // Use pause() not pauseManually() here - this is called by visibility manager
+      // Manual pause should only be set when user explicitly pauses via togglePlay
       entry.player.pause();
     }
 
@@ -813,6 +856,12 @@ export class VisibilityManager {
 
     if (!currentEntry.isVisible) {
       this.debugLog('play-abort-not-visible', { postId, origin });
+      return;
+    }
+
+    // Check if video was manually paused - don't resume autoplay if user manually paused
+    if (currentEntry.player?.isManuallyPaused()) {
+      this.debugLog('play-abort-manually-paused', { postId, origin });
       return;
     }
 
@@ -886,7 +935,7 @@ export class VisibilityManager {
     this.enforceConcurrency(postId);
 
     const player = entry.player;
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const isMobile = isMobileDevice();
 
     const perform = async (): Promise<void> => {
       try {
@@ -935,7 +984,14 @@ export class VisibilityManager {
     attempt: number,
     isMobile: boolean
   ): Promise<void> {
+    // On mobile, use shorter timeout for faster perceived performance
+    // But ensure video is muted for autoplay compatibility
     const timeout = isMobile ? 500 : 2000;
+    
+    // On mobile, ensure video is muted before attempting play (required for autoplay)
+    if (isMobile) {
+      player.setMuted(true);
+    }
     await player.waitUntilCanPlay(timeout);
     if (!entry.isVisible) {
       throw new Error('Not visible');
@@ -944,22 +1000,28 @@ export class VisibilityManager {
     this.cancelPlaybackRetry(postId);
     // Ensure video is muted before playing (browsers require muted autoplay)
     // We'll apply exclusive audio AFTER play succeeds
+    // But first check the global mute state - if it's false, we'll unmute after play succeeds
     player.setMuted(true);
     
     await player.play();
+    
     this.touchActive(postId);
     this.videoStates.set(postId, 'playing');
     this.debugLog('play-success', { postId, origin, attempt });
     
-    // After play succeeds, handle unmuting based on global mute setting
-    // If exclusive audio is ENABLED (volume mode ON), unmute the video
-    // If exclusive audio is DISABLED (global mute ON), keep video muted
-    if (this.exclusiveAudioEnabled) {
-      // Volume mode is enabled: unmute the video after play succeeds
-      // This allows audio to play since user interaction (autoplay) has occurred
-      player.setMuted(false);
+    // After play succeeds, notify AudioManager first
+    // Check if this was a manual play (user clicked/tapped)
+    // Check if manual via AudioManager (single source of truth)
+    const isManual = origin === 'register' || this.audioManager.isManuallyStarted(postId);
+    if (isManual) {
+      this.audioManager.markManuallyStarted(postId);
     }
-    // If exclusive audio is disabled (global mute ON), video stays muted
+    
+    // Notify AudioManager of play event - it will handle unmuting based on audio focus
+    // Only the audio owner (hovered/touched video) will get unmuted when global mute is off
+    this.audioManager.onVideoPlay(postId, isManual);
+    // Ensure mute state is applied after AudioManager updates audio focus
+    this.audioManager.applyMuteStateToAll();
   }
 
   /**
@@ -973,6 +1035,19 @@ export class VisibilityManager {
     isMobile: boolean
   ): void {
     this.debugLog('play-failed', { postId, attempt, error });
+    
+    // Check if this is a "Video element is not valid" error - this means the video element
+    // was removed from DOM or is invalid, and we should hide the post
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const isInvalidElementError = errorMessage.includes('Video element is not valid') || 
+                                  errorMessage.includes('Video element not in DOM');
+    
+    if (isInvalidElementError) {
+      // Video element is invalid - hide the post permanently
+      this.debugLog('video-element-invalid-hiding-post', { postId, error: errorMessage });
+      this.hidePost(postId);
+      return;
+    }
     
     // Check if this is a load failure (not just playback failure)
     const errorObj = error && typeof error === 'object' && 'errorType' in error 
@@ -1003,7 +1078,32 @@ export class VisibilityManager {
     this.schedulePlaybackRetry(postId, attempt + 1, delay);
   }
 
+  /**
+   * Hide a post that has failed permanently
+   */
+  private hidePost(postId: string): void {
+    const entry = this.entries.get(postId);
+    if (!entry) return;
+    
+    // Hide the post element
+    if (entry.element) {
+      entry.element.style.display = 'none';
+    }
+    
+    // Mark as permanently failed
+    this.videoStates.set(postId, 'failed');
+    entry.pendingVisibilityPlay = false;
+    
+    // Clean up
+    this.cancelPendingOperation(postId);
+    this.cancelPlaybackRetry(postId);
+    this.activeVideos.delete(postId);
+    
+    this.debugLog('post-hidden-permanently', { postId });
+  }
+
   private computeRetryDelay(isMobile: boolean, attempt: number): number {
+    // On mobile, use shorter retry delays for faster recovery
     const base = isMobile ? 120 : 220;
     const maxDelay = isMobile ? 1000 : 2000;
     return Math.min(base * Math.pow(2, attempt - 1), maxDelay);
@@ -1182,40 +1282,22 @@ export class VisibilityManager {
   }
 
   /**
-   * Enable or disable exclusive audio mode
-   */
-  setExclusiveAudio(enabled: boolean): void {
-    this.exclusiveAudioEnabled = !!enabled;
-    if (enabled) {
-      this.applyExclusiveAudioFocus();
-    } else {
-      // Mute all players when disabling volume mode
-      for (const [, entry] of this.entries) {
-        entry.player?.setMuted(true);
-      }
-      this.currentAudioPostId = undefined;
-    }
-  }
-
-  /**
    * Re-evaluate which visible post should have audio focus
    */
   reevaluateAudioFocus(): void {
-    if (!this.exclusiveAudioEnabled) return;
-    this.applyExclusiveAudioFocus();
+    this.audioManager.updateAudioFocus();
   }
 
   /**
    * Optionally focus audio on a specific post id
    */
   focusAudioOn(postId?: string): void {
-    if (!this.exclusiveAudioEnabled) return;
     if (postId && this.entries.has(postId)) {
-      this.currentAudioPostId = postId;
+      // Request audio focus with MANUAL priority
+      this.audioManager.requestAudioFocus(postId, AudioPriority.MANUAL);
     } else {
-      this.currentAudioPostId = undefined;
+      this.audioManager.updateAudioFocus();
     }
-    this.applyExclusiveAudioFocus();
   }
 
   /**
@@ -1281,9 +1363,28 @@ export class VisibilityManager {
       }
 
       this.touchedPostId = postId;
-      this.hoveredPostId = postId;
-      // Combined hover action: unmute and play together to avoid race conditions
-      this.handleHoverEnter(postId);
+      
+      // Add visual feedback on touch start (subtle highlight)
+      if (entry.element) {
+        entry.element.style.transition = 'opacity 0.1s ease-out';
+        entry.element.style.opacity = '0.95';
+      }
+      
+      // For quick taps (< 200ms), don't unmute - let NativeVideoPlayer handle play/pause
+      // For longer touches (> 200ms), treat as hover and unmute
+      // Use a timeout to detect long touch
+      const longTouchTimeout = setTimeout(() => {
+        // This is a long touch (> 200ms) - treat as hover and unmute
+        if (this.touchedPostId === postId) {
+          this.hoveredPostId = postId;
+          this.handleHoverEnter(postId);
+        }
+      }, 200);
+      
+      // Store timeout for cleanup
+      if (entry.hoverHandlers) {
+        entry.hoverHandlers.touchEndTimeout = longTouchTimeout;
+      }
     };
     
     const handleLeave = () => {
@@ -1303,16 +1404,51 @@ export class VisibilityManager {
         clearTimeout(entry.hoverHandlers.touchEndTimeout);
       }
 
+      // Remove visual feedback on touch end
+      if (entry.element) {
+        entry.element.style.transition = 'opacity 0.2s ease-out';
+        entry.element.style.opacity = '1';
+      }
+
+      // If touch ended before 200ms, it was a quick tap - NativeVideoPlayer handles it
+      // If touch lasted > 200ms, we already triggered hover/unmute in handleTouchEnter
+      // So we just need to clean up the touched state
+      
       // On mobile, touchend doesn't mean the user moved away - just that they lifted their finger
       // Only clear the touched state, but keep the video playing if it's still visible
       // The video will pause when:
       // 1. User touches a different video (which will set a new hoveredPostId)
       // 2. User scrolls away (visibility manager will handle pausing)
       // 3. User manually pauses
+      
+      // Check if video was manually paused - if so, don't clear hoveredPostId too quickly
+      // This prevents autoplay from resuming a manually paused video
+      const isManuallyPaused = entry.player?.isManuallyPaused() ?? false;
+      
+      // Use longer timeout if video is manually paused or still playing
+      // This prevents autoplay from interfering with user's manual pause
+      const timeoutDuration = isManuallyPaused || entry.player?.isPlaying() ? 500 : 100;
+      
       const timeout = setTimeout(() => {
         if (this.touchedPostId === postId) {
           this.touchedPostId = undefined;
         }
+        
+        // Check again if video is manually paused before clearing hover state
+        const stillManuallyPaused = entry.player?.isManuallyPaused() ?? false;
+        if (stillManuallyPaused) {
+          // Video is manually paused - keep hoveredPostId to prevent autoplay from resuming
+          // Only clear if video becomes invisible
+          if (this.hoveredPostId === postId && !entry.isVisible) {
+            handleLeave();
+          }
+          // Don't clear hoveredPostId if manually paused and still visible
+          if (entry.hoverHandlers) {
+            entry.hoverHandlers.touchEndTimeout = undefined;
+          }
+          return;
+        }
+        
         // Only clear hoveredPostId if video is no longer visible
         // This allows the video to keep playing after touch ends
         if (this.hoveredPostId === postId && !entry.isVisible) {
@@ -1320,12 +1456,13 @@ export class VisibilityManager {
         } else if (this.hoveredPostId === postId) {
           // Video is still visible, so keep it playing but clear hoveredPostId
           // This allows viewport-based autoplay to take over if needed
+          // But only if video is not manually paused
           this.hoveredPostId = undefined;
         }
         if (entry.hoverHandlers) {
           entry.hoverHandlers.touchEndTimeout = undefined;
         }
-      }, 100);
+      }, timeoutDuration);
 
       if (entry.hoverHandlers) {
         entry.hoverHandlers.touchEndTimeout = timeout;
@@ -1337,6 +1474,12 @@ export class VisibilityManager {
       if (entry.hoverHandlers?.touchEndTimeout) {
         clearTimeout(entry.hoverHandlers.touchEndTimeout);
         entry.hoverHandlers.touchEndTimeout = undefined;
+      }
+
+      // Remove visual feedback on touch cancel
+      if (entry.element) {
+        entry.element.style.transition = 'opacity 0.2s ease-out';
+        entry.element.style.opacity = '1';
       }
 
       if (this.touchedPostId === postId) {
@@ -1416,7 +1559,7 @@ export class VisibilityManager {
       return;
     }
 
-    this.muteOtherVideosOnHover(postId);
+    // AudioManager will handle muting through applyMuteState()
 
     if (!this.isHDMode) {
       this.handleNonHDHover(postId, entry);
@@ -1467,43 +1610,15 @@ export class VisibilityManager {
     return entry;
   }
 
-  /**
-   * Mute all other videos when hovering
-   */
-  private muteOtherVideosOnHover(postId: string): void {
-    if (!this.exclusiveAudioEnabled) {
-      return;
-    }
-
-    const entry = this.entries.get(postId);
-    if (!entry?.player) {
-      return;
-    }
-
-    // Mute all other videos
-    for (const [otherPostId, otherEntry] of this.entries) {
-      if (otherPostId !== postId && otherEntry.player) {
-        // Check if other player has video element before muting
-        try {
-          otherEntry.player.getVideoElement();
-          otherEntry.player.setMuted(true);
-        } catch {
-          // Player doesn't have video element yet, skip
-          continue;
-        }
-      }
-    }
-  }
 
   /**
    * Handle hover in non-HD mode
    */
   private handleNonHDHover(postId: string, entry: VisibilityEntry): void {
-    // For non-HD videos, unmute on hover if exclusiveAudio is enabled
-    // Videos are already playing via autoplay, so we can unmute immediately
-    if (this.exclusiveAudioEnabled && entry.player) {
-      entry.player.setMuted(false);
-      this.currentAudioPostId = postId;
+    // For non-HD videos, request audio focus on hover if exclusiveAudio is enabled
+    // Videos are already playing via autoplay, so we can request audio immediately
+    if (entry.player) {
+      this.audioManager.onHoverEnter(postId);
     }
   }
 
@@ -1517,8 +1632,9 @@ export class VisibilityManager {
           // Check if other player has video element and is playing
           otherEntry.player.getVideoElement();
           if (otherEntry.player.isPlaying()) {
-            // Don't pause manually started videos
-            if (!this.manuallyStartedVideos.has(otherPostId)) {
+            // Don't pause manually started videos - check via AudioManager
+            const isManual = this.audioManager.isManuallyStarted(otherPostId);
+            if (!isManual) {
               otherEntry.player.pause();
               this.videoStates.set(otherPostId, 'paused');
               this.activeVideos.delete(otherPostId);
@@ -1550,17 +1666,11 @@ export class VisibilityManager {
    * Handle successful hover play
    */
   private handleHoverPlaySuccess(postId: string, entry: VisibilityEntry): void {
-    // After play succeeds, handle unmuting based on global mute setting
-    // If exclusive audio is ENABLED (volume mode ON), unmute the video
-    // If exclusive audio is DISABLED (global mute ON), keep video muted
+    // After play succeeds, notify AudioManager of hover
+    // AudioManager will handle audio focus and muting
     if (entry.player && this.hoveredPostId === postId) {
-      if (this.exclusiveAudioEnabled) {
-        // Volume mode is enabled: unmute the video
-        // Hover provides user interaction, so unmuting is allowed
-        entry.player.setMuted(false);
-        this.currentAudioPostId = postId;
-      }
-      // If exclusive audio is disabled (global mute ON), video stays muted
+      // Video is now playing, so AudioManager can grant audio focus
+      this.audioManager.onHoverEnter(postId);
     }
   }
 
@@ -1588,10 +1698,8 @@ export class VisibilityManager {
    * Mute the video when hover/touch leaves and re-apply audio focus
    */
   private muteOnHoverLeave(postId: string): void {
-    if (!this.exclusiveAudioEnabled) return;
-    
-    // Re-apply audio focus to go back to center-based selection
-    this.applyExclusiveAudioFocus();
+    // Notify AudioManager of hover leave
+    this.audioManager.onHoverLeave(postId);
   }
 
   /**
@@ -1733,8 +1841,9 @@ export class VisibilityManager {
       return;
     }
 
-    // Don't pause if video was manually started by user
-    if (this.manuallyStartedVideos.has(postId)) {
+    // Don't pause if video was manually started by user - check via AudioManager
+    const isManual = this.audioManager.isManuallyStarted(postId);
+    if (isManual) {
       return;
     }
 
@@ -1752,178 +1861,53 @@ export class VisibilityManager {
   }
 
   /**
-   * Internal: compute most-centered visible entry and unmute only that one
-   * Respects hover state - if a video is hovered, it takes priority
-   * NOTE: This should only be called when exclusiveAudioEnabled is true
-   * and videos are already playing (not for autoplay)
+   * Setup play/pause event listeners for AudioManager
    */
-  private applyExclusiveAudioFocus(): void {
-    // Only apply if exclusive audio is enabled
-    if (!this.exclusiveAudioEnabled) {
-      return;
-    }
-    
-    // If a video is hovered, use that instead of center-based selection
-    if (this.handleHoveredVideoForAudio()) {
-      return;
-    }
-
-    const bestId = this.findBestCenteredVideo();
-    this.applyMuteStateToVideos(bestId);
-    
-    // Update current audio post ID
-    if (bestId) {
-      this.currentAudioPostId = bestId;
-    } else {
-      this.currentAudioPostId = undefined;
-    }
-  }
-
-  /**
-   * Handle hovered video for audio focus
-   */
-  private handleHoveredVideoForAudio(): boolean {
-    if (!this.hoveredPostId) {
-      return false;
-    }
-
-    const hoveredEntry = this.entries.get(this.hoveredPostId);
-    if (!hoveredEntry?.player) {
-      return false;
-    }
-
-    // Mute all other videos, but keep the hovered video muted too
-    // Videos should stay muted by default - only unmute via manual action or autoplay (when global mute disabled)
-    for (const [postId, entry] of this.entries) {
-      if (entry.player && postId !== this.hoveredPostId) {
-        entry.player.setMuted(true);
-      }
-    }
-    // Don't unmute the hovered video - it should stay muted
-    this.currentAudioPostId = this.hoveredPostId;
-    return true;
-  }
-
-  /**
-   * Find the best centered visible video
-   */
-  private findBestCenteredVideo(): string | undefined {
-    // If a specific post is requested, use it if visible
-    if (this.currentAudioPostId) {
-      const entry = this.entries.get(this.currentAudioPostId);
-      if (entry && entry.isVisible && entry.player) {
-        return this.currentAudioPostId;
-      }
-    }
-
-    // Otherwise, find the most-centered visible entry
-    let bestId: string | undefined;
-    let bestScore = Number.POSITIVE_INFINITY;
-    const viewportCenterY = globalThis.window.innerHeight / 2;
-    const viewportCenterX = globalThis.window.innerWidth / 2;
-
-    for (const [postId, entry] of this.entries) {
-      if (!entry.isVisible || !entry.player) continue;
-      const rect = this.getCachedRect(entry.element);
+  private setupPlayerEventListeners(postId: string, player: NativeVideoPlayer): void {
+    try {
+      const videoElement = player.getVideoElement();
       
-      // Only consider entries that are actually in viewport
-      if (rect.bottom < 0 || rect.top > globalThis.window.innerHeight) continue;
-      if (rect.right < 0 || rect.left > globalThis.window.innerWidth) continue;
-      
-      const centerY = rect.top + rect.height / 2;
-      const centerX = rect.left + rect.width / 2;
-      const dy = centerY - viewportCenterY;
-      const dx = centerX - viewportCenterX;
-      const distance = Math.hypot(dx, dy);
-      
-      if (distance < bestScore) {
-        bestScore = distance;
-        bestId = postId;
-      }
-    }
+      const handlePlay = () => {
+        // Check if this was a manual play (user clicked/tapped)
+        // Check if manual via AudioManager
+        const isManual = this.audioManager.isManuallyStarted(postId);
+        this.audioManager.onVideoPlay(postId, isManual);
+      };
 
-    return bestId;
-  }
+      const handlePause = () => {
+        this.audioManager.onVideoPause(postId);
+      };
 
-  /**
-   * Apply mute state to all videos based on best centered video
-   */
-  private applyMuteStateToVideos(bestId: string | undefined): void {
-    // Mute all first, but preserve playing state
-    // CRITICAL: Only change mute state for videos that are ALREADY playing
-    // Don't unmute videos that aren't playing yet - they need to be muted for autoplay
-    for (const [postId, entry] of this.entries) {
-      if (!entry.player) continue;
-
-      const videoElement = entry.player.getVideoElement();
-      if (!videoElement) continue;
-
-      const shouldBeMuted = postId !== bestId;
-      const isCurrentlyMuted = videoElement.muted;
-      const isCurrentlyPlaying = entry.player.isPlaying();
-      
-      // CRITICAL: Only change mute state if video is already playing
-      // If video is not playing, keep it muted (required for autoplay)
-      if (!isCurrentlyPlaying) {
-        // Video is not playing - ensure it's muted for autoplay
-        if (!isCurrentlyMuted) {
-          entry.player.setMuted(true);
+      // CRITICAL: Also listen for 'playing' event to ensure audio works on mobile
+      // The 'playing' event fires when video actually starts rendering frames
+      // On mobile, AudioManager needs to check isPlaying() when video is actually playing,
+      // not just when play() is called, because isPlaying() might return false initially
+      const handlePlaying = () => {
+        // Re-apply mute state when video actually starts playing
+        // This ensures isPlaying() returns true and AudioManager can properly unmute on mobile
+        this.audioManager.applyMuteStateToAll();
+        
+        // Re-request audio focus if video is playing but doesn't have it
+        // This catches cases where the initial request failed due to timing
+        const currentOwner = this.audioManager.getCurrentAudioOwner();
+        if (currentOwner !== postId && player.isPlaying()) {
+          // Determine priority: manual > center
+          const isManual = this.audioManager.isManuallyStarted(postId);
+          const priority = isManual ? AudioPriority.MANUAL : AudioPriority.CENTER;
+          this.audioManager.requestAudioFocus(postId, priority);
+          // Re-apply mute state after requesting focus
+          this.audioManager.applyMuteStateToAll();
         }
-        continue;
-      }
+      };
       
-      // Video is playing - can safely change mute state
-      if (isCurrentlyMuted !== shouldBeMuted) {
-        this.updateVideoMuteState(postId, entry, shouldBeMuted);
-      }
-    }
-  }
-
-  /**
-   * Update mute state for a playing video
-   */
-  private updateVideoMuteState(postId: string, entry: VisibilityEntry, shouldBeMuted: boolean): void {
-    // Don't mute a video that was manually started by the user
-    // This prevents interrupting user-initiated playback
-    if (this.manuallyStartedVideos.has(postId) && shouldBeMuted && entry.isVisible) {
-      // Skip muting manually started videos - let them play until user pauses
-      return;
-    }
-    
-    if (shouldBeMuted && entry.isVisible) {
-      // Delay muting to avoid interrupting playback
-      setTimeout(() => {
-        this.delayedMuteVideo(postId);
-      }, 100);
-      return;
-    }
-    
-    // When exclusiveAudioEnabled is true, ALL videos should stay muted
-    // Only unmute if global mute is disabled (exclusiveAudioEnabled = false)
-    // This is handled by the autoplay/hover handlers, not here
-    // So we should only mute here, never unmute
-    if (shouldBeMuted && entry.player) {
-      entry.player.setMuted(true);
-    }
-    // Don't unmute here - videos should stay muted by default
-    // Unmuting only happens via:
-    // 1. User's manual unmute button click (handled by NativeVideoPlayer)
-    // 2. Autoplay/hover handler when global mute is disabled
-  }
-
-  /**
-   * Delayed mute video (to avoid interrupting playback)
-   */
-  private delayedMuteVideo(postId: string): void {
-    const currentEntry = this.entries.get(postId);
-    if (currentEntry?.player && currentEntry?.isVisible) {
-      // Check if it's still playing and still should be muted
-      // Don't mute if it was manually started
-      if (currentEntry.player.isPlaying() && 
-          postId !== this.currentAudioPostId &&
-          !this.manuallyStartedVideos.has(postId)) {
-        currentEntry.player.setMuted(true);
-      }
+      videoElement.addEventListener('play', handlePlay);
+      videoElement.addEventListener('pause', handlePause);
+      videoElement.addEventListener('playing', handlePlaying);
+      
+      // Store handlers for cleanup (we'll need to track these)
+      // For now, we'll rely on the video element being removed when player is destroyed
+    } catch {
+      // Player doesn't have video element yet, will be handled when ready
     }
   }
 }

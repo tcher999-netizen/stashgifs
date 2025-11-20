@@ -8,9 +8,9 @@ import { NativeVideoPlayer } from './NativeVideoPlayer.js';
 import { FavoritesManager } from './FavoritesManager.js';
 import { StashAPI } from './StashAPI.js';
 import { VisibilityManager } from './VisibilityManager.js';
-import { calculateAspectRatio, getAspectRatioClass, isValidMediaUrl, showToast, throttle, toAbsoluteUrl } from './utils.js';
+import { calculateAspectRatio, getAspectRatioClass, isValidMediaUrl, showToast, throttle, toAbsoluteUrl, isMobileDevice } from './utils.js';
 import { posterPreloader } from './PosterPreloader.js';
-import { HQ_SVG_OUTLINE, HQ_SVG_FILLED, PLAY_SVG, MARKER_SVG, STAR_SVG, STAR_SVG_OUTLINE, MARKER_BADGE_SVG, SCENE_BADGE_SVG } from './icons.js';
+import { HQ_SVG_OUTLINE, HQ_SVG_FILLED, PLAY_SVG, MARKER_SVG, STAR_SVG, STAR_SVG_OUTLINE, MARKER_BADGE_SVG, SCENE_BADGE_SVG, VOLUME_MUTED_SVG, VOLUME_UNMUTED_SVG } from './icons.js';
 import { BasePost } from './BasePost.js';
 
 // Constants for magic numbers and strings
@@ -25,6 +25,8 @@ const OCOUNT_MIN_WIDTH_PX = 14;
 const RESIZE_THROTTLE_MS = 100;
 
 interface VideoPostOptions {
+  onMuteToggle?: (isMuted: boolean) => void; // Callback to set global mute state
+  getGlobalMuteState?: () => boolean; // Callback to get global mute state
   favoritesManager?: FavoritesManager;
   api?: StashAPI;
   visibilityManager?: VisibilityManager;
@@ -32,6 +34,7 @@ interface VideoPostOptions {
   onTagChipClick?: (tagId: number, tagName: string) => void;
   useShuffleMode?: boolean;
   onCancelRequests?: () => void;
+  ratingSystemConfig?: { type?: string; starPrecision?: string } | null; // Rating system configuration
 }
 
 export class VideoPost extends BasePost {
@@ -52,6 +55,10 @@ export class VideoPost extends BasePost {
   private ratingStarButtons: HTMLButtonElement[] = [];
   private isRatingDialogOpen: boolean = false;
   private isSavingRating: boolean = false;
+  private hoveredStarIndex?: number; // Track which star is being hovered for preview
+  private hoveredPreviewValue?: number; // Actual rating value preview (supports half stars)
+  private lastPointerSelectionTs = 0;
+  private lastPointerHoverTs = 0;
   private markerDialog?: HTMLElement;
   private markerDialogInput?: HTMLInputElement;
   private markerDialogSuggestions?: HTMLElement;
@@ -72,6 +79,7 @@ export class VideoPost extends BasePost {
   private errorPlaceholder?: HTMLElement;
   private retryTimeoutId?: number;
   private loadErrorCheckIntervalId?: ReturnType<typeof setInterval>;
+  private readonly ratingSystemConfig?: { type?: string; starPrecision?: string } | null;
   
   // Event handlers for cleanup
   private readonly ratingOutsideClickHandler = (event: Event) => this.onRatingOutsideClick(event);
@@ -84,8 +92,11 @@ export class VideoPost extends BasePost {
   private buttonGroup?: HTMLElement;
 
   private readonly onCancelRequests?: () => void; // Callback to cancel pending requests
+  private readonly onMuteToggle?: (isMuted: boolean) => void; // Callback for mute toggle
+  private readonly getGlobalMuteState?: () => boolean; // Callback to get global mute state
 
   private readonly useShuffleMode: boolean = false;
+  private muteOverlayButton?: HTMLElement; // Overlay mute button
 
   constructor(
     container: HTMLElement, 
@@ -103,7 +114,10 @@ export class VideoPost extends BasePost {
     this.data = data;
     this.useShuffleMode = options.useShuffleMode || false;
     this.onCancelRequests = options.onCancelRequests;
+    this.onMuteToggle = options.onMuteToggle;
+    this.getGlobalMuteState = options.getGlobalMuteState;
     this.oCount = this.data.marker.scene.o_counter || 0;
+    this.ratingSystemConfig = options.ratingSystemConfig;
     this.ratingValue = this.convertRating100ToStars(this.data.marker.scene.rating100);
     this.hasRating = typeof this.data.marker.scene.rating100 === 'number' && !Number.isNaN(this.data.marker.scene.rating100);
     
@@ -116,6 +130,64 @@ export class VideoPost extends BasePost {
     this.ratingResizeHandler = throttle(() => this.syncRatingDialogLayout(), RESIZE_THROTTLE_MS);
 
     this.render();
+  }
+
+  /**
+   * Handle pointer movement across the star container for half precision previews
+   */
+  /**
+   * Calculate preview value from pointer position using container-level coordinates
+   */
+  private calculatePreviewValueFromPointer(pointerX: number): number | undefined {
+    if (!this.isRatingDialogOpen || !this.isHalfPrecision()) {
+      return undefined;
+    }
+    if (!this.ratingStarButtons.length) {
+      return undefined;
+    }
+
+    const starRects = this.ratingStarButtons.map((btn) => btn.getBoundingClientRect());
+    const firstRect = starRects[0];
+    const maxStars = this.getMaxStars();
+
+    if (pointerX <= firstRect.left + firstRect.width / 2) {
+      return 0.5;
+    }
+
+    for (let i = 0; i < starRects.length; i++) {
+      const rect = starRects[i];
+      const nextRect = starRects[i + 1];
+      if (pointerX >= rect.left && pointerX <= rect.right) {
+        return i + 1;
+      }
+      if (nextRect && pointerX > rect.right && pointerX < nextRect.left + nextRect.width / 2) {
+        return Math.min(i + 1 + 0.5, maxStars);
+      }
+      if (!nextRect && pointerX >= rect.right) {
+        return starRects.length;
+      }
+    }
+
+    return undefined;
+  }
+
+  private handleStarsPointerMove(event: PointerEvent | MouseEvent): void {
+    if (!this.isRatingDialogOpen || !this.isHalfPrecision()) {
+      return;
+    }
+    if (!this.ratingStarButtons.length) {
+      return;
+    }
+
+    const previewValue = this.calculatePreviewValueFromPointer(event.clientX);
+    if (previewValue === undefined) {
+      return;
+    }
+
+    this.lastPointerHoverTs = performance.now();
+    const maxStars = this.getMaxStars();
+    const starIndex = Math.min(Math.max(Math.ceil(previewValue), 1), maxStars);
+    this.onStarHover(starIndex, previewValue);
   }
 
   /**
@@ -186,16 +258,143 @@ export class VideoPost extends BasePost {
   }
 
   /**
+   * Create mute button for footer
+   */
+  private createMuteOverlayButton(): HTMLElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'video-post__mute-overlay';
+    button.setAttribute('aria-label', 'Toggle mute');
+    
+    // Style to match other footer buttons
+    this.applyIconButtonStyles(button);
+    button.style.color = '#FFFFFF';
+    button.style.padding = '0';
+    button.style.width = '44px';
+    button.style.height = '44px';
+    button.style.minWidth = '44px';
+    button.style.minHeight = '44px';
+    // Prevent double-tap zoom on mobile and improve touch responsiveness
+    button.style.touchAction = 'manipulation';
+    
+    // Handle mute toggle
+    const handleMuteToggle = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation(); // Prevent any other handlers from running
+      if (this.onMuteToggle && this.getGlobalMuteState) {
+        const currentState = this.getGlobalMuteState();
+        this.onMuteToggle(!currentState);
+      }
+    };
+    
+    // Click handler (desktop)
+    button.addEventListener('click', handleMuteToggle);
+    
+    // Touch handler (mobile) - use touchend for better responsiveness
+    const isMobile = isMobileDevice();
+    if (isMobile) {
+      let touchStartTime = 0;
+      let touchStartX = 0;
+      let touchStartY = 0;
+      let isScrolling = false;
+      const touchMoveThreshold = 10; // Pixels
+      
+      button.addEventListener('touchstart', (e) => {
+        const touch = e.touches[0];
+        if (touch) {
+          touchStartTime = Date.now();
+          touchStartX = touch.clientX;
+          touchStartY = touch.clientY;
+          isScrolling = false;
+        }
+        // Stop propagation to prevent parent handlers from interfering
+        e.stopPropagation();
+      }, { passive: true });
+      
+      button.addEventListener('touchmove', (e) => {
+        if (e.touches.length > 0) {
+          const touch = e.touches[0];
+          if (touch) {
+            const deltaX = Math.abs(touch.clientX - touchStartX);
+            const deltaY = Math.abs(touch.clientY - touchStartY);
+            if (deltaX > touchMoveThreshold || deltaY > touchMoveThreshold) {
+              isScrolling = true;
+            }
+          }
+        }
+        // Stop propagation
+        e.stopPropagation();
+      }, { passive: true });
+      
+      button.addEventListener('touchend', (e) => {
+        const touch = e.changedTouches[0];
+        if (!touch) return;
+        
+        const touchDuration = Date.now() - touchStartTime;
+        const deltaX = Math.abs(touch.clientX - touchStartX);
+        const deltaY = Math.abs(touch.clientY - touchStartY);
+        const totalDistance = Math.hypot(deltaX, deltaY);
+        
+        // Only trigger if it was a tap (not a scroll) and quick (< 300ms)
+        if (!isScrolling && totalDistance < touchMoveThreshold && touchDuration < 300) {
+          handleMuteToggle(e);
+        }
+        
+        // Reset tracking
+        isScrolling = false;
+        touchStartTime = 0;
+        touchStartX = 0;
+        touchStartY = 0;
+      }, { passive: false });
+    }
+    
+    this.muteOverlayButton = button;
+    
+    // Update button appearance based on global mute state
+    this.updateMuteOverlayButton();
+    
+    return button;
+  }
+
+  /**
+   * Update mute overlay button appearance based on global mute state
+   */
+  updateMuteOverlayButton(): void {
+    const btn = this.muteOverlayButton;
+    if (!btn || !this.getGlobalMuteState) return;
+    
+    const isMuted = this.getGlobalMuteState();
+    if (isMuted) {
+      btn.innerHTML = VOLUME_MUTED_SVG.replace('width="24"', 'width="24"').replace('height="24"', 'height="24"');
+      btn.setAttribute('aria-label', 'Unmute');
+    } else {
+      btn.innerHTML = VOLUME_UNMUTED_SVG.replace('width="24"', 'width="24"').replace('height="24"', 'height="24"');
+      btn.setAttribute('aria-label', 'Mute');
+    }
+    
+    // Gray out the button when not in HQ mode
+    if (!this.isHQMode) {
+      btn.style.opacity = '0.4';
+      btn.style.pointerEvents = 'none';
+    } else {
+      btn.style.opacity = '1';
+      btn.style.pointerEvents = 'auto';
+    }
+  }
+
+  /**
    * Get poster URL for the video
-   * Prefers marker preview, then scene preview/webp, then scene screenshot
+   * Only uses screenshots - never preview or webp
+   * Returns undefined if screenshot is unavailable (will trigger first frame fallback)
    */
   private getPosterUrl(): string | undefined {
     const m = this.data.marker;
-    // Skip synthetic markers - they don't have screenshots in Stash
+    // Skip synthetic markers and short form markers - they don't have screenshots in Stash
     const markerId = m?.id;
-    if (markerId && typeof markerId === 'string' && markerId.startsWith('synthetic-')) {
-      // For synthetic markers, use scene preview/webp/screenshot as fallback
-      const p = m?.scene?.paths?.preview || m?.scene?.paths?.webp || m?.scene?.paths?.screenshot;
+    if (markerId && typeof markerId === 'string' && (markerId.startsWith('synthetic-') || markerId.startsWith('shortform-'))) {
+      // For synthetic/short form markers, only use scene screenshot
+      const p = m?.scene?.paths?.screenshot;
       if (!p) return undefined;
       const baseUrl = toAbsoluteUrl(p);
       if (!baseUrl) return undefined;
@@ -205,8 +404,8 @@ export class VideoPost extends BasePost {
     // Prefer preloaded poster from batch prefetch (commit parity)
     const cached = posterPreloader.getPosterForMarker(m);
     if (cached) return cached;
-    // Fallbacks if not preloaded
-    const p = m?.preview || m?.scene?.paths?.preview || m?.scene?.paths?.webp || m?.scene?.paths?.screenshot;
+    // Only use screenshot if not preloaded
+    const p = m?.scene?.paths?.screenshot;
     if (!p) return undefined;
     // Add cache-busting to prevent 304 responses with empty/corrupted cache
     const baseUrl = toAbsoluteUrl(p);
@@ -512,6 +711,9 @@ export class VideoPost extends BasePost {
       buttonGroup.appendChild(hqBtn);
     }
 
+    const muteBtn = this.createMuteOverlayButton();
+    buttonGroup.appendChild(muteBtn);
+
     const playBtn = this.createPlayButton();
     buttonGroup.appendChild(playBtn);
 
@@ -758,6 +960,7 @@ export class VideoPost extends BasePost {
         await this.upgradeToSceneVideo();
         this.isHQMode = true;
         this.updateHQButton(hqBtn);
+        this.updateMuteOverlayButton();
       } catch (error) {
         console.error('Failed to upgrade to scene video', error);
         // Log more details about the error
@@ -890,25 +1093,126 @@ export class VideoPost extends BasePost {
     const starsContainer = document.createElement('div');
     starsContainer.className = 'rating-dialog__stars';
     starsContainer.setAttribute('role', 'radiogroup');
-    starsContainer.setAttribute('aria-label', 'Rate this scene from 0 to 10 stars');
+    const maxStars = this.getMaxStars();
+    starsContainer.setAttribute('aria-label', `Rate this scene from 0 to ${maxStars}${this.isHalfPrecision() ? ' (half stars allowed)' : ''}`);
     this.ratingStarButtons = [];
 
-    for (let i = 1; i <= RATING_MAX_STARS; i++) {
+    const isHalfPrecision = this.isHalfPrecision();
+    const numStars = maxStars; // Always show maxStars number of stars
+    
+    if (isHalfPrecision) {
+      const handlePointerMove = (event: PointerEvent | MouseEvent) => {
+        this.handleStarsPointerMove(event);
+      };
+      const handlePointerLeave = () => {
+        this.onStarHoverLeave();
+      };
+      const handlePointerDown = (event: PointerEvent) => {
+        // Calculate preview value on pointerdown for mobile quick taps
+        if (event.pointerType !== 'mouse') {
+          const previewValue = this.calculatePreviewValueFromPointer(event.clientX);
+          if (previewValue !== undefined) {
+            const maxStars = this.getMaxStars();
+            const starIndex = Math.min(Math.max(Math.ceil(previewValue), 1), maxStars);
+            this.onStarHover(starIndex, previewValue);
+          }
+        }
+      };
+      const handlePointerUp = (event: PointerEvent) => {
+        if (event.pointerType === 'mouse' && (event.target as HTMLElement)?.closest('.rating-dialog__star')) {
+          return; // Let button click handle mouse selections
+        }
+        // Calculate value if not already set (for quick taps)
+        const previewValue = this.hoveredPreviewValue ?? this.calculatePreviewValueFromPointer(event.clientX);
+        if (previewValue !== undefined) {
+          this.lastPointerSelectionTs = performance.now();
+          void this.onRatingStarSelect(previewValue);
+        }
+      };
+      starsContainer.addEventListener('pointermove', handlePointerMove);
+      starsContainer.addEventListener('pointerleave', handlePointerLeave);
+      starsContainer.addEventListener('pointerdown', handlePointerDown);
+      starsContainer.addEventListener('pointerup', handlePointerUp);
+    }
+
+    for (let i = 1; i <= numStars; i++) {
       const starBtn = document.createElement('button');
       starBtn.type = 'button';
       starBtn.className = 'rating-dialog__star';
       starBtn.setAttribute('role', 'radio');
+      starBtn.dataset.starIndex = i.toString();
       starBtn.setAttribute('aria-label', `${i} star${i === 1 ? '' : 's'}`);
-      starBtn.dataset.value = i.toString();
-      starBtn.textContent = '☆';
+      starBtn.style.display = 'flex';
+      starBtn.style.alignItems = 'center';
+      starBtn.style.justifyContent = 'center';
+      starBtn.style.width = '36px';
+      starBtn.style.height = '36px';
+      starBtn.style.margin = '0 4px';
+      starBtn.style.padding = '4px';
+      starBtn.style.border = 'none';
+      starBtn.style.background = 'transparent';
+      starBtn.style.cursor = 'pointer';
+      starBtn.style.transition = 'transform 120ms ease-in-out';
+      starBtn.style.borderRadius = '6px';
+      starBtn.style.flexShrink = '0';
+
+      const iconWrapper = this.createStarIconElement();
+      starBtn.appendChild(iconWrapper);
+      
+      // Add hover handlers for preview
+      if (!isHalfPrecision) {
+        starBtn.addEventListener('mouseenter', () => {
+          this.onStarHover(i);
+        });
+      }
+      starBtn.addEventListener('mouseleave', () => {
+        this.onStarHoverLeave();
+      });
+      
+      // Click handler - commit the currently previewed value
       starBtn.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        void this.onRatingStarSelect(i);
+        const timeSincePointerSelect = performance.now() - this.lastPointerSelectionTs;
+        let targetValue: number;
+        if (isHalfPrecision) {
+          // Use container-level calculation for consistency with hover preview
+          const calculatedValue = this.calculatePreviewValueFromPointer(event.clientX);
+          targetValue = this.hoveredPreviewValue ?? calculatedValue ?? i;
+          if (timeSincePointerSelect < 200) {
+            return; // Already handled via pointerup (touch/pen)
+          }
+        } else {
+          targetValue = i;
+        }
+        void this.onRatingStarSelect(targetValue);
       });
+      
       starBtn.addEventListener('keydown', (event) => {
         this.handleRatingKeydown(event, i);
       });
+      
+      starBtn.addEventListener('focus', () => {
+        const sincePointerHover = performance.now() - this.lastPointerHoverTs;
+        // Don't trigger preview on focus if we already have a preview value set
+        // (from opening with existing rating - let user hover to change it)
+        if (this.hoveredPreviewValue !== undefined) {
+          return;
+        }
+        // Don't trigger preview on focus if we just opened the dialog and have no rating
+        if (this.isRatingDialogOpen && !this.hasRating) {
+          return;
+        }
+        // Only show preview on focus for keyboard navigation (not initial open)
+        if (!isHalfPrecision || sincePointerHover > 200) {
+          this.onStarHover(i);
+        }
+      });
+      
+      starBtn.addEventListener('blur', () => {
+        this.onStarHoverLeave();
+      });
+      
       this.ratingStarButtons.push(starBtn);
       starsContainer.appendChild(starBtn);
     }
@@ -918,17 +1222,105 @@ export class VideoPost extends BasePost {
   }
 
   /**
+   * Create star icon element with separate fill/outline spans
+   */
+  private createStarIconElement(): HTMLElement {
+    const wrapper = document.createElement('span');
+    wrapper.className = 'rating-dialog__star-icon';
+    wrapper.style.position = 'relative';
+    wrapper.style.display = 'inline-block';
+    wrapper.style.width = '28px';
+    wrapper.style.height = '28px';
+    wrapper.style.lineHeight = '1';
+    wrapper.style.fontSize = '24px';
+    wrapper.style.pointerEvents = 'none';
+    wrapper.style.userSelect = 'none';
+    wrapper.style.overflow = 'hidden';
+    wrapper.setAttribute('aria-hidden', 'true');
+
+    const outlineSpan = document.createElement('span');
+    outlineSpan.className = 'rating-dialog__star-outline';
+    outlineSpan.textContent = '☆';
+    outlineSpan.style.position = 'absolute';
+    outlineSpan.style.left = '0';
+    outlineSpan.style.top = '0';
+    outlineSpan.style.width = '100%';
+    outlineSpan.style.height = '100%';
+    outlineSpan.style.display = 'block';
+    outlineSpan.style.color = 'var(--rating-star-outline, rgba(255,255,255,0.35))';
+    outlineSpan.style.transition = 'opacity 120ms ease-in-out';
+
+    const fillSpan = document.createElement('span');
+    fillSpan.className = 'rating-dialog__star-fill';
+    fillSpan.textContent = '★';
+    fillSpan.style.position = 'absolute';
+    fillSpan.style.left = '0';
+    fillSpan.style.top = '0';
+    fillSpan.style.height = '100%';
+    fillSpan.style.display = 'block';
+    fillSpan.style.width = '100%';
+    fillSpan.style.overflow = 'hidden';
+    fillSpan.style.whiteSpace = 'nowrap';
+    fillSpan.style.color = 'var(--rating-star-fill, #ffda6a)';
+    fillSpan.style.textShadow = '0 0 6px rgba(0,0,0,0.4)';
+    fillSpan.style.zIndex = '1';
+    fillSpan.style.transition = 'width 120ms ease-in-out, opacity 120ms ease-in-out';
+
+    wrapper.append(outlineSpan, fillSpan);
+    return wrapper;
+  }
+
+  /**
+   * Determine hover value (half/full) based on pointer position within a star
+   */
+  private getHoverValueFromEvent(event: PointerEvent | MouseEvent, starIndex: number, explicitTarget?: HTMLElement | null): number {
+    if (!this.isHalfPrecision()) {
+      return starIndex;
+    }
+
+    const isPointerEvent = 'pointerType' in event;
+
+    // Keyboard-triggered click (MouseEvent with detail === 0) - default to full star
+    if (!isPointerEvent && 'detail' in event && event.detail === 0) {
+      return starIndex;
+    }
+
+    const target = explicitTarget ?? ((event.currentTarget ?? event.target) as HTMLElement | null);
+    if (!target) {
+      return starIndex;
+    }
+
+    const rect = target.getBoundingClientRect();
+    if (!rect.width || !Number.isFinite(rect.width)) {
+      return starIndex;
+    }
+
+    const relativeX = (event.clientX - rect.left) / rect.width;
+    const halfValue = Math.max(RATING_MIN_STARS, starIndex - 0.5);
+
+    if (!Number.isFinite(relativeX)) {
+      return starIndex;
+    }
+
+    const clampedRatio = Math.min(Math.max(relativeX, 0), 1);
+
+    return clampedRatio <= 0.5 ? halfValue : starIndex;
+  }
+
+  /**
    * Handle keyboard navigation for rating stars
    */
   private handleRatingKeydown(event: KeyboardEvent, currentIndex: number): void {
     if (!this.isRatingDialogOpen) return;
     
     let newIndex: number;
+    const maxButtons = this.ratingStarButtons.length;
+    const isHalfPrecision = this.isHalfPrecision();
     
     switch (event.key) {
       case 'ArrowRight':
         event.preventDefault();
-        newIndex = Math.min(RATING_MAX_STARS, currentIndex + 1);
+        newIndex = Math.min(maxButtons, currentIndex + 1);
         break;
       case 'ArrowLeft':
         event.preventDefault();
@@ -940,12 +1332,16 @@ export class VideoPost extends BasePost {
         break;
       case 'End':
         event.preventDefault();
-        newIndex = RATING_MAX_STARS;
+        newIndex = maxButtons;
         break;
       case 'Enter':
       case ' ':
         event.preventDefault();
-        void this.onRatingStarSelect(currentIndex);
+        if (isHalfPrecision) {
+          void this.onRatingStarToggle(currentIndex);
+        } else {
+          void this.onRatingStarSelect(currentIndex);
+        }
         return;
       default:
         return;
@@ -955,6 +1351,7 @@ export class VideoPost extends BasePost {
       const newButton = this.ratingStarButtons[newIndex - 1];
       if (newButton) {
         newButton.focus();
+        // Focus event will trigger hover preview
       }
     }
   }
@@ -990,13 +1387,34 @@ export class VideoPost extends BasePost {
     document.addEventListener('touchstart', this.ratingOutsideClickHandler);
     document.addEventListener('keydown', this.ratingKeydownHandler);
     window.addEventListener('resize', this.ratingResizeHandler);
-    this.updateRatingStarButtons();
     
-    // Focus first star button for keyboard navigation
-    if (this.ratingStarButtons.length > 0) {
-      const firstButton = this.ratingStarButtons[this.hasRating ? this.ratingValue - 1 : 0];
-      if (firstButton) {
-        firstButton.focus();
+    // Preview current rating as starting point
+    if (this.hasRating && this.ratingValue > 0) {
+      const maxStars = this.getMaxStars();
+      const starIndex = Math.min(Math.max(Math.ceil(this.ratingValue), 1), maxStars);
+      this.hoveredStarIndex = starIndex;
+      this.hoveredPreviewValue = this.ratingValue;
+      this.updateRatingStarButtons(true);
+      
+      // Focus the button that matches the current rating
+      if (this.ratingStarButtons.length >= starIndex) {
+        const targetButton = this.ratingStarButtons[starIndex - 1];
+        if (targetButton) {
+          targetButton.focus();
+        }
+      }
+    } else {
+      // Clear any preview state when opening without a rating
+      this.hoveredStarIndex = undefined;
+      this.hoveredPreviewValue = undefined;
+      this.updateRatingStarButtons();
+      
+      // Focus first star button for keyboard navigation (only when no rating)
+      if (this.ratingStarButtons.length > 0) {
+        const firstButton = this.ratingStarButtons[0];
+        if (firstButton) {
+          firstButton.focus();
+        }
       }
     }
   }
@@ -1012,6 +1430,9 @@ export class VideoPost extends BasePost {
     this.ratingDialog.hidden = true;
     this.ratingDisplayButton?.setAttribute('aria-expanded', 'false');
     this.ratingWrapper?.classList.remove('rating-control--open');
+    // Clear hover preview when closing
+    this.hoveredStarIndex = undefined;
+    this.hoveredPreviewValue = undefined;
     this.detachRatingGlobalListeners();
   }
 
@@ -1054,14 +1475,15 @@ export class VideoPost extends BasePost {
    */
   private updateRatingDisplay(): void {
     if (this.ratingDisplayButton) {
+      const maxStars = this.getMaxStars();
       const ariaLabel = this.hasRating
-        ? `Scene rating ${this.ratingValue} out of ${RATING_MAX_STARS}`
+        ? `Scene rating ${this.formatRatingValue(this.ratingValue)} out of ${maxStars}`
         : 'Rate this scene';
       this.ratingDisplayButton.setAttribute('aria-label', ariaLabel);
       this.ratingDisplayButton.classList.toggle('icon-btn--rating-active', this.hasRating);
     }
     if (this.ratingDisplayValue) {
-      this.ratingDisplayValue.textContent = this.hasRating ? this.ratingValue.toString() : '0';
+      this.ratingDisplayValue.textContent = this.hasRating ? this.formatRatingValue(this.ratingValue) : '0';
     }
     if (this.ratingDisplayIcon) {
       if (this.hasRating) {
@@ -1077,22 +1499,158 @@ export class VideoPost extends BasePost {
   /**
    * Update star buttons appearance and state
    */
-  private updateRatingStarButtons(): void {
+  /**
+   * Handle star hover for preview
+   */
+  private onStarHover(starIndex: number, hoverValue?: number): void {
+    this.hoveredStarIndex = starIndex;
+    this.hoveredPreviewValue = hoverValue ?? starIndex;
+    this.updateRatingStarButtons(true);
+  }
+
+  /**
+   * Handle star hover leave - restore actual rating
+   */
+  private onStarHoverLeave(): void {
+    this.hoveredStarIndex = undefined;
+    this.hoveredPreviewValue = undefined;
+    this.updateRatingStarButtons(false);
+  }
+
+  /**
+   * Update rating star buttons display
+   * @param isPreview - If true, show hover preview state
+   */
+  private updateRatingStarButtons(isPreview: boolean = false): void {
     if (!this.ratingStarButtons || this.ratingStarButtons.length === 0) return;
-    for (const [index, button] of this.ratingStarButtons.entries()) {
-      const value = Number(button.dataset.value || '0');
-      const isActive = this.hasRating && value <= this.ratingValue;
-      const isChecked = this.hasRating && value === this.ratingValue;
-      button.classList.toggle('rating-dialog__star--active', isActive);
+    const isHalfPrecision = this.isHalfPrecision();
+    const maxStars = this.getMaxStars();
+    
+    // Determine the preview or actual rating value
+    let displayValue: number;
+    if (isPreview && this.hoveredPreviewValue !== undefined) {
+      displayValue = this.hoveredPreviewValue;
+    } else {
+      // Show actual rating
+      displayValue = this.ratingValue;
+    }
+    
+    for (let i = 0; i < this.ratingStarButtons.length; i++) {
+      const button = this.ratingStarButtons[i];
+      const starIndex = i + 1; // 1-based index
+      const starValue = starIndex; // Full star value
+      const iconWrapper = button.querySelector<HTMLElement>('.rating-dialog__star-icon');
+      const fillSpan = iconWrapper?.querySelector<HTMLElement>('.rating-dialog__star-fill');
+      const outlineSpan = iconWrapper?.querySelector<HTMLElement>('.rating-dialog__star-outline');
+      
+      const starStartValue = starIndex - 1;
+      const relativeFillValue = Math.min(Math.max(displayValue - starStartValue, 0), 1);
+      const fillPercent = Math.round(relativeFillValue * 100);
+      const isHalfState = fillPercent > 0 && fillPercent < 100;
+      const isFilled = fillPercent > 0;
+      
+      const isChecked = !isPreview && this.hasRating && Math.abs(this.ratingValue - displayValue) < 0.01;
+      button.classList.toggle('rating-dialog__star--active', isFilled);
+      button.classList.toggle('rating-dialog__star--half', isHalfState);
       button.setAttribute('aria-checked', isChecked ? 'true' : 'false');
-      button.tabIndex = isChecked || (!this.hasRating && index === 0) ? 0 : -1;
-      button.textContent = isActive ? '★' : '☆';
+      button.tabIndex = isChecked || (!this.hasRating && i === 0) ? 0 : -1;
+      
+      if (fillSpan && outlineSpan) {
+        const clipPercent = 100 - fillPercent;
+        fillSpan.style.opacity = isFilled ? '1' : '0';
+        const clipInset = `inset(0 ${clipPercent}% 0 0)`;
+        fillSpan.style.clipPath = clipInset;
+        fillSpan.style.setProperty('-webkit-clip-path', clipInset);
+        
+        if (fillPercent === 100) {
+          outlineSpan.style.opacity = '0.15';
+        } else if (isFilled) {
+          outlineSpan.style.opacity = '0.4';
+        } else {
+          outlineSpan.style.opacity = '0.7';
+        }
+      }
+      
       button.disabled = this.isSavingRating;
     }
   }
 
   /**
-   * Handle star selection
+   * Handle star toggle for half precision (empty → half → full → empty)
+   */
+  private async onRatingStarToggle(starIndex: number): Promise<void> {
+    if (this.isSavingRating) return;
+
+    const currentStarValue = starIndex; // Full value of this star
+    const halfStarValue = starIndex - 0.5; // Half value of this star
+    const previousValue = this.ratingValue;
+    const previousRating100 = this.data.marker.scene.rating100;
+    const previousHasRating = this.hasRating;
+
+    // Determine next state: empty → full → half → empty
+    // This allows users to set full star ratings (e.g., 3) directly, not just half (e.g., 3.5)
+    let nextValue: number;
+    // Check if we're exactly at the full value for this star
+    if (Math.abs(this.ratingValue - currentStarValue) < 0.01) {
+      // Currently at full value for this star - set to half
+      nextValue = halfStarValue;
+      this.hasRating = true;
+    } else if (Math.abs(this.ratingValue - halfStarValue) < 0.01) {
+      // Currently at half value for this star - set to empty
+      nextValue = 0;
+      this.hasRating = false;
+    } else if (this.ratingValue > currentStarValue) {
+      // Currently higher than this star - set to full (this star)
+      nextValue = currentStarValue;
+      this.hasRating = true;
+    } else {
+      // Currently empty or lower than half - set to full (this star) to allow full star ratings
+      nextValue = currentStarValue;
+      this.hasRating = true;
+    }
+
+    this.ratingValue = this.clampRatingValue(nextValue);
+    this.updateRatingDisplay();
+    this.updateRatingStarButtons();
+    this.closeRatingDialog();
+
+    if (!this.api) {
+      const maxStars = this.getMaxStars();
+      this.data.marker.scene.rating100 = Math.round((this.ratingValue / maxStars) * 100);
+      return;
+    }
+
+    this.isSavingRating = true;
+    this.setRatingSavingState(true);
+    this.updateRatingStarButtons();
+
+    try {
+      // Convert star value to 0-10 scale for API (API expects 0-10 regardless of display)
+      const maxStars = this.getMaxStars();
+      const rating10 = (this.ratingValue / maxStars) * RATING_MAX_STARS;
+      const updatedRating100 = await this.api.updateSceneRating(this.data.marker.scene.id, rating10);
+      this.data.marker.scene.rating100 = updatedRating100;
+      this.ratingValue = this.convertRating100ToStars(updatedRating100);
+      this.hasRating = this.ratingValue > 0;
+      this.updateRatingDisplay();
+      this.updateRatingStarButtons();
+    } catch (error) {
+      console.error('Failed to update scene rating', error);
+      showToast('Failed to update rating. Please try again.');
+      this.ratingValue = previousValue;
+      this.hasRating = previousHasRating;
+      this.data.marker.scene.rating100 = previousRating100;
+      this.updateRatingDisplay();
+      this.updateRatingStarButtons();
+    } finally {
+      this.isSavingRating = false;
+      this.setRatingSavingState(false);
+      this.updateRatingStarButtons();
+    }
+  }
+
+  /**
+   * Handle star selection (for full precision or direct selection)
    */
   private async onRatingStarSelect(value: number): Promise<void> {
     if (this.isSavingRating) return;
@@ -1103,13 +1661,14 @@ export class VideoPost extends BasePost {
     const previousHasRating = this.hasRating;
 
     this.ratingValue = nextValue;
-    this.hasRating = true;
+    this.hasRating = nextValue > 0;
     this.updateRatingDisplay();
     this.updateRatingStarButtons();
     this.closeRatingDialog();
 
     if (!this.api) {
-      this.data.marker.scene.rating100 = this.ratingValue * 10;
+      const maxStars = this.getMaxStars();
+      this.data.marker.scene.rating100 = Math.round((this.ratingValue / maxStars) * 100);
       return;
     }
 
@@ -1118,7 +1677,10 @@ export class VideoPost extends BasePost {
     this.updateRatingStarButtons();
 
     try {
-      const updatedRating100 = await this.api.updateSceneRating(this.data.marker.scene.id, this.ratingValue);
+      // Convert star value to 0-10 scale for API (API expects 0-10 regardless of display)
+      const maxStars = this.getMaxStars();
+      const rating10 = (this.ratingValue / maxStars) * RATING_MAX_STARS;
+      const updatedRating100 = await this.api.updateSceneRating(this.data.marker.scene.id, rating10);
       this.data.marker.scene.rating100 = updatedRating100;
       this.ratingValue = this.convertRating100ToStars(updatedRating100);
       this.hasRating = true;
@@ -1234,17 +1796,53 @@ export class VideoPost extends BasePost {
    */
   private clampRatingValue(value: number): number {
     if (!Number.isFinite(value)) return RATING_MIN_STARS;
-    return Math.min(RATING_MAX_STARS, Math.max(RATING_MIN_STARS, Math.round(value)));
+    const maxStars = this.getMaxStars();
+    if (this.isHalfPrecision()) {
+      // Round to nearest 0.5 for half precision
+      return Math.min(maxStars, Math.max(RATING_MIN_STARS, Math.round(value * 2) / 2));
+    }
+    return Math.min(maxStars, Math.max(RATING_MIN_STARS, Math.round(value)));
   }
 
   /**
-   * Convert rating100 (0-100) to stars (0-10)
+   * Convert rating100 (0-100) to stars (0-10 or 0-5)
    */
   private convertRating100ToStars(rating100?: number): number {
     if (typeof rating100 !== 'number' || Number.isNaN(rating100)) {
       return RATING_MIN_STARS;
     }
-    return this.clampRatingValue(rating100 / 10);
+    const maxStars = this.getMaxStars();
+    const value = (rating100 / 100) * maxStars;
+    return this.clampRatingValue(value);
+  }
+
+  /**
+   * Get maximum stars based on rating system type
+   */
+  private getMaxStars(): number {
+    const type = this.ratingSystemConfig?.type;
+    // Stars type (both full and half) uses 5 stars max
+    // Decimal type uses 10 stars max
+    return type === 'stars' ? 5 : RATING_MAX_STARS;
+  }
+
+  /**
+   * Check if half precision is enabled
+   */
+  private isHalfPrecision(): boolean {
+    return this.ratingSystemConfig?.starPrecision === 'half';
+  }
+
+  /**
+   * Format rating value for display
+   */
+  private formatRatingValue(value: number): string {
+    if (this.isHalfPrecision()) {
+      // Show one decimal place for half precision
+      return value.toFixed(1);
+    }
+    // Show integer for full precision
+    return Math.round(value).toString();
   }
 
   /**
@@ -1357,7 +1955,7 @@ export class VideoPost extends BasePost {
       return;
     }
     
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const isMobile = isMobileDevice();
     const waitTimeout = isMobile ? 6000 : 4000; // Longer timeout on mobile for HD videos
     const checkDelay = isMobile ? 300 : 100; // More time on mobile for play() to take effect
     
@@ -1405,8 +2003,9 @@ export class VideoPost extends BasePost {
         startTime: startTime,
         endTime: this.data.endTime ?? this.data.marker.end_seconds,
         aggressivePreload: false, // HD videos use metadata preload
-        isHDMode: true, // HD mode - show mute button
+        isHDMode: true, // HD mode
         posterUrl: this.getPosterUrl(),
+        // onMuteToggle removed - using overlay button instead
       });
 
       this.isLoaded = true;
@@ -1604,13 +2203,7 @@ export class VideoPost extends BasePost {
     if (this.hqButton) {
       this.updateHQButton(this.hqButton);
     }
-  }
-
-  /**
-   * Get the video player instance
-   */
-  getPlayer(): NativeVideoPlayer | undefined {
-    return this.player;
+    this.updateMuteOverlayButton();
   }
 
   /**
@@ -1680,6 +2273,21 @@ export class VideoPost extends BasePost {
    */
   getContainer(): HTMLElement {
     return this.container;
+  }
+
+  /**
+   * Get the video player instance
+   */
+  getPlayer(): NativeVideoPlayer | undefined {
+    return this.player;
+  }
+
+  /**
+   * Hide the entire post (used when video fails to load permanently)
+   */
+  hidePost(): void {
+    this.container.style.display = 'none';
+    this.hasFailedPermanently = true;
   }
 
   /**
@@ -1898,7 +2506,7 @@ export class VideoPost extends BasePost {
 
   private async seekPlayerToStart(player: NativeVideoPlayer, startTime: number): Promise<void> {
     const clamped = Number.isFinite(startTime) ? Math.max(0, startTime) : 0;
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const isMobile = isMobileDevice();
     const timeout = isMobile ? 4000 : 2000; // Longer timeout on mobile for HD videos
     
     try {

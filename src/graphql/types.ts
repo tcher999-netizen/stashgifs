@@ -501,6 +501,20 @@ export interface ImageUpdateResponse {
 }
 
 /**
+ * UIConfiguration response
+ */
+export interface UIConfigurationResponse {
+  configuration: {
+    ui: {
+      ratingSystemOptions?: {
+        type?: string;
+        starPrecision?: string;
+      };
+    };
+  };
+}
+
+/**
  * ImageIncrementO response
  */
 export interface ImageIncrementOResponse {

@@ -6,7 +6,7 @@
 import { FavoritesManager } from './FavoritesManager.js';
 import { StashAPI } from './StashAPI.js';
 import { VisibilityManager } from './VisibilityManager.js';
-import { toAbsoluteUrl, showToast } from './utils.js';
+import { toAbsoluteUrl, showToast, isMobileDevice } from './utils.js';
 import { VERIFIED_CHECKMARK_SVG, ADD_TAG_SVG, HEART_SVG_OUTLINE, HEART_SVG_FILLED, OCOUNT_SVG } from './icons.js';
 
 interface HoverHandlers {
@@ -157,7 +157,7 @@ export abstract class BasePost {
       }
     };
     
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const isMobile = isMobileDevice();
     
     if (isMobile) {
       let touchStartX: number = 0;
@@ -329,7 +329,7 @@ export abstract class BasePost {
       hashtag.style.color = 'rgba(255, 255, 255, 0.75)';
     });
     
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const isMobile = isMobileDevice();
     
     if (isMobile) {
       let touchStartX: number = 0;

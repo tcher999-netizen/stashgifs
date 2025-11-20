@@ -36,6 +36,7 @@ import {
   SceneMarkerUpdateInput,
   TypedGraphQLClient,
   Image,
+  UIConfigurationResponse,
 } from './graphql/types.js';
 import {
   GraphQLRequestError,
@@ -2166,6 +2167,34 @@ export class StashAPI {
       }
       console.error('StashAPI: Failed to find images', e);
       return { images: [], totalCount: 0 };
+    }
+  }
+
+  /**
+   * Get current UI configuration, including rating system settings
+   * @returns Current rating system configuration or null if unavailable
+   */
+  async getUIConfiguration(): Promise<{ type?: string; starPrecision?: string } | null> {
+    try {
+      const result = await this.gqlClient.query<UIConfigurationResponse>({
+        query: queries.GET_UI_CONFIGURATION,
+      });
+      // UI is returned as a JSON string, need to parse it
+      const uiConfig = result.data?.configuration?.ui;
+      if (typeof uiConfig === 'string') {
+        try {
+          const parsed = JSON.parse(uiConfig) as { ratingSystemOptions?: { type?: string; starPrecision?: string } };
+          return parsed.ratingSystemOptions || null;
+        } catch {
+          return null;
+        }
+      } else if (uiConfig && typeof uiConfig === 'object' && 'ratingSystemOptions' in uiConfig) {
+        return (uiConfig as { ratingSystemOptions?: { type?: string; starPrecision?: string } }).ratingSystemOptions || null;
+      }
+      return null;
+    } catch (error) {
+      console.error('StashAPI: Failed to get UI configuration', error);
+      return null;
     }
   }
 }

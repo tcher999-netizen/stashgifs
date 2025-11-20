@@ -6,6 +6,17 @@
 import { SceneFields, SceneMarkerFields, TagFields, TagFieldsExtended, PerformerFields, SlimImageData, VisualFileData } from './fragments.js';
 
 /**
+ * Get UI configuration
+ */
+export const GET_UI_CONFIGURATION = `
+  query Configuration {
+    configuration {
+      ui
+    }
+  }
+`;
+
+/**
  * Check if tags have markers
  */
 export const CHECK_TAGS_HAVE_MARKERS = `

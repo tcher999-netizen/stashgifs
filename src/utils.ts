@@ -211,7 +211,7 @@ export interface DeviceCapabilities {
  * Detect device capabilities for adaptive media loading
  */
 export function detectDeviceCapabilities(): DeviceCapabilities {
-  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const isMobile = isMobileDevice();
   const isTablet = /iPad|Android/i.test(navigator.userAgent) && !/Mobile/i.test(navigator.userAgent);
   
   // Detect high DPI display
@@ -471,4 +471,123 @@ export function hasFullscreenSupport(element: Element): boolean {
     hasMozFullscreen(element) ||
     hasMsFullscreen(element)
   );
+}
+
+/**
+ * Cached mobile device detection result
+ */
+let cachedIsMobile: boolean | null = null;
+
+/**
+ * Detect if the current device is a mobile device
+ * Uses both user agent detection and feature detection for reliability
+ * Result is cached to avoid repeated checks
+ */
+export function isMobileDevice(): boolean {
+  if (cachedIsMobile !== null) {
+    return cachedIsMobile;
+  }
+
+  // Feature detection: check for touch support
+  const hasTouchSupport = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+
+  // User agent detection
+  const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+  const isMobileUA = /iPhone|iPad|iPod|Android/i.test(userAgent);
+
+  // Consider it mobile if either check is true
+  cachedIsMobile = hasTouchSupport || isMobileUA;
+
+  return cachedIsMobile;
+}
+
+/**
+ * Detect if the current device is an iOS device
+ */
+export function isIOSDevice(): boolean {
+  const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+  return /iPhone|iPad|iPod/i.test(userAgent);
+}
+
+/**
+ * Detect if the current device is an Android device
+ */
+export function isAndroidDevice(): boolean {
+  const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+  return /Android/i.test(userAgent);
+}
+
+/**
+ * Network information interface for adaptive buffering
+ */
+export interface NetworkInfo {
+  effectiveType?: 'slow-2g' | '2g' | '3g' | '4g';
+  downlink?: number; // Mbps
+  saveData?: boolean;
+  type?: 'bluetooth' | 'cellular' | 'ethernet' | 'none' | 'wifi' | 'wimax' | 'other' | 'unknown';
+}
+
+/**
+ * NetworkInformation API interface (experimental)
+ * Used for network-aware optimizations
+ */
+interface NetworkInformation {
+  effectiveType?: 'slow-2g' | '2g' | '3g' | '4g';
+  downlink?: number;
+  saveData?: boolean;
+  type?: 'bluetooth' | 'cellular' | 'ethernet' | 'none' | 'wifi' | 'wimax' | 'other' | 'unknown';
+}
+
+/**
+ * Get network information if available
+ * Uses the NetworkInformation API when supported
+ */
+export function getNetworkInfo(): NetworkInfo | null {
+  if (typeof navigator === 'undefined') {
+    return null;
+  }
+
+  const connection = (navigator as Navigator & { connection?: NetworkInformation; mozConnection?: NetworkInformation; webkitConnection?: NetworkInformation }).connection ||
+                     (navigator as Navigator & { connection?: NetworkInformation; mozConnection?: NetworkInformation; webkitConnection?: NetworkInformation }).mozConnection ||
+                     (navigator as Navigator & { connection?: NetworkInformation; mozConnection?: NetworkInformation; webkitConnection?: NetworkInformation }).webkitConnection;
+
+  if (!connection) {
+    return null;
+  }
+
+  return {
+    effectiveType: connection.effectiveType as NetworkInfo['effectiveType'],
+    downlink: connection.downlink,
+    saveData: connection.saveData,
+    type: connection.type as NetworkInfo['type'],
+  };
+}
+
+/**
+ * Check if network connection is slow
+ * Returns true if effectiveType is 'slow-2g' or '2g', or if saveData is enabled
+ */
+export function isSlowNetwork(): boolean {
+  const networkInfo = getNetworkInfo();
+  if (!networkInfo) {
+    return false;
+  }
+
+  if (networkInfo.saveData) {
+    return true;
+  }
+
+  return networkInfo.effectiveType === 'slow-2g' || networkInfo.effectiveType === '2g';
+}
+
+/**
+ * Check if network connection is cellular
+ */
+export function isCellularConnection(): boolean {
+  const networkInfo = getNetworkInfo();
+  if (!networkInfo) {
+    return false;
+  }
+
+  return networkInfo.type === 'cellular';
 }

@@ -19,10 +19,10 @@ class PosterPreloader {
     const markerId = marker?.id;
     const sceneId = marker?.scene?.id;
     if (!markerId || !sceneId) return undefined;
-    // Skip screenshot requests for synthetic markers (shuffle/random mode)
-    // Convert to string to handle both string and number IDs, then check for synthetic prefix
+    // Skip screenshot requests for synthetic markers (shuffle/random mode) and short form markers
+    // Convert to string to handle both string and number IDs, then check for synthetic/shortform prefix
     const markerIdStr = String(markerId);
-    if (markerIdStr.startsWith('synthetic-')) return undefined;
+    if (markerIdStr.startsWith('synthetic-') || markerIdStr.startsWith('shortform-')) return undefined;
     // Path-style endpoint; assume same-origin
     // Add cache-busting timestamp to prevent 304 responses with empty/corrupted cache
     const timestamp = Date.now();
@@ -65,10 +65,10 @@ class PosterPreloader {
   getPosterForMarker(marker: SceneMarker): string | undefined {
     const id = marker?.id;
     if (!id) return undefined;
-    // Never return cached URLs for synthetic markers (they don't exist in Stash)
+    // Never return cached URLs for synthetic markers and short form markers (they don't exist in Stash)
     // Convert to string to handle both string and number IDs
     const idStr = String(id);
-    if (idStr.startsWith('synthetic-')) return undefined;
+    if (idStr.startsWith('synthetic-') || idStr.startsWith('shortform-')) return undefined;
     return this.cache.get(idStr);
   }
 }

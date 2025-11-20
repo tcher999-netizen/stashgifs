@@ -924,11 +924,58 @@
   .video-player__controls {
     padding: var(--spacing-md);
     padding-bottom: max(var(--spacing-md), env(safe-area-inset-bottom, 0px));
+    /* Show controls on mobile when video is playing (auto-hide after 3s) */
+    opacity: 1;
+    transition: opacity 0.3s cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  /* Hide controls after 3 seconds on mobile when not interacting */
+  .video-post:not(:active) .video-player__controls {
+    opacity: 0;
+  }
+
+  .video-post:active .video-player__controls,
+  .video-post:focus-within .video-player__controls {
+    opacity: 1;
   }
 
   .video-player__time {
     font-size: var(--font-footnote);
     min-width: 60px;
+  }
+
+  /* Enhanced touch targets for mobile - ensure all buttons are at least 44x44px */
+  .video-player__controls button {
+    min-width: 44px;
+    min-height: 44px;
+    padding: var(--spacing-sm);
+    /* Larger touch area */
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: rgba(255, 255, 255, 0.1);
+  }
+
+  .video-player__controls button svg {
+    width: 24px;
+    height: 24px;
+  }
+
+  /* Larger progress bar thumb for mobile */
+  .video-player__progress {
+    height: 6px; /* Increased from 4px for better touch target */
+  }
+
+  .video-player__progress::-webkit-slider-thumb {
+    width: 16px; /* Increased from 12px */
+    height: 16px; /* Increased from 12px */
+    /* Larger touch target */
+    touch-action: manipulation;
+  }
+
+  .video-player__progress::-moz-range-thumb {
+    width: 16px; /* Increased from 12px */
+    height: 16px; /* Increased from 12px */
+    /* Larger touch target */
+    touch-action: manipulation;
   }
   
   /* Ensure chips wrap properly on mobile */
@@ -939,6 +986,9 @@
   .chip {
     font-size: var(--font-caption);
     padding: var(--spacing-xs) var(--spacing-sm);
+    /* Ensure chips have minimum touch target */
+    min-height: 32px;
+    touch-action: manipulation;
   }
   
   /* Rating dialog mobile optimizations */
@@ -953,6 +1003,60 @@
     font-size: 0.85rem;
     min-width: 18px;
     padding: 0 1px;
+    /* Ensure touch target is adequate */
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+
+  /* Footer buttons - ensure adequate touch targets */
+  .video-post__footer button,
+  .video-post__footer .icon-btn {
+    min-width: 44px;
+    min-height: 44px;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: rgba(255, 255, 255, 0.1);
+  }
+
+  /* Mute overlay button - ensure it's easily tappable */
+  .video-post__mute-overlay {
+    min-width: 44px !important;
+    min-height: 44px !important;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: rgba(255, 255, 255, 0.1);
+  }
+
+  /* Fullscreen optimizations for mobile */
+  .video-post:fullscreen,
+  .video-post:-webkit-full-screen,
+  .video-post:-moz-full-screen,
+  .video-post:-ms-fullscreen {
+    width: 100vw;
+    height: 100vh;
+    /* Ensure safe areas are respected in fullscreen */
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  }
+
+  /* Video player overlay - larger on mobile for better visibility */
+  .video-player__overlay {
+    width: 100px !important;
+    height: 100px !important;
+  }
+
+  .video-player__overlay svg {
+    width: 56px !important;
+    height: 56px !important;
+  }
+
+  /* Loading indicator - more visible on mobile */
+  .video-player__loading,
+  .video-post__loading {
+    background: rgba(0, 0, 0, 0.5); /* More opaque on mobile */
+  }
+
+  .spinner {
+    width: 32px; /* Larger spinner on mobile */
+    height: 32px;
+    border-width: 3px; /* Thicker border */
   }
 }
 
