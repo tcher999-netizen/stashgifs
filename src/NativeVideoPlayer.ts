@@ -367,7 +367,7 @@ export class NativeVideoPlayer {
    */
   private extractFirstFrameAsPoster(): void {
     // Only extract if video element exists and is valid
-    if (!this.videoElement || !this.videoElement.src) {
+    if (!this.videoElement?.src) {
       return;
     }
 
@@ -1007,7 +1007,6 @@ export class NativeVideoPlayer {
     this.videoElement.style.position = 'relative';
     // On mobile, video z-index is 1 (below poster which is 2) to ensure poster covers video
     // On desktop, z-index is 1 as well
-    const isMobile = isMobileDevice();
     this.videoElement.style.zIndex = '1';
     // Set background to transparent
     this.videoElement.style.backgroundColor = 'transparent';
@@ -2168,7 +2167,14 @@ export class NativeVideoPlayer {
     // On mobile, accept readyState >= 2 (HAVE_CURRENT_DATA) for faster start
     // On very slow networks, accept readyState >= 1 (HAVE_METADATA) for even faster start
     const isSlow = isSlowNetwork();
-    const minReadyState = isMobile && isSlow ? 1 : (isMobile ? 2 : 4);
+    let minReadyState: number;
+    if (isMobile && isSlow) {
+      minReadyState = 1;
+    } else if (isMobile) {
+      minReadyState = 2;
+    } else {
+      minReadyState = 4;
+    }
     
     // Check if already ready
     if (this.videoElement.readyState >= minReadyState) {

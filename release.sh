@@ -34,22 +34,22 @@ echo ""
 
 # Check if gh CLI is installed
 if ! command -v gh &> /dev/null; then
-    echo -e "${RED}Error: GitHub CLI (gh) is not installed.${NC}"
-    echo "Install it from: https://cli.github.com/"
+    echo -e "${RED}Error: GitHub CLI (gh) is not installed.${NC}" >&2
+    echo "Install it from: https://cli.github.com/" >&2
     exit 1
 fi
 
 # Check if gh is authenticated
 if ! gh auth status &> /dev/null; then
-    echo -e "${RED}Error: GitHub CLI is not authenticated.${NC}"
-    echo "Run: gh auth login"
+    echo -e "${RED}Error: GitHub CLI is not authenticated.${NC}" >&2
+    echo "Run: gh auth login" >&2
     exit 1
 fi
 
 # Step 0: Build project
 echo -e "${YELLOW}Step 0: Building project...${NC}"
 if ! npm run build; then
-    echo -e "${RED}Error: Build failed!${NC}"
+    echo -e "${RED}Error: Build failed!${NC}" >&2
     exit 1
 fi
 echo -e "${GREEN}Build completed successfully!${NC}"
@@ -57,23 +57,23 @@ echo ""
 
 # Step 1: Update version if specified
 VERSION_BUMP="$1"
-if [ -n "$VERSION_BUMP" ]; then
+if [[ -n "$VERSION_BUMP" ]]; then
     echo -e "${YELLOW}Step 1: Updating version ($VERSION_BUMP)...${NC}"
     
     if [[ ! "$VERSION_BUMP" =~ ^(bug|minor|major)$ ]]; then
-        echo -e "${RED}Error: Invalid version bump type. Use 'bug', 'minor', or 'major'.${NC}"
+        echo -e "${RED}Error: Invalid version bump type. Use 'bug', 'minor', or 'major'.${NC}" >&2
         exit 1
     fi
     
     # Read current version from manifest
-    if [ ! -f "$MANIFEST_PATH" ]; then
-        echo -e "${RED}Error: Manifest file not found: $MANIFEST_PATH${NC}"
+    if [[ ! -f "$MANIFEST_PATH" ]]; then
+        echo -e "${RED}Error: Manifest file not found: $MANIFEST_PATH${NC}" >&2
         exit 1
     fi
     
     CURRENT_VERSION=$(grep -oP 'version:\s*\K\d+\.\d+\.\d+' "$MANIFEST_PATH" || echo "")
-    if [ -z "$CURRENT_VERSION" ]; then
-        echo -e "${RED}Error: Could not parse version from manifest${NC}"
+    if [[ -z "$CURRENT_VERSION" ]]; then
+        echo -e "${RED}Error: Could not parse version from manifest${NC}" >&2
         exit 1
     fi
     
@@ -97,6 +97,10 @@ if [ -n "$VERSION_BUMP" ]; then
             PATCH=0
             echo -e "${GRAY}Bumping major version: $((MAJOR - 1)).*.* -> $MAJOR.$MINOR.$PATCH${NC}"
             ;;
+        *)
+            echo -e "${RED}Error: Unexpected version bump type: $VERSION_BUMP${NC}" >&2
+            exit 1
+            ;;
     esac
     
     NEW_VERSION="$MAJOR.$MINOR.$PATCH"
@@ -112,7 +116,7 @@ if [ -n "$VERSION_BUMP" ]; then
     sed -i "s|path: https://github.com/evolite/stashgifs/releases/download/[^/]*/stashgifs.zip|path: https://github.com/evolite/stashgifs/releases/download/v$NEW_VERSION/stashgifs.zip|" "$INDEX_YML_PATH"
     
     # Update stashgifs.yml if it exists
-    if [ -f "$STASHGIFS_YML_PATH" ]; then
+    if [[ -f "$STASHGIFS_YML_PATH" ]]; then
         if grep -q "version:" "$STASHGIFS_YML_PATH"; then
             sed -i "s/version: [0-9]\+\.[0-9]\+\.[0-9]\+/version: $NEW_VERSION/" "$STASHGIFS_YML_PATH"
         else
@@ -122,7 +126,7 @@ if [ -n "$VERSION_BUMP" ]; then
     fi
     
     # Update package.json
-    if [ -f "$PACKAGE_JSON_PATH" ]; then
+    if [[ -f "$PACKAGE_JSON_PATH" ]]; then
         # Use node or python to update JSON (more reliable than sed)
         if command -v node &> /dev/null; then
             node -e "
@@ -155,13 +159,13 @@ fi
 echo -e "${YELLOW}Step 2: Validating manifest...${NC}"
 ASSETS_DIR="$STASHGIFS_DIR/app/assets"
 
-if [ ! -d "$ASSETS_DIR" ]; then
-    echo -e "${RED}Error: Assets directory not found: $ASSETS_DIR${NC}"
+if [[ ! -d "$ASSETS_DIR" ]]; then
+    echo -e "${RED}Error: Assets directory not found: $ASSETS_DIR${NC}" >&2
     exit 1
 fi
 
-if [ ! -f "$MANIFEST_PATH" ]; then
-    echo -e "${RED}Error: Manifest file not found: $MANIFEST_PATH${NC}"
+if [[ ! -f "$MANIFEST_PATH" ]]; then
+    echo -e "${RED}Error: Manifest file not found: $MANIFEST_PATH${NC}" >&2
     exit 1
 fi
 
@@ -199,7 +203,7 @@ echo ""
 
 # Step 3: Delete existing zip if it exists
 echo -e "${YELLOW}Step 3: Cleaning existing zip file...${NC}"
-if [ -f "$ZIP_FILE" ]; then
+if [[ -f "$ZIP_FILE" ]]; then
     echo -e "${GRAY}Deleting existing zip: $ZIP_FILE${NC}"
     rm -f "$ZIP_FILE"
     echo -e "${GREEN}Existing zip deleted.${NC}"
@@ -213,8 +217,8 @@ echo -e "${YELLOW}Step 4: Creating zip file...${NC}"
 echo -e "${GRAY}Source: $STASHGIFS_DIR${NC}"
 echo -e "${GRAY}Target: $ZIP_FILE${NC}"
 
-if [ ! -d "$STASHGIFS_DIR" ]; then
-    echo -e "${RED}Error: Source stashgifs directory not found: $STASHGIFS_DIR${NC}"
+if [[ ! -d "$STASHGIFS_DIR" ]]; then
+    echo -e "${RED}Error: Source stashgifs directory not found: $STASHGIFS_DIR${NC}" >&2
     exit 1
 fi
 
@@ -226,9 +230,9 @@ elif command -v 7z &> /dev/null; then
     cd "$SCRIPT_DIR"
     7z a -tzip "stashgifs.zip" "stashgifs" -y > /dev/null
 else
-    echo -e "${RED}Error: zip or 7z command not found.${NC}"
-    echo "Install zip: sudo apt-get install zip (Debian/Ubuntu)"
-    echo "Or install 7zip: sudo apt-get install p7zip-full (Debian/Ubuntu)"
+    echo -e "${RED}Error: zip or 7z command not found.${NC}" >&2
+    echo "Install zip: sudo apt-get install zip (Debian/Ubuntu)" >&2
+    echo "Or install 7zip: sudo apt-get install p7zip-full (Debian/Ubuntu)" >&2
     exit 1
 fi
 
@@ -242,7 +246,7 @@ if command -v sha256sum &> /dev/null; then
 elif command -v shasum &> /dev/null; then
     HASH=$(shasum -a 256 "$ZIP_FILE" | cut -d' ' -f1)
 else
-    echo -e "${RED}Error: sha256sum or shasum command not found.${NC}"
+    echo -e "${RED}Error: sha256sum or shasum command not found.${NC}" >&2
     exit 1
 fi
 
@@ -258,8 +262,8 @@ CURRENT_DATE=$(date +"%Y-%m-%d %H:%M:%S")
 
 # Get version from index.yml
 VERSION=$(grep -oP 'version:\s*\K\d+\.\d+\.\d+' "$INDEX_YML_PATH" || echo "")
-if [ -z "$VERSION" ]; then
-    echo -e "${RED}Error: Could not parse version from index.yml${NC}"
+if [[ -z "$VERSION" ]]; then
+    echo -e "${RED}Error: Could not parse version from index.yml${NC}" >&2
     exit 1
 fi
 
@@ -294,7 +298,7 @@ RELEASE_NOTES="Release v$VERSION
 if gh release create "v$VERSION" "$ZIP_FILE" --title "v$VERSION" --notes "$RELEASE_NOTES"; then
     echo -e "${GREEN}GitHub release created successfully!${NC}"
 else
-    echo -e "${RED}Error: Failed to create GitHub release${NC}"
+    echo -e "${RED}Error: Failed to create GitHub release${NC}" >&2
     exit 1
 fi
 echo ""

@@ -26,12 +26,12 @@ export class AudioManager {
   private currentAudioOwner?: string;
   private ownerPriority: AudioPriority = AudioPriority.NONE;
   private hoveredPostId?: string;
-  private manuallyStartedVideos: Set<string> = new Set();
-  private entries: Map<string, VisibilityEntry>;
+  private readonly manuallyStartedVideos: Set<string> = new Set();
+  private readonly entries: Map<string, VisibilityEntry>;
   private globalMuteState: boolean = true; // Global mute state - all videos muted when true (default: muted)
-  private debugEnabled: boolean = false;
-  private logger?: (event: string, payload?: Record<string, unknown>) => void;
-  private getHoveredPostId?: () => string | undefined;
+  private readonly debugEnabled: boolean = false;
+  private readonly logger?: (event: string, payload?: Record<string, unknown>) => void;
+  private readonly getHoveredPostId?: () => string | undefined;
 
   constructor(
     entries: Map<string, VisibilityEntry>,
@@ -228,15 +228,15 @@ export class AudioManager {
         if (isCurrentlyMuted) {
           entry.player.setMuted(false);
         }
-      } else if (!isMobile) {
-        // Desktop: normal behavior
-        if (shouldBeMuted !== isCurrentlyMuted) {
-          entry.player.setMuted(shouldBeMuted);
-        }
-      } else {
+      } else if (isMobile) {
         // Mobile: mute if not owner
         if (shouldBeMuted && !isCurrentlyMuted) {
           entry.player.setMuted(true);
+        }
+      } else {
+        // Desktop: normal behavior
+        if (shouldBeMuted !== isCurrentlyMuted) {
+          entry.player.setMuted(shouldBeMuted);
         }
       }
     }
@@ -263,12 +263,12 @@ export class AudioManager {
       // Immediately request audio focus with MANUAL priority
       // This ensures manually started videos take priority over center-based videos
       this.requestAudioFocus(postId, AudioPriority.MANUAL);
-    } else {
-      // For autoplay videos, only re-evaluate if no video currently has audio
-      // This prevents autoplay videos from stealing audio from manually started videos
-      if (!this.currentAudioOwner) {
-        this.updateAudioFocus();
-      }
+      return;
+    }
+    // For autoplay videos, only re-evaluate if no video currently has audio
+    // This prevents autoplay videos from stealing audio from manually started videos
+    if (!this.currentAudioOwner) {
+      this.updateAudioFocus();
     }
   }
 
@@ -302,8 +302,10 @@ export class AudioManager {
     // If video became invisible and it was the audio owner, release
     if (!isVisible && this.currentAudioOwner === postId) {
       this.releaseAudioFocus(postId);
-    } else if (isVisible) {
-      // Re-evaluate audio focus when video becomes visible
+      return;
+    }
+    // Re-evaluate audio focus when video becomes visible
+    if (isVisible) {
       this.updateAudioFocus();
     }
   }

@@ -1496,8 +1496,8 @@ export class VideoPost extends BasePost {
    */
   private updateRatingStarButtons(isPreview: boolean = false): void {
     if (!this.ratingStarButtons || this.ratingStarButtons.length === 0) return;
-    const isHalfPrecision = this.isHalfPrecision();
-    const maxStars = this.getMaxStars();
+    this.isHalfPrecision();
+    this.getMaxStars();
     
     // Determine the preview or actual rating value
     let displayValue: number;
@@ -1511,7 +1511,6 @@ export class VideoPost extends BasePost {
     for (let i = 0; i < this.ratingStarButtons.length; i++) {
       const button = this.ratingStarButtons[i];
       const starIndex = i + 1; // 1-based index
-      const starValue = starIndex; // Full star value
       const iconWrapper = button.querySelector<HTMLElement>('.rating-dialog__star-icon');
       const fillSpan = iconWrapper?.querySelector<HTMLElement>('.rating-dialog__star-fill');
       const outlineSpan = iconWrapper?.querySelector<HTMLElement>('.rating-dialog__star-outline');
@@ -1572,12 +1571,9 @@ export class VideoPost extends BasePost {
       // Currently at half value for this star - set to empty
       nextValue = 0;
       this.hasRating = false;
-    } else if (this.ratingValue > currentStarValue) {
-      // Currently higher than this star - set to full (this star)
-      nextValue = currentStarValue;
-      this.hasRating = true;
     } else {
-      // Currently empty or lower than half - set to full (this star) to allow full star ratings
+      // Currently higher than this star, or empty/lower than half - set to full (this star)
+      // This allows users to set full star ratings (e.g., 3) directly, not just half (e.g., 3.5)
       nextValue = currentStarValue;
       this.hasRating = true;
     }

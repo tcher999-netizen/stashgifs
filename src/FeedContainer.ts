@@ -16,7 +16,7 @@ import { AudioManager, AudioPriority } from './AudioManager.js';
 import { debounce, isValidMediaUrl, detectDeviceCapabilities, DeviceCapabilities, isStandaloneNavigator, isMobileDevice, getNetworkInfo, isSlowNetwork, isCellularConnection } from './utils.js';
 import { posterPreloader } from './PosterPreloader.js';
 import { Image as GraphQLImage } from './graphql/types.js';
-import { HQ_SVG_OUTLINE, RANDOM_SVG, SETTINGS_SVG, VOLUME_MUTED_SVG, VOLUME_UNMUTED_SVG, SHUFFLE_CHECK_SVG, CLEAR_SVG } from './icons.js';
+import { HQ_SVG_OUTLINE, RANDOM_SVG, SETTINGS_SVG, SHUFFLE_CHECK_SVG, CLEAR_SVG } from './icons.js';
 
 const DEFAULT_SETTINGS: FeedSettings = {
   autoPlay: true, // Enable autoplay for markers
@@ -209,13 +209,8 @@ export class FeedContainer {
       // Reduce max concurrent videos on mobile to save memory
       // Use device capabilities to determine optimal value
       this.deviceCapabilities = detectDeviceCapabilities();
-      if (this.deviceCapabilities.availableRAM < 2048) {
-        // Low RAM device: only 1 concurrent video
-        this.settings.maxConcurrentVideos = 1;
-      } else {
-        // Standard mobile: 1-2 concurrent videos
-        this.settings.maxConcurrentVideos = 1;
-      }
+      // Set to 1 concurrent video for mobile devices
+      this.settings.maxConcurrentVideos = 1;
       
       // Network-aware optimizations for mobile
       this.applyNetworkOptimizations();
@@ -4630,7 +4625,8 @@ export class FeedContainer {
    * Log short-form content settings for debugging
    */
   private logShortFormSettings(shouldLoadShortForm: boolean): void {
-    const shortFormEnabledForCurrentMode = this.shouldLoadShortFormContent();
+    // Log short-form content settings for debugging
+    this.shouldLoadShortFormContent();
   }
 
   /**
@@ -6738,7 +6734,7 @@ export class FeedContainer {
       // Throttle for 300ms
       this.snapThrottleTimeout = setTimeout(() => {
         this.snapThrottleTimeout = undefined;
-      }, 300) as ReturnType<typeof setTimeout>;
+      }, 300);
     };
 
     // Setup touch handlers for swipe detection
@@ -6827,7 +6823,7 @@ export class FeedContainer {
       const post = this.posts.get(postId);
       if (post) {
         const container = post.getContainer();
-        if (container && container.parentNode) {
+        if (container?.parentNode) {
           cards.push(container);
         }
       }
@@ -6972,7 +6968,7 @@ export class FeedContainer {
     await new Promise((r) => setTimeout(r, 150));
 
     // Check if video is manually paused - don't autoplay if user paused it
-    if (player.isManuallyPaused && player.isManuallyPaused()) {
+    if (player.isManuallyPaused?.()) {
       return;
     }
 
@@ -7012,12 +7008,11 @@ export class FeedContainer {
 
     // Set as hovered temporarily to give it highest priority (HOVER priority)
     // This ensures snapped card gets audio even if other videos are playing
-    const previousHoveredId = visibilityManager.hoveredPostId;
     visibilityManager.hoveredPostId = postId;
     
     // Also set in AudioManager for consistency
     if (visibilityManager.audioManager) {
-      (visibilityManager.audioManager as any).hoveredPostId = postId;
+      visibilityManager.audioManager.hoveredPostId = postId;
     }
 
     // Now trigger playback

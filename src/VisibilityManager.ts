@@ -43,7 +43,7 @@ export class VisibilityManager {
   private lastScrollTime: number = 0;
   private lastScrollTop: number = 0;
   private readonly isMobileDevice: boolean;
-  private audioManager: AudioManager; // Centralized audio management
+  private readonly audioManager: AudioManager; // Centralized audio management
   private hoveredPostId?: string; // Track which post is currently hovered/touched
   private touchedPostId?: string; // Track which post is currently touched (separate from hover for mobile)
   private isHDMode: boolean = false; // Track HD mode for more aggressive unloading
@@ -302,7 +302,6 @@ export class VisibilityManager {
           this.audioManager.markManuallyStarted(postId);
         }
       } else {
-        const wasManuallyStarted = this.audioManager.isManuallyStarted(postId);
         this.videoStates.set(postId, 'paused');
         this.activeVideos.delete(postId);
         // Remove from manually started set when paused - use AudioManager

@@ -473,13 +473,23 @@ export abstract class BasePost {
     }
     if (performerData.gender) {
       // Use icon instead of text for gender
-      const genderIcon = performerData.gender.toUpperCase() === 'FEMALE' ? '♀' : 
-                        performerData.gender.toUpperCase() === 'MALE' ? '♂' : 
-                        performerData.gender.toUpperCase() === 'TRANSGENDER_FEMALE' ? '⚧♀' :
-                        performerData.gender.toUpperCase() === 'TRANSGENDER_MALE' ? '⚧♂' :
-                        performerData.gender.toUpperCase() === 'NON_BINARY' ? '⚧' :
-                        performerData.gender.toUpperCase() === 'INTERSEX' ? '⚥' :
-                        performerData.gender;
+      const genderUpper = performerData.gender.toUpperCase();
+      let genderIcon: string;
+      if (genderUpper === 'FEMALE') {
+        genderIcon = '♀';
+      } else if (genderUpper === 'MALE') {
+        genderIcon = '♂';
+      } else if (genderUpper === 'TRANSGENDER_FEMALE') {
+        genderIcon = '⚧♀';
+      } else if (genderUpper === 'TRANSGENDER_MALE') {
+        genderIcon = '⚧♂';
+      } else if (genderUpper === 'NON_BINARY') {
+        genderIcon = '⚧';
+      } else if (genderUpper === 'INTERSEX') {
+        genderIcon = '⚥';
+      } else {
+        genderIcon = performerData.gender;
+      }
       metadata.push({ label: 'Gender', value: genderIcon, isIcon: true });
     }
     if (performerData.country) {
@@ -719,7 +729,7 @@ export abstract class BasePost {
         // Immediately remove from DOM (for rapid hover changes)
         if (this.performerOverlay.parentElement) {
           try {
-            this.performerOverlay.parentElement.removeChild(this.performerOverlay);
+            this.performerOverlay.remove();
           } catch {
             // Element may have already been removed
           }
@@ -729,9 +739,9 @@ export abstract class BasePost {
         // Fade out then remove (for normal mouse leave)
         this.performerOverlay.style.opacity = '0';
         setTimeout(() => {
-          if (this.performerOverlay && this.performerOverlay.parentElement) {
+          if (this.performerOverlay?.parentElement) {
             try {
-              this.performerOverlay.parentElement.removeChild(this.performerOverlay);
+              this.performerOverlay.remove();
             } catch {
               // Element may have already been removed
             }

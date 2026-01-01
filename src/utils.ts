@@ -489,10 +489,10 @@ export function isMobileDevice(): boolean {
   }
 
   // Feature detection: check for touch support
-  const hasTouchSupport = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  const hasTouchSupport = 'ontouchstart' in globalThis || navigator.maxTouchPoints > 0;
 
   // User agent detection
-  const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+  const userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent;
   const isMobileUA = /iPhone|iPad|iPod|Android/i.test(userAgent);
 
   // Consider it mobile if either check is true
@@ -505,7 +505,7 @@ export function isMobileDevice(): boolean {
  * Detect if the current device is an iOS device
  */
 export function isIOSDevice(): boolean {
-  const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+  const userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent;
   return /iPhone|iPad|iPod/i.test(userAgent);
 }
 
@@ -513,7 +513,7 @@ export function isIOSDevice(): boolean {
  * Detect if the current device is an Android device
  */
 export function isAndroidDevice(): boolean {
-  const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+  const userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent;
   return /Android/i.test(userAgent);
 }
 
@@ -556,10 +556,10 @@ export function getNetworkInfo(): NetworkInfo | null {
   }
 
   return {
-    effectiveType: connection.effectiveType as NetworkInfo['effectiveType'],
+    effectiveType: connection.effectiveType,
     downlink: connection.downlink,
     saveData: connection.saveData,
-    type: connection.type as NetworkInfo['type'],
+    type: connection.type,
   };
 }
 
