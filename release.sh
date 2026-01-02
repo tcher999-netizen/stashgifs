@@ -183,7 +183,7 @@ MISSING=$(comm -23 <(echo "$BUILT_FILES") <(echo "$MANIFEST_FILES"))
 EXTRA=$(comm -13 <(echo "$BUILT_FILES") <(echo "$MANIFEST_FILES"))
 
 if [[ -n "$MISSING" ]]; then
-    echo -e "${RED}Error: Built files missing from manifest:${NC}"
+    echo -e "${RED}Error: Built files missing from manifest:${NC}" >&2
     echo "$MISSING" | while read -r file; do
         echo -e "${YELLOW}  $file${NC}"
     done

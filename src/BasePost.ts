@@ -404,39 +404,59 @@ export abstract class BasePost {
   }
 
   /**
-   * Build metadata array for performer overlay
+   * Get gender icon for performer
    */
-  private buildPerformerMetadata(performerData: PerformerExtended): Array<{ label: string; value: string | undefined; isIcon?: boolean }> {
-    const metadata: Array<{ label: string; value: string | undefined; isIcon?: boolean }> = [];
+  private getGenderIcon(gender: string): string {
+    const genderUpper = gender.toUpperCase();
+    if (genderUpper === 'FEMALE') {
+      return '♀';
+    }
+    if (genderUpper === 'MALE') {
+      return '♂';
+    }
+    if (genderUpper === 'TRANSGENDER_FEMALE') {
+      return '⚧♀';
+    }
+    if (genderUpper === 'TRANSGENDER_MALE') {
+      return '⚧♂';
+    }
+    if (genderUpper === 'NON_BINARY') {
+      return '⚧';
+    }
+    if (genderUpper === 'INTERSEX') {
+      return '⚥';
+    }
+    return gender;
+  }
 
+  /**
+   * Add basic info metadata (age, gender, country)
+   */
+  private addBasicInfoMetadata(
+    metadata: Array<{ label: string; value: string | undefined; isIcon?: boolean }>,
+    performerData: PerformerExtended
+  ): void {
     if (performerData.birthdate) {
       const birthDate = new Date(performerData.birthdate);
       const age = Math.floor((Date.now() - birthDate.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
       metadata.push({ label: 'Age', value: `${age} years` });
     }
     if (performerData.gender) {
-      const genderUpper = performerData.gender.toUpperCase();
-      let genderIcon: string;
-      if (genderUpper === 'FEMALE') {
-        genderIcon = '♀';
-      } else if (genderUpper === 'MALE') {
-        genderIcon = '♂';
-      } else if (genderUpper === 'TRANSGENDER_FEMALE') {
-        genderIcon = '⚧♀';
-      } else if (genderUpper === 'TRANSGENDER_MALE') {
-        genderIcon = '⚧♂';
-      } else if (genderUpper === 'NON_BINARY') {
-        genderIcon = '⚧';
-      } else if (genderUpper === 'INTERSEX') {
-        genderIcon = '⚥';
-      } else {
-        genderIcon = performerData.gender;
-      }
+      const genderIcon = this.getGenderIcon(performerData.gender);
       metadata.push({ label: 'Gender', value: genderIcon, isIcon: true });
     }
     if (performerData.country) {
       metadata.push({ label: 'Country', value: performerData.country });
     }
+  }
+
+  /**
+   * Add physical attributes metadata
+   */
+  private addPhysicalAttributesMetadata(
+    metadata: Array<{ label: string; value: string | undefined; isIcon?: boolean }>,
+    performerData: PerformerExtended
+  ): void {
     if (performerData.height_cm) {
       const heightInches = Math.round(performerData.height_cm / 2.54);
       const feet = Math.floor(heightInches / 12);
@@ -458,10 +478,30 @@ export abstract class BasePost {
     if (performerData.ethnicity) {
       metadata.push({ label: 'Ethnicity', value: performerData.ethnicity });
     }
+  }
+
+  /**
+   * Add rating metadata
+   */
+  private addRatingMetadata(
+    metadata: Array<{ label: string; value: string | undefined; isIcon?: boolean }>,
+    performerData: PerformerExtended
+  ): void {
     if (performerData.rating100 !== undefined && performerData.rating100 !== null) {
       const rating = (performerData.rating100 / 20).toFixed(1);
       metadata.push({ label: 'Rating', value: `${rating}/5` });
     }
+  }
+
+  /**
+   * Build metadata array for performer overlay
+   */
+  private buildPerformerMetadata(performerData: PerformerExtended): Array<{ label: string; value: string | undefined; isIcon?: boolean }> {
+    const metadata: Array<{ label: string; value: string | undefined; isIcon?: boolean }> = [];
+
+    this.addBasicInfoMetadata(metadata, performerData);
+    this.addPhysicalAttributesMetadata(metadata, performerData);
+    this.addRatingMetadata(metadata, performerData);
 
     return metadata;
   }
