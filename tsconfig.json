@@ -19,6 +19,12 @@
     "exactOptionalPropertyTypes": false
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "src/controllers/**/*",
+    "src/players/**/*",
+    "src/services/**/*",
+    "src/state/**/*"
+  ]
 }
 

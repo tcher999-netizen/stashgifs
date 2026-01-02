@@ -110,10 +110,10 @@ if [[ -n "$VERSION_BUMP" ]]; then
     sed -i "s/version: [0-9]\+\.[0-9]\+\.[0-9]\+/version: $NEW_VERSION/" "$MANIFEST_PATH"
     sed -i "s/date: \"[^\"]*\"/date: \"$CURRENT_DATE\"/" "$MANIFEST_PATH"
     
-    # Update index.yml
-    sed -i "s/version: [0-9]\+\.[0-9]\+\.[0-9]\+/version: $NEW_VERSION/" "$INDEX_YML_PATH"
-    sed -i "s/date: \"[^\"]*\"/date: \"$CURRENT_DATE\"/" "$INDEX_YML_PATH"
-    sed -i "s|path: https://github.com/evolite/stashgifs/releases/download/[^/]*/stashgifs.zip|path: https://github.com/evolite/stashgifs/releases/download/v$NEW_VERSION/stashgifs.zip|" "$INDEX_YML_PATH"
+    # Update index.yml (account for indentation - 2 spaces)
+    sed -i "s/^  version: [0-9]\+\.[0-9]\+\.[0-9]\+/  version: $NEW_VERSION/" "$INDEX_YML_PATH"
+    sed -i "s/^  date: \"[^\"]*\"/  date: \"$CURRENT_DATE\"/" "$INDEX_YML_PATH"
+    sed -i "s|^  path: https://github.com/evolite/stashgifs/releases/download/[^/]*/stashgifs.zip|  path: https://github.com/evolite/stashgifs/releases/download/v$NEW_VERSION/stashgifs.zip|" "$INDEX_YML_PATH"
     
     # Update stashgifs.yml if it exists
     if [[ -f "$STASHGIFS_YML_PATH" ]]; then
@@ -153,6 +153,41 @@ EOF
     
     echo -e "${GREEN}Version updated to $NEW_VERSION in manifest, index.yml, stashgifs.yml, and package.json${NC}"
     echo ""
+fi
+
+# Step 1.5: Commit and push version changes to git (if version was bumped)
+if [[ -n "$VERSION_BUMP" && -n "$NEW_VERSION" ]]; then
+    echo -e "${YELLOW}Step 1.5: Committing version changes to git...${NC}"
+    
+    # Check if we're in a git repository
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        echo -e "${YELLOW}Warning: Not in a git repository, skipping git commit/push${NC}"
+    else
+        # Stage the changed files
+        git add "$MANIFEST_PATH" "$INDEX_YML_PATH" "$PACKAGE_JSON_PATH" 2>/dev/null || true
+        if [[ -f "$STASHGIFS_YML_PATH" ]]; then
+            git add "$STASHGIFS_YML_PATH" 2>/dev/null || true
+        fi
+        
+        # Check if there are changes to commit
+        if git diff --staged --quiet; then
+            echo -e "${GRAY}No changes to commit${NC}"
+        else
+            # Commit the changes
+            git commit -m "Bump version to $NEW_VERSION" || {
+                echo -e "${YELLOW}Warning: Git commit failed (may already be committed)${NC}"
+            }
+            
+            # Push to origin
+            echo -e "${GRAY}Pushing changes to origin...${NC}"
+            if git push origin HEAD; then
+                echo -e "${GREEN}Changes pushed to git successfully!${NC}"
+            else
+                echo -e "${YELLOW}Warning: Git push failed. You may need to push manually.${NC}"
+            fi
+        fi
+        echo ""
+    fi
 fi
 
 # Step 2: Validate manifest includes all built files
@@ -256,24 +291,60 @@ echo -e "${GREEN}Hash: $HASH${NC}"
 echo -e "${GREEN}Hash saved to: $HASH_FILE${NC}"
 echo ""
 
-# Step 6: Update index.yml with hash and date
+# Step 6: Update index.yml with hash, date, and version
 echo -e "${YELLOW}Step 6: Updating index.yml...${NC}"
 CURRENT_DATE=$(date +"%Y-%m-%d %H:%M:%S")
 
-# Get version from index.yml
-VERSION=$(grep -oP 'version:\s*\K\d+\.\d+\.\d+' "$INDEX_YML_PATH" || echo "")
-if [[ -z "$VERSION" ]]; then
-    echo -e "${RED}Error: Could not parse version from index.yml${NC}" >&2
-    exit 1
+# Use NEW_VERSION if it was set, otherwise read from index.yml
+if [[ -n "$NEW_VERSION" ]]; then
+    VERSION="$NEW_VERSION"
+else
+    # Get version from index.yml
+    VERSION=$(grep -oP '^\s+version:\s*\K\d+\.\d+\.\d+' "$INDEX_YML_PATH" || echo "")
+    if [[ -z "$VERSION" ]]; then
+        echo -e "${RED}Error: Could not parse version from index.yml${NC}" >&2
+        exit 1
+    fi
 fi
 
-# Update index.yml
-sed -i "s/date: \"[^\"]*\"/date: \"$CURRENT_DATE\"/" "$INDEX_YML_PATH"
-sed -i "s/sha256: [a-fA-F0-9]\+/sha256: $HASH_LOWER/" "$INDEX_YML_PATH"
-sed -i "s|path: https://github.com/evolite/stashgifs/releases/download/[^/]*/stashgifs.zip|path: https://github.com/evolite/stashgifs/releases/download/v$VERSION/stashgifs.zip|" "$INDEX_YML_PATH"
+# Update index.yml (account for indentation - 2 spaces)
+sed -i "s/^  version: [0-9]\+\.[0-9]\+\.[0-9]\+/  version: $VERSION/" "$INDEX_YML_PATH"
+sed -i "s/^  date: \"[^\"]*\"/  date: \"$CURRENT_DATE\"/" "$INDEX_YML_PATH"
+sed -i "s/^  sha256: [a-fA-F0-9]\+/  sha256: $HASH_LOWER/" "$INDEX_YML_PATH"
+sed -i "s|^  path: https://github.com/evolite/stashgifs/releases/download/[^/]*/stashgifs.zip|  path: https://github.com/evolite/stashgifs/releases/download/v$VERSION/stashgifs.zip|" "$INDEX_YML_PATH"
 
 echo -e "${GREEN}index.yml updated with hash and date.${NC}"
 echo ""
+
+# Step 6.5: Commit and push index.yml changes to git
+echo -e "${YELLOW}Step 6.5: Committing index.yml changes to git...${NC}"
+
+# Check if we're in a git repository
+if ! git rev-parse --git-dir > /dev/null 2>&1; then
+    echo -e "${YELLOW}Warning: Not in a git repository, skipping git commit/push${NC}"
+else
+    # Stage index.yml
+    git add "$INDEX_YML_PATH" 2>/dev/null || true
+    
+    # Check if there are changes to commit
+    if git diff --staged --quiet; then
+        echo -e "${GRAY}No changes to commit in index.yml${NC}"
+    else
+        # Commit the changes
+        git commit -m "Update index.yml with hash and date for v$VERSION" || {
+            echo -e "${YELLOW}Warning: Git commit failed (may already be committed)${NC}"
+        }
+        
+        # Push to origin
+        echo -e "${GRAY}Pushing index.yml changes to origin...${NC}"
+        if git push origin HEAD; then
+            echo -e "${GREEN}index.yml changes pushed to git successfully!${NC}"
+        else
+            echo -e "${YELLOW}Warning: Git push failed. You may need to push manually.${NC}"
+        fi
+    fi
+    echo ""
+fi
 
 # Step 7: Create GitHub release
 echo -e "${YELLOW}Step 7: Creating GitHub release...${NC}"
@@ -300,6 +371,20 @@ if gh release create "v$VERSION" "$ZIP_FILE" --title "v$VERSION" --notes "$RELEA
 else
     echo -e "${RED}Error: Failed to create GitHub release${NC}" >&2
     exit 1
+fi
+
+# Push git tag (gh release create creates the tag, but we ensure it's pushed)
+echo -e "${YELLOW}Pushing git tag...${NC}"
+if git rev-parse --git-dir > /dev/null 2>&1; then
+    # Push tag to origin (gh release create should have created it, but ensure it's pushed)
+    if git push origin "v$VERSION" 2>/dev/null; then
+        echo -e "${GREEN}Git tag pushed to origin successfully!${NC}"
+    else
+        # Tag might already be pushed, or doesn't exist yet (shouldn't happen with gh release create)
+        echo -e "${GRAY}Git tag may already be pushed or will be created by gh release${NC}"
+    fi
+else
+    echo -e "${YELLOW}Warning: Not in a git repository, skipping git tag push${NC}"
 fi
 echo ""
 

@@ -1220,7 +1220,7 @@ export class VideoPost extends BasePost {
     outlineSpan.style.width = '100%';
     outlineSpan.style.height = '100%';
     outlineSpan.style.display = 'block';
-    outlineSpan.style.color = 'var(--rating-star-outline, rgba(255,255,255,0.35))';
+    outlineSpan.style.color = 'var(--rating-star-outline, #888888)';
     outlineSpan.style.transition = 'opacity 120ms ease-in-out';
 
     const fillSpan = document.createElement('span');
