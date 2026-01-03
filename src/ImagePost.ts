@@ -251,13 +251,15 @@ export class ImagePost extends BasePost {
         return codec && imageCodecs.includes(codec);
       });
       
+      // Determine if it's a GIF
+      const isGif = imageUrl.toLowerCase().endsWith('.gif') || 
+                   this.data.image.visualFiles?.some(vf => 
+                     vf.path?.toLowerCase().endsWith('.gif') || 
+                     vf.video_codec?.toLowerCase() === 'gif'
+                   );
+      
       // If it's an image format or has an image codec, always treat it as an image
       if (isImageFormat || hasImageCodec) {
-        const isGif = imageUrl.toLowerCase().endsWith('.gif') || 
-                     this.data.image.visualFiles?.some(vf => 
-                       vf.path?.toLowerCase().endsWith('.gif') || 
-                       vf.video_codec?.toLowerCase() === 'gif'
-                     );
         this.player = new ImagePlayer(this.playerContainer, imageUrl, { isGif, isVideo: false });
         this.isLoaded = true;
         return this.player;
