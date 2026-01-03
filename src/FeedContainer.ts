@@ -16,7 +16,7 @@ import { AudioManager, AudioPriority } from './AudioManager.js';
 import { debounce, isValidMediaUrl, detectDeviceCapabilities, DeviceCapabilities, isStandaloneNavigator, isMobileDevice, getNetworkInfo, isSlowNetwork, isCellularConnection } from './utils.js';
 import { posterPreloader } from './PosterPreloader.js';
 import { Image as GraphQLImage } from './graphql/types.js';
-import { HQ_SVG_OUTLINE, RANDOM_SVG, SETTINGS_SVG, SHUFFLE_CHECK_SVG, CLEAR_SVG } from './icons.js';
+import { HQ_SVG_OUTLINE, RANDOM_SVG, SETTINGS_SVG, SHUFFLE_CHECK_SVG } from './icons.js';
 
 const DEFAULT_SETTINGS: FeedSettings = {
   autoPlay: true, // Enable autoplay for markers
@@ -5580,7 +5580,7 @@ export class FeedContainer {
         // Throttle for 300ms
         this.snapThrottleTimeout = setTimeout(() => {
           this.snapThrottleTimeout = undefined;
-        }, 300) as ReturnType<typeof setTimeout>;
+        }, 300);
       }
     };
 

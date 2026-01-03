@@ -53,6 +53,10 @@
 
   /* Elevation System - Shadows */
   --shadow-none: none;
+  
+  /* Spring-like Easing Curves */
+  --ease-spring: cubic-bezier(0.2, 0, 0, 1);
+  --ease-spring-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
   --shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-medium: 0 4px 12px rgba(0, 0, 0, 0.4);
   --shadow-prominent: 0 8px 24px rgba(0, 0, 0, 0.5);
@@ -360,9 +364,6 @@
   align-items: center;
   justify-content: center;
   background: rgba(0, 0, 0, 0.3);
-  /* Reduce backdrop-filter usage for better performance - use solid background instead */
-  /* backdrop-filter: blur(4px); */
-  /* -webkit-backdrop-filter: blur(4px); */
   z-index: 2; /* Above video (z-index: 1) but below controls (z-index: 10) */
   will-change: opacity;
 }
@@ -770,7 +771,7 @@
 
 .btn--primary {
   background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  color: #fff;
+  color: #ffffff;
   box-shadow: 0 6px 16px rgba(99, 102, 241, 0.35);
 }
 
@@ -800,7 +801,6 @@
   line-height: var(--line-height-tight);
   text-decoration: none;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   min-height: 32px;
   min-width: 32px;
@@ -894,9 +894,7 @@
   color: #111;
 }
 
-.icon-btn--primary:hover {
-  /* Icon-only hover - no container transform */
-}
+/* Icon-only hover - no container transform for .icon-btn--primary:hover */
 
 /* Safe Area Support for Mobile */
 @supports (padding: max(0px)) {
@@ -1011,7 +1009,6 @@
   .rating-dialog__star {
     height: 20px;
     font-size: 0.85rem;
-    min-width: 18px;
     padding: 0 1px;
     /* Ensure touch target is adequate */
     min-height: 44px;
@@ -1101,11 +1098,6 @@
   }
 }
 
-/* Spring-like Easing Curves */
-:root {
-  --ease-spring: cubic-bezier(0.2, 0, 0, 1);
-  --ease-spring-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
-}
 
 /* Accessibility - Respect reduced motion */
 @media (prefers-reduced-motion: reduce) {
@@ -1380,7 +1372,7 @@
   border-radius: 999px;
   border: 1px solid var(--color-separator);
   background: rgba(33, 150, 243, 0.18);
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(255, 255, 255, 0.95);
   font-size: 12px;
   pointer-events: none;
 }
