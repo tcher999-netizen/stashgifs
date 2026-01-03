@@ -8,7 +8,7 @@ import { ImagePlayer } from './ImagePlayer.js';
 import { FavoritesManager } from './FavoritesManager.js';
 import { StashAPI } from './StashAPI.js';
 import { VisibilityManager } from './VisibilityManager.js';
-import { getAspectRatioClass, showToast, toAbsoluteUrl, isVideoFile } from './utils.js';
+import { getAspectRatioClass, showToast, toAbsoluteUrl, isVideoFile, isImageFile } from './utils.js';
 import { IMAGE_BADGE_SVG, EXTERNAL_LINK_SVG } from './icons.js';
 import { BasePost } from './BasePost.js';
 
@@ -237,30 +237,64 @@ export class ImagePost extends BasePost {
     }
 
     try {
+      // Check if this is an image format first - image formats should always be displayed as images
+      // This includes GIF, WebP, APNG, AVIF, HEIC, etc. even if they have animation
+      const isImageFormat = isImageFile(imageUrl) || 
+                           this.data.image.visualFiles?.some(vf => 
+                             vf.path && isImageFile(vf.path)
+                           );
+      
+      // Image codecs that should be treated as images (not videos)
+      const imageCodecs = ['gif', 'webp', 'apng', 'avif', 'heic', 'heif'];
+      const hasImageCodec = this.data.image.visualFiles?.some(vf => {
+        const codec = vf.video_codec?.toLowerCase();
+        return codec && imageCodecs.includes(codec);
+      });
+      
+      // If it's an image format or has an image codec, always treat it as an image
+      if (isImageFormat || hasImageCodec) {
+        const isGif = imageUrl.toLowerCase().endsWith('.gif') || 
+                     this.data.image.visualFiles?.some(vf => 
+                       vf.path?.toLowerCase().endsWith('.gif') || 
+                       vf.video_codec?.toLowerCase() === 'gif'
+                     );
+        this.player = new ImagePlayer(this.playerContainer, imageUrl, { isGif, isVideo: false });
+        this.isLoaded = true;
+        return this.player;
+      }
+      
       // Check if this is a video file
       // First check URL extension, then check visual_files for video_codec or duration
-      let isVideo = imageUrl.toLowerCase().endsWith('.gif') ? false : isVideoFile(imageUrl);
+      let isVideo = isVideoFile(imageUrl);
       
       // If URL doesn't have extension, check visual_files
       if (!isVideo && this.data.image.visualFiles) {
         // Check for video_codec or duration (indicates video file)
-        isVideo = this.data.image.visualFiles.some(vf => 
-          vf.video_codec || (vf.duration !== undefined && vf.duration !== null)
-        );
+        // Exclude image codecs from video detection
+        isVideo = this.data.image.visualFiles.some(vf => {
+          const codec = vf.video_codec?.toLowerCase();
+          // Skip if codec is an image format - these are images, not videos
+          if (codec && imageCodecs.includes(codec)) {
+            return false;
+          }
+          return !!vf.video_codec || (vf.duration !== undefined && vf.duration !== null);
+        });
         
         // Also check file path extension from visual_files
         if (!isVideo) {
           isVideo = this.data.image.visualFiles.some(vf => 
-            vf.path && isVideoFile(vf.path)
+            vf.path && !isImageFile(vf.path) && isVideoFile(vf.path)
           );
         }
       }
       
-      const isGif = !isVideo && imageUrl.toLowerCase().endsWith('.gif');
-      
       // Get video codec info if available for better MIME type detection
       const videoCodec = isVideo && this.data.image.visualFiles 
-        ? this.data.image.visualFiles.find(vf => vf.video_codec)?.video_codec 
+        ? this.data.image.visualFiles.find(vf => {
+            const codec = vf.video_codec?.toLowerCase();
+            // Exclude image codecs
+            return codec && !imageCodecs.includes(codec);
+          })?.video_codec 
         : undefined;
       
       this.player = new ImagePlayer(this.playerContainer, imageUrl, { 

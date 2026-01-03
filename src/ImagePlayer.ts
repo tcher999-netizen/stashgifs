@@ -180,7 +180,16 @@ export class ImagePlayer {
    * Show error message when video fails to load
    */
   private showVideoError(): void {
-    if (this.errorMessage || !this.wrapper) {
+    if (this.errorMessage || !this.wrapper || this.isGif) {
+      // Don't show error for GIFs or other image formats - they should be displayed as images
+      return;
+    }
+
+    // Image codecs that should not show video errors
+    const imageCodecs = ['gif', 'webp', 'apng', 'avif', 'heic', 'heif'];
+    
+    if (this.videoCodec && imageCodecs.includes(this.videoCodec.toLowerCase())) {
+      // Don't show error for image codecs - these should be images
       return;
     }
 

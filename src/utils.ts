@@ -593,6 +593,15 @@ export function isCellularConnection(): boolean {
 }
 
 /**
+ * Image file extensions that should always be displayed as images (not videos)
+ * Even if they have animation or video-like properties
+ */
+const IMAGE_EXTENSIONS = [
+  '.gif', '.png', '.jpg', '.jpeg', '.webp', '.avif', 
+  '.apng', '.heic', '.heif', '.bmp', '.svg', '.ico'
+] as const;
+
+/**
  * Video file extensions that should be rendered as looping videos
  */
 const VIDEO_EXTENSIONS = [
@@ -600,6 +609,16 @@ const VIDEO_EXTENSIONS = [
   '.rmvb', '.rm', '.flv', '.asf', '.mkv', '.webm',
   '.f4v', '.mov'
 ] as const;
+
+/**
+ * Check if a URL points to an image file that should always be displayed as an image
+ * @param url The URL to check
+ * @returns true if the URL ends with an image extension
+ */
+export function isImageFile(url: string): boolean {
+  const lowerUrl = url.toLowerCase();
+  return IMAGE_EXTENSIONS.some(ext => lowerUrl.endsWith(ext));
+}
 
 /**
  * Check if a URL points to a video file based on extension
