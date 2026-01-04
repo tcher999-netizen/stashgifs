@@ -84,6 +84,7 @@ export interface FilterOptions {
   shuffleMode?: boolean; // When true, use shuffle mode (query scenes directly)
   includeScenesWithoutMarkers?: boolean; // When true in shuffle mode, include scenes with 0 markers
   orientationFilter?: ('landscape' | 'portrait' | 'square')[]; // Filter content by orientation
+  sortSeed?: string; // Sort seed for consistent pagination (reused across pages)
 }
 
 export interface FeedSettings {

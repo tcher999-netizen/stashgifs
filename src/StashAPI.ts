@@ -627,6 +627,11 @@ export class StashAPI {
       const filter = this.buildFindFilter(filters, savedFilterCriteria, page, limit);
       const sceneMarkerFilter = this.buildSceneMarkerFilter(filters, savedFilterCriteria);
       
+      // Store the sort seed back in filters for pagination (if we generated a new one)
+      if (filters && !filters.sortSeed && filter.sort) {
+        filters.sortSeed = filter.sort;
+      }
+      
       const { markers, totalCount } = await this.executeMarkerQueryWithCount(filter, sceneMarkerFilter, signal);
       if (this.isAborted(signal)) return { markers: [], totalCount: 0 };
       
@@ -765,10 +770,13 @@ export class StashAPI {
     page: number,
     limit: number
   ): FindFilterInput {
+    // Reuse existing sort seed for pagination, or generate new one for first page
+    const sortSeed = filters?.sortSeed || generateRandomSortSeed();
+    
     const filter: FindFilterInput = {
       per_page: limit,
       page: page,
-      sort: generateRandomSortSeed(),
+      sort: sortSeed,
     };
     
     if (savedFilterCriteria?.find_filter) {
@@ -949,10 +957,18 @@ export class StashAPI {
 
       if (this.isAborted(signal)) return [];
 
+      // Reuse existing sort seed for pagination, or generate new one for first page
+      const sortSeed = filters?.sortSeed || generateRandomSortSeed();
+      
+      // Store the sort seed back in filters for pagination (if we generated a new one)
+      if (filters && !filters.sortSeed) {
+        filters.sortSeed = sortSeed;
+      }
+
       const filter: FindFilterInput = {
         per_page: limit,
         page: page,
-        sort: generateRandomSortSeed(),
+        sort: sortSeed,
       };
 
       const sceneFilter = this.buildShuffleSceneFilter(filters);
@@ -1093,11 +1109,19 @@ export class StashAPI {
       // Calculate offset within the page
       const offsetInPage = offset % scenesPerPage;
       
+      // Reuse existing sort seed for pagination, or generate new one for first page
+      const sortSeed = filters?.sortSeed || generateRandomSortSeed();
+      
+      // Store the sort seed back in filters for pagination (if we generated a new one)
+      if (filters && !filters.sortSeed) {
+        filters.sortSeed = sortSeed;
+      }
+      
       // Fetch only the single page needed
       const filter: FindFilterInput = {
         per_page: scenesPerPage,
         page: actualPage,
-        sort: generateRandomSortSeed(),
+        sort: sortSeed,
       };
       
       const scenes = await this.fetchScenesQuery(filter, sceneFilter, signal);
@@ -2182,6 +2206,7 @@ export class StashAPI {
       performerIds?: number[];
       tagIds?: string[];
       orientationFilter?: ('landscape' | 'portrait' | 'square')[];
+      sortSeed?: string;
     },
     limit: number = 40,
     offset: number = 0,
@@ -2216,10 +2241,18 @@ export class StashAPI {
       };
     }
 
+    // Reuse existing sort seed for pagination, or generate new one for first page
+    const sortSeed = filters?.sortSeed || generateRandomSortSeed();
+    
+    // Store the sort seed back in filters for pagination (if we generated a new one)
+    if (filters && !filters.sortSeed) {
+      filters.sortSeed = sortSeed;
+    }
+
     const findFilter: FindFilterInput = {
       per_page: limit,
       page: Math.floor(offset / limit) + 1,
-      sort: generateRandomSortSeed(),
+      sort: sortSeed,
       direction: 'DESC',
     };
 

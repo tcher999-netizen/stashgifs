@@ -3942,6 +3942,7 @@ export class FeedContainer {
         ...(this.settings.orientationFilter && this.settings.orientationFilter.length > 0
           ? { orientationFilter: this.settings.orientationFilter }
           : {}),
+        ...(filters.sortSeed ? { sortSeed: filters.sortSeed } : {}),
       };
 
       const { images: graphQLImages, totalCount } = await this.api.findImages(
@@ -3951,6 +3952,11 @@ export class FeedContainer {
         offset,
         signal
       );
+      
+      // Store the sort seed back in filters for pagination (if it was generated)
+      if (imageFiltersWithOrientation.sortSeed && filters) {
+        filters.sortSeed = imageFiltersWithOrientation.sortSeed;
+      }
 
       // Convert GraphQL Image to simplified Image type
       const images = graphQLImages.map(img => this.convertGraphQLImageToImage(img));
