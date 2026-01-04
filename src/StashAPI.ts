@@ -136,7 +136,7 @@ const RANDOM_SORT_MULTIPLIER = 1000000;
  * Generate a random sort seed in the format random_<8-digit-number>
  * Example: random_23120320
  */
-function generateRandomSortSeed(): string {
+export function generateRandomSortSeed(): string {
   const randomSeed = Math.floor(Math.random() * 100000000).toString().padStart(8, '0');
   return `random_${randomSeed}`;
 }
@@ -1114,11 +1114,11 @@ export class StashAPI {
     limit: number = 20,
     offset: number = 0,
     signal?: AbortSignal
-  ): Promise<{ markers: SceneMarker[]; totalCount: number }> {
-    if (this.isAborted(signal)) return { markers: [], totalCount: 0 };
+  ): Promise<{ markers: SceneMarker[]; totalCount: number; unfilteredOffsetConsumed: number }> {
+    if (this.isAborted(signal)) return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 };
 
     try {
-      if (this.isAborted(signal)) return { markers: [], totalCount: 0 };
+      if (this.isAborted(signal)) return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 };
 
       const scenesPerPage = 24; // Fetch 24 scenes per page
       
@@ -1126,7 +1126,7 @@ export class StashAPI {
       
       const { maxPage, totalCount } = await this.getMaxPageForShortForm(sceneFilter, scenesPerPage, signal);
       if (maxPage === 0) {
-        return { markers: [], totalCount: 0 };
+        return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 };
       }
       
       // Calculate page from offset based on scenesPerPage
@@ -1153,7 +1153,30 @@ export class StashAPI {
       };
       
       const scenes = await this.fetchScenesQuery(filter, sceneFilter, signal);
-      if (this.isAborted(signal)) return { markers: [], totalCount: 0 };
+      if (this.isAborted(signal)) return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 };
+      
+      // Calculate how many unfiltered scenes we processed
+      // We fetch a full page (24 scenes), filter them, then take the requested amount
+      // The unfiltered offset consumed is: offsetInPage + number of scenes we actually looked at
+      // Since we slice from offsetInPage, we process (offsetInPage + limit) scenes at most
+      // But we need to account for filtering - we process scenes until we have enough filtered results
+      let unfilteredScenesProcessed = 0;
+      let filteredScenesFound = 0;
+      
+      // Count how many unfiltered scenes we need to process to get 'limit' filtered scenes
+      for (let i = offsetInPage; i < scenes.length && filteredScenesFound < limit; i++) {
+        unfilteredScenesProcessed++;
+        const scene = scenes[i];
+        const file = scene.files?.[0];
+        if (file?.duration && file.duration < maxDuration) {
+          filteredScenesFound++;
+        }
+      }
+      
+      // If we didn't get enough filtered scenes, we processed all remaining scenes in the page
+      if (filteredScenesFound < limit) {
+        unfilteredScenesProcessed = scenes.length - offsetInPage;
+      }
       
       // Filter by duration (in case any scenes don't match the duration filter)
       const shortFormScenes = this.filterShortFormScenes(scenes, maxDuration);
@@ -1163,13 +1186,17 @@ export class StashAPI {
       
       const markers = this.createShortFormMarkers(limitedScenes);
       
-      return { markers, totalCount };
+      // Calculate unfiltered offset consumed: offsetInPage + unfilteredScenesProcessed
+      // This represents how many unfiltered scenes we processed in this page
+      const unfilteredOffsetConsumed = offsetInPage + unfilteredScenesProcessed;
+      
+      return { markers, totalCount, unfilteredOffsetConsumed };
     } catch (e: unknown) {
       if (isAbortError(e) || this.isAborted(signal)) {
-        return { markers: [], totalCount: 0 };
+        return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 };
       }
       console.error('[ShortForm] Error fetching short-form videos', e);
-      return { markers: [], totalCount: 0 };
+      return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 };
     }
   }
 

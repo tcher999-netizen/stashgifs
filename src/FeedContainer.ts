@@ -4,7 +4,7 @@
  */
 
 import { SceneMarker, Scene, FilterOptions, FeedSettings, VideoPostData, ImagePostData, Image } from './types.js';
-import { StashAPI } from './StashAPI.js';
+import { StashAPI, generateRandomSortSeed } from './StashAPI.js';
 import { VideoPost } from './VideoPost.js';
 import { ImagePost } from './ImagePost.js';
 import { NativeVideoPlayer } from './NativeVideoPlayer.js';
@@ -77,8 +77,12 @@ export class FeedContainer {
   private settingsContainer?: HTMLElement;
   private ratingSystemConfig: { type?: string; starPrecision?: string } | null | undefined;
   private markers: SceneMarker[] = [];
-  private readonly imagesLoadedCount: number = 0; // Track how many images we've loaded
-  private readonly markersLoadedCount: number = 0; // Track how many markers we've loaded
+  private imagesLoadedCount: number = 0; // Track how many images we've loaded
+  private markersLoadedCount: number = 0; // Track how many markers we've loaded
+  private shortFormLoadedCount: number = 0; // Track how many short-form items we've loaded
+  private shortFormUnfilteredOffset: number = 0; // Track offset in UNFILTERED scene list for short-form pagination
+  private markerPageSize: number = 0; // Track the page size used for markers (for consistent pagination)
+  private imagePageSize: number = 0; // Track the page size used for images (for consistent pagination)
   // Batch poster prefetching aligns with previous commit behavior
   private isLoading: boolean = false;
   private currentFilters?: FilterOptions;
@@ -3271,6 +3275,13 @@ export class FeedContainer {
       this.showSkeletonLoaders();
       this.currentPage = 1;
       this.hasMore = true;
+      // Reset loaded counts when starting fresh
+      this.markersLoadedCount = 0;
+      this.shortFormLoadedCount = 0;
+      this.imagesLoadedCount = 0;
+      this.shortFormUnfilteredOffset = 0;
+      this.markerPageSize = 0;
+      this.imagePageSize = 0;
     }
   }
 
@@ -3393,6 +3404,12 @@ export class FeedContainer {
     this.hasMore = true;
     this.markers = [];
     this.images = [];
+    this.markersLoadedCount = 0;
+    this.shortFormLoadedCount = 0;
+    this.imagesLoadedCount = 0;
+    this.shortFormUnfilteredOffset = 0;
+    this.markerPageSize = 0;
+    this.imagePageSize = 0;
     
     // Reload feed with current filters
     await this.loadVideos(this.currentFilters, false, undefined, true);
@@ -3480,6 +3497,7 @@ export class FeedContainer {
       shouldLoadImages: boolean;
       shouldLoadShortForm: boolean;
     };
+    append: boolean;
   }): Promise<{
     markers: SceneMarker[];
     images: Image[];
@@ -3488,13 +3506,41 @@ export class FeedContainer {
     imageCount: number;
     shortFormCount: number;
   }> {
-    const { currentFilters, limits, offset, signal, loadingFlags } = options;
+    const { currentFilters, limits, offset, signal, loadingFlags, append } = options;
     const { limit, markerLimit, shortFormLimit } = limits;
     const { shouldLoadMarkers, shouldLoadImages, shouldLoadShortForm } = loadingFlags;
+    
+    // Generate a single sortSeed before parallel fetches to ensure all content types use the same seed
+    if (!currentFilters.sortSeed) {
+      currentFilters.sortSeed = generateRandomSortSeed();
+    }
+    
+    // Calculate separate offsets for each content type based on their loaded counts
+    // This ensures each type calculates the correct page number for its own pagination
+    
+    // For markers and images: Use consistent page size (track the first limit used)
+    // This prevents wrong page calculations when limit changes between initial and subsequent loads
+    if (!append) {
+      // Store the page sizes used for first load
+      this.markerPageSize = markerLimit;
+      this.imagePageSize = limit;
+    }
+    
+    // Use stored page sizes for consistent pagination, or current limit if not set
+    const markerPageSize = this.markerPageSize || markerLimit;
+    const imagePageSize = this.imagePageSize || limit;
+    
+    // Calculate offsets using the consistent page sizes
+    const markerOffset = append ? this.markersLoadedCount : 0;
+    const imageOffset = append ? this.imagesLoadedCount : 0;
+    
+    // For short-form: Use unfiltered offset (not filtered count)
+    const shortFormOffset = append ? this.shortFormUnfilteredOffset : 0;
+    
     const [markersResult, imagesResult, shortFormResult] = await Promise.all([
-      shouldLoadMarkers ? this.fetchMarkersForLoad(currentFilters, markerLimit, offset, signal) : Promise.resolve<{ markers: SceneMarker[]; totalCount: number }>({ markers: [], totalCount: 0 }),
-      shouldLoadImages ? this.loadImages(currentFilters, limit, offset, signal) : Promise.resolve<{ images: Image[]; totalCount: number }>({ images: [], totalCount: 0 }),
-      shouldLoadShortForm ? this.fetchShortFormVideosForLoad(currentFilters, shortFormLimit, offset, signal) : Promise.resolve<{ markers: SceneMarker[]; totalCount: number }>({ markers: [], totalCount: 0 }),
+      shouldLoadMarkers ? this.fetchMarkersForLoad(currentFilters, markerPageSize, markerOffset, signal) : Promise.resolve<{ markers: SceneMarker[]; totalCount: number }>({ markers: [], totalCount: 0 }),
+      shouldLoadImages ? this.loadImages(currentFilters, imagePageSize, imageOffset, signal) : Promise.resolve<{ images: Image[]; totalCount: number }>({ images: [], totalCount: 0 }),
+      shouldLoadShortForm ? this.fetchShortFormVideosForLoad(currentFilters, shortFormLimit, shortFormOffset, signal) : Promise.resolve<{ markers: SceneMarker[]; totalCount: number; unfilteredOffsetConsumed: number }>({ markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 }),
     ]);
     
     // Debug logging for fetched results
@@ -3506,6 +3552,24 @@ export class FeedContainer {
     }
     if (shouldLoadImages) {
       console.log(`[Load] Fetched ${imagesResult.images.length} images (limit: ${limit}, total: ${imagesResult.totalCount})`);
+    }
+    
+    // Update unfiltered offset for short-form based on what was consumed
+    // unfilteredOffsetConsumed is the offset WITHIN the current page (offsetInPage + scenes processed)
+    // To get the total offset, we need: (page-1)*24 + unfilteredOffsetConsumed
+    if (shouldLoadShortForm && 'unfilteredOffsetConsumed' in shortFormResult) {
+      const scenesPerPage = 24;
+      const unfilteredOffsetConsumed = shortFormResult.unfilteredOffsetConsumed as number;
+      if (append) {
+        // Calculate which page we fetched
+        const page = Math.floor(this.shortFormUnfilteredOffset / scenesPerPage) + 1;
+        // Total offset = offset at start of page + offset consumed in this page
+        // = (page-1)*scenesPerPage + unfilteredOffsetConsumed
+        this.shortFormUnfilteredOffset = (page - 1) * scenesPerPage + unfilteredOffsetConsumed;
+      } else {
+        // For first load, the offset consumed is the total (we started at 0)
+        this.shortFormUnfilteredOffset = unfilteredOffsetConsumed;
+      }
     }
     
     return {
@@ -3545,6 +3609,18 @@ export class FeedContainer {
     const mergedContent = this.mergeMarkersShortFormAndImages(markers, shortFormMarkers, images);
 
     const expectedLimit = append ? this.subsequentLoadLimit : (currentFilters.limit || this.initialLoadLimit);
+    
+    // Track loaded counts for each content type separately
+    if (append) {
+      this.markersLoadedCount += markers.length;
+      this.shortFormLoadedCount += shortFormMarkers.length;
+      this.imagesLoadedCount += images.length;
+    } else {
+      // Reset counts when starting fresh
+      this.markersLoadedCount = markers.length;
+      this.shortFormLoadedCount = shortFormMarkers.length;
+      this.imagesLoadedCount = images.length;
+    }
     
     const allMarkers = [...markers, ...shortFormMarkers];
     this.processLoadedContent({
@@ -3648,8 +3724,12 @@ export class FeedContainer {
           shouldLoadMarkers,
           shouldLoadImages,
           shouldLoadShortForm
-        }
+        },
+        append
       });
+
+      // Store currentFilters (with sortSeed) back to this.currentFilters for pagination persistence
+      this.currentFilters = currentFilters;
 
       if (this.checkAbortAndCleanup(signal)) {
         return;
