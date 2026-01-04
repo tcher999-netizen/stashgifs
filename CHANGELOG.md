@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.20.0] - 2026-01-04
+
+### Changed
+- Ensure consistent sort order across pagination pages, preventing duplicates or missing items.
+
 ## [5.19.0] - 2026-01-03
 
 ### Changed
