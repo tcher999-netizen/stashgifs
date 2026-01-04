@@ -3,4 +3,4 @@
  * This file is updated automatically during the build process
  */
 export const VERSION = '5.20.0';
-export const BUILD_HASH = 'b32e84e6';
+export const BUILD_HASH = 'f316e71f';

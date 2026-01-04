@@ -914,12 +914,12 @@ export abstract class BasePost {
     const viewportHeight = globalThis.innerHeight;
     const padding = 16;
 
-    let top = chipRect.bottom + padding;
+    let top = chipRect.bottom;
     let left = chipRect.left;
 
     // Adjust if would go off bottom of screen
     if (top + overlayRect.height > viewportHeight - padding) {
-      top = chipRect.top - overlayRect.height - padding;
+      top = chipRect.top - overlayRect.height;
       // If still off screen, position at top
       if (top < padding) {
         top = padding;

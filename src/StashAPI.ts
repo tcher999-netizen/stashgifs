@@ -38,6 +38,7 @@ import {
   SceneMarkerUpdateInput,
   TypedGraphQLClient,
   Image,
+  VisualFile,
   UIConfigurationResponse,
 } from './graphql/types.js';
 import {
@@ -76,6 +77,15 @@ export class StashAPI {
   // Simple cache for autocomplete search results only (not filtered queries)
   private readonly searchCache: Map<string, { data: unknown; timestamp: number }> = new Map();
   private readonly SEARCH_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+  
+  // Magic numbers as constants
+  private static readonly SEARCH_FETCH_MULTIPLIER = 3; // Fetch 3x limit when searching to improve relevance
+  private static readonly MIN_SEARCH_LIMIT = 20; // Minimum results to fetch when not searching
+  private static readonly MIN_MARKER_COUNT_FOR_TAG_FILTER = 10; // Minimum markers required for tag to appear in suggestions
+  private static readonly SHORT_FORM_SCENES_PER_PAGE = 24; // Number of scenes to fetch per page for short-form content
+  private static readonly MAX_PAGE_FALLBACK = 100; // Fallback max page when count query fails
+  private static readonly ORIENTATION_TOLERANCE = 0.05; // 5% tolerance for square aspect ratio detection
+  private static readonly MAX_MARKERS_PER_SCENE_FOR_SHUFFLE = 5; // Maximum markers per scene in shuffle mode
 
   constructor(baseUrl?: string, apiKey?: string) {
     // Get from globalThis if available (Stash plugin context)
@@ -139,6 +149,30 @@ export class StashAPI {
   }
 
   /**
+   * Extract ID from various object formats
+   */
+  private extractId(x: unknown): unknown {
+    if (typeof x === 'object' && x !== null) {
+      const obj = x as { id?: unknown; value?: unknown };
+      return obj.id ?? obj.value ?? x;
+    }
+    return x;
+  }
+
+  /**
+   * Normalize an array or single value to an array of numeric IDs
+   */
+  private normalizeIdArray(val: unknown): number[] | undefined {
+    if (!val) return undefined;
+    const arr = Array.isArray(val) ? val : [val];
+    const ids = arr
+      .map((x) => this.extractId(x))
+      .map((x) => Number.parseInt(String(x), 10))
+      .filter((n) => !Number.isNaN(n));
+    return ids.length > 0 ? ids : undefined;
+  }
+
+  /**
    * Normalize a tag field (tags, scene_tags, or scene_performers)
    * @param fieldValue The field value to normalize
    * @param asString Whether to convert IDs to strings (true for tags/scene_tags, false for scene_performers)
@@ -147,28 +181,10 @@ export class StashAPI {
   private normalizeTagField(fieldValue: unknown, asString: boolean): unknown {
     if (!fieldValue) return undefined;
 
-    const extractId = (x: unknown): unknown => {
-      if (typeof x === 'object' && x !== null) {
-        const obj = x as { id?: unknown; value?: unknown };
-        return obj.id ?? obj.value ?? x;
-      }
-      return x;
-    };
-
-    const normalizeIdArray = (val: unknown): number[] | undefined => {
-      if (!val) return undefined;
-      const arr = Array.isArray(val) ? val : [val];
-      const ids = arr
-        .map(extractId)
-        .map((x) => Number.parseInt(String(x), 10))
-        .filter((n) => !Number.isNaN(n));
-      return ids.length > 0 ? ids : undefined;
-    };
-
     type TagsModifier = 'INCLUDES' | 'INCLUDES_ALL' | 'EXCLUDES';
 
     if (Array.isArray(fieldValue)) {
-      const ids = normalizeIdArray(fieldValue);
+      const ids = this.normalizeIdArray(fieldValue);
       if (!ids) return undefined;
       return {
         value: asString ? ids.map(String) : ids.map(Number),
@@ -182,7 +198,7 @@ export class StashAPI {
       if (raw && typeof raw === 'object' && Array.isArray((raw as { items?: unknown[] }).items)) {
         raw = (raw as { items: unknown[] }).items;
       }
-      const ids = normalizeIdArray(raw);
+      const ids = this.normalizeIdArray(raw);
       if (!ids) return undefined;
       return {
         value: asString ? ids.map(String) : ids.map(Number),
@@ -194,26 +210,59 @@ export class StashAPI {
   }
 
   /**
+   * Build cache key with proper escaping to prevent collisions
+   */
+  private buildCacheKey(prefix: string, term: string, limit: number): string {
+    // Escape colons and other special characters that could cause collisions
+    const escapedTerm = term.replace(/:/g, '::').replace(/\|/g, '||');
+    return `${prefix}|${escapedTerm}|${limit}`;
+  }
+
+  /**
+   * Generic search method for autocomplete results with caching
+   */
+  private async searchWithCache<T>(
+    cacheKey: string,
+    isEmptyTerm: boolean,
+    queryFn: () => Promise<T[]>,
+    signal?: AbortSignal
+  ): Promise<T[]> {
+    if (this.isAborted(signal)) return [];
+
+    // Check cache first (only for non-empty terms)
+    if (!isEmptyTerm) {
+      const cached = this.searchCache.get(cacheKey);
+      if (cached && Date.now() - cached.timestamp < this.SEARCH_CACHE_TTL) {
+        return cached.data as T[];
+      }
+    }
+
+    try {
+      const results = await queryFn();
+      
+      if (this.isAborted(signal)) return [];
+      
+      // Cache the result (only for non-empty terms)
+      if (!isEmptyTerm) {
+        this.searchCache.set(cacheKey, { data: results, timestamp: Date.now() });
+      }
+      
+      return results;
+    } catch (error: unknown) {
+      return this.handleError('searchWithCache', error, signal, []);
+    }
+  }
+
+  /**
    * Search marker tags (by name) for autocomplete
    * Only returns tags that have more than 10 markers (filtered directly in GraphQL)
    * Includes caching for autocomplete results only
    */
   async searchMarkerTags(term: string, limit: number = 10, signal?: AbortSignal): Promise<Array<{ id: string; name: string }>> {
-    if (this.isAborted(signal)) return [];
-
     const isEmptyTerm = !term || term.trim() === '';
-    const cacheKey = `tags:${term}:${limit}`;
-    
-    // Check cache first (only for non-empty terms)
-    if (!isEmptyTerm) {
-      const cached = this.searchCache.get(cacheKey);
-      if (cached && Date.now() - cached.timestamp < this.SEARCH_CACHE_TTL) {
-        return cached.data as Array<{ id: string; name: string }>;
-      }
-    }
-
+    const cacheKey = this.buildCacheKey('tags', term, limit);
     const hasSearchTerm = term && term.trim() !== '';
-    const fetchLimit = hasSearchTerm ? limit * 3 : Math.max(limit, 20);
+    const fetchLimit = hasSearchTerm ? limit * StashAPI.SEARCH_FETCH_MULTIPLIER : Math.max(limit, StashAPI.MIN_SEARCH_LIMIT);
     
     const filter: FindFilterInput = { 
       per_page: fetchLimit, 
@@ -227,34 +276,26 @@ export class StashAPI {
       ? {} // No filter - show all tags when searching
       : {
           marker_count: {
-            value: 10,
+            value: StashAPI.MIN_MARKER_COUNT_FOR_TAG_FILTER,
             modifier: 'GREATER_THAN'
           }
         };
     
-    const variables = { filter, tag_filter };
-
-    try {
-      const result = await this.gqlClient.query<FindTagsResponse>({
-        query: queries.FIND_TAGS,
-        variables,
-        signal,
-      });
-      
-      if (this.isAborted(signal)) return [];
-      
-      const tags = result.data?.findTags?.tags ?? [];
-      const resultTags = tags.slice(0, limit);
-      
-      // Cache the result (only for non-empty terms)
-      if (!isEmptyTerm) {
-        this.searchCache.set(cacheKey, { data: resultTags, timestamp: Date.now() });
-      }
-      
-      return resultTags;
-    } catch (error: unknown) {
-      return this.handleError('searchMarkerTags', error, signal, []);
-    }
+    return this.searchWithCache(
+      cacheKey,
+      isEmptyTerm,
+      async () => {
+        const result = await this.gqlClient.query<FindTagsResponse>({
+          query: queries.FIND_TAGS,
+          variables: { filter, tag_filter },
+          signal,
+        });
+        
+        const tags = result.data?.findTags?.tags ?? [];
+        return tags.slice(0, limit);
+      },
+      signal
+    );
   }
 
   /**
@@ -292,21 +333,10 @@ export class StashAPI {
    * Includes caching for autocomplete results only
    */
   async searchPerformers(term: string, limit: number = 10, signal?: AbortSignal): Promise<Array<{ id: string; name: string; image_path?: string }>> {
-    if (this.isAborted(signal)) return [];
-
     const isEmptyTerm = !term || term.trim() === '';
-    const cacheKey = `performers:${term}:${limit}`;
-    
-    // Check cache first (only for non-empty terms)
-    if (!isEmptyTerm) {
-      const cached = this.searchCache.get(cacheKey);
-      if (cached && Date.now() - cached.timestamp < this.SEARCH_CACHE_TTL) {
-        return cached.data as Array<{ id: string; name: string; image_path?: string }>;
-      }
-    }
-
+    const cacheKey = this.buildCacheKey('performers', term, limit);
     const hasSearchTerm = term && term.trim() !== '';
-    const fetchLimit = hasSearchTerm ? limit * 3 : Math.max(limit, 20);
+    const fetchLimit = hasSearchTerm ? limit * StashAPI.SEARCH_FETCH_MULTIPLIER : Math.max(limit, StashAPI.MIN_SEARCH_LIMIT);
     
     const filter: FindFilterInput = { 
       per_page: fetchLimit, 
@@ -321,29 +351,21 @@ export class StashAPI {
       }
     };
     
-    const variables = { filter, performer_filter };
-
-    try {
-      const result = await this.gqlClient.query<FindPerformersResponse>({
-        query: queries.FIND_PERFORMERS,
-        variables,
-        signal,
-      });
-      
-      if (this.isAborted(signal)) return [];
-      
-      const performers = result.data?.findPerformers?.performers ?? [];
-      const resultPerformers = performers.slice(0, limit);
-      
-      // Cache the result (only for non-empty terms)
-      if (!isEmptyTerm) {
-        this.searchCache.set(cacheKey, { data: resultPerformers, timestamp: Date.now() });
-      }
-      
-      return resultPerformers;
-    } catch (error: unknown) {
-      return this.handleError('searchPerformers', error, signal, []);
-    }
+    return this.searchWithCache(
+      cacheKey,
+      isEmptyTerm,
+      async () => {
+        const result = await this.gqlClient.query<FindPerformersResponse>({
+          query: queries.FIND_PERFORMERS,
+          variables: { filter, performer_filter },
+          signal,
+        });
+        
+        const performers = result.data?.findPerformers?.performers ?? [];
+        return performers.slice(0, limit);
+      },
+      signal
+    );
   }
 
   /**
@@ -414,16 +436,21 @@ export class StashAPI {
   /**
    * Get a saved filter's criteria
    */
-  async getSavedFilter(id: string): Promise<GetSavedFilterResponse['findSavedFilter']> {
+  async getSavedFilter(id: string, signal?: AbortSignal): Promise<GetSavedFilterResponse['findSavedFilter']> {
+    if (this.isAborted(signal)) return null;
+    
     try {
       const result = await this.gqlClient.query<GetSavedFilterResponse>({
         query: queries.GET_SAVED_FILTER,
-        variables: { id }
+        variables: { id },
+        signal
       });
+      
+      if (this.isAborted(signal)) return null;
+      
       return result.data?.findSavedFilter || null;
     } catch (error: unknown) {
-      this.logError('getSavedFilter', error);
-      return null;
+      return this.handleError('getSavedFilter', error, signal, null);
     }
   }
 
@@ -432,16 +459,16 @@ export class StashAPI {
    * Note: Stash's SceneMarkerFilterType only supports filtering by primary_tag, not by tags array.
    * For non-primary tags, we fetch markers and filter client-side.
    */
-  async fetchSceneMarkers(filters?: FilterOptions, signal?: AbortSignal): Promise<{ markers: SceneMarker[]; totalCount: number }> {
+  async fetchSceneMarkers(filters?: FilterOptions, signal?: AbortSignal): Promise<{ markers: SceneMarker[]; totalCount: number; sortSeed?: string }> {
     if (this.isAborted(signal)) return { markers: [], totalCount: 0 };
     
     // Fetching scene markers with filters
     
     if (filters?.shuffleMode) {
-      const markers = await this.fetchScenesForShuffle(filters, signal);
+      const { markers, sortSeed } = await this.fetchScenesForShuffle(filters, signal);
       // For shuffle mode, we don't have a reliable count, so return markers with 0 count
       // The caller should handle this case
-      return { markers, totalCount: 0 };
+      return { markers, totalCount: 0, sortSeed };
     }
     
     const savedFilterCriteria = await this.getSavedFilterCriteria(filters, signal);
@@ -462,12 +489,7 @@ export class StashAPI {
       const { markers, totalCount } = await this.executeMarkerQueryWithCount(filter, sceneMarkerFilter, signal);
       if (this.isAborted(signal)) return { markers: [], totalCount: 0 };
       
-      let finalMarkers = markers;
-      if (filters?.shuffleMode && finalMarkers.length > 0) {
-        finalMarkers = this.filterScenesByMarkerCount(finalMarkers, 5);
-      }
-      
-      return { markers: finalMarkers, totalCount };
+      return { markers, totalCount, sortSeed: filter.sort };
     } catch (error: unknown) {
       return this.handleError('fetchSceneMarkers', error, signal, { markers: [], totalCount: 0 });
     }
@@ -478,7 +500,7 @@ export class StashAPI {
    */
   private async getSavedFilterCriteria(filters?: FilterOptions, signal?: AbortSignal): Promise<GetSavedFilterResponse['findSavedFilter']> {
     if (!filters?.savedFilterId) return null;
-    return await this.getSavedFilter(filters.savedFilterId);
+    return await this.getSavedFilter(filters.savedFilterId, signal);
   }
 
   /**
@@ -671,11 +693,45 @@ export class StashAPI {
       this.applyTagAndPerformerFilters(filters, sceneMarkerFilter);
     }
     
-    if (filters?.studios && filters.studios.length > 0) {
-      sceneMarkerFilter.scene_tags = { value: filters.studios, modifier: 'INCLUDES' };
-    }
-    
     return sceneMarkerFilter;
+  }
+
+  /**
+   * Apply tag filters to a scene marker filter
+   */
+  private applyTagsToMarkerFilter(targetFilter: SceneMarkerFilterInput, tagIds: string[]): void {
+    if (tagIds.length > 0) {
+      targetFilter.tags = {
+        value: tagIds,
+        excludes: [],
+        modifier: tagIds.length === 1 ? 'INCLUDES_ALL' : 'INCLUDES',
+        depth: 0
+      };
+    }
+  }
+
+  /**
+   * Apply tag filters to a scene filter
+   */
+  private applyTagsToSceneFilter(targetFilter: SceneFilterInput, tagIds: string[]): void {
+    if (tagIds.length > 0) {
+      targetFilter.tags = {
+        value: tagIds,
+        modifier: tagIds.length === 1 ? 'INCLUDES_ALL' : 'INCLUDES'
+      };
+    }
+  }
+
+  /**
+   * Apply performer filters to a filter object
+   */
+  private applyPerformersToFilter(targetFilter: SceneMarkerFilterInput | SceneFilterInput, performerIds: number[]): void {
+    if (performerIds.length > 0) {
+      targetFilter.performers = {
+        value: performerIds,
+        modifier: performerIds.length === 1 ? 'INCLUDES_ALL' : 'INCLUDES'
+      };
+    }
   }
 
   /**
@@ -689,26 +745,13 @@ export class StashAPI {
     
     if (tagIds.length > 0) {
       if ('tags' in targetFilter) {
-        (targetFilter as SceneMarkerFilterInput).tags = {
-          value: tagIds,
-          excludes: [],
-          modifier: tagIds.length === 1 ? 'INCLUDES_ALL' : 'INCLUDES',
-          depth: 0
-        };
+        this.applyTagsToMarkerFilter(targetFilter, tagIds);
       } else {
-        (targetFilter as SceneFilterInput).tags = {
-          value: tagIds,
-          modifier: tagIds.length === 1 ? 'INCLUDES_ALL' : 'INCLUDES'
-        };
+        this.applyTagsToSceneFilter(targetFilter, tagIds);
       }
     }
     
-    if (performerIds.length > 0) {
-      targetFilter.performers = {
-        value: performerIds,
-        modifier: performerIds.length === 1 ? 'INCLUDES_ALL' : 'INCLUDES'
-      };
-    }
+    this.applyPerformersToFilter(targetFilter, performerIds);
   }
 
   /**
@@ -734,7 +777,8 @@ export class StashAPI {
     let markers = responseData?.scene_markers || [];
     const totalCount = responseData?.count ?? 0;
     
-    if (totalCount > 0 && markers.length === 0 && filter.page !== 1) {
+    // Retry if we have a count but no markers (can happen due to race conditions or data inconsistencies)
+    if (totalCount > 0 && markers.length === 0) {
       const retryResult = await this.retryMarkerQueryWithCount(filter, sceneMarkerFilter, signal);
       return retryResult;
     }
@@ -754,11 +798,12 @@ export class StashAPI {
     
     if (this.isAborted(signal)) return { markers: [], totalCount: 0 };
     
-    filter.page = 1;
+    // Create a copy of the filter to avoid mutating the input parameter
+    const retryFilter = { ...filter, page: 1 };
     const retryResult = await this.gqlClient.query<FindSceneMarkersResponse>({
       query: queries.FIND_SCENE_MARKERS,
       variables: {
-        filter,
+        filter: retryFilter,
         scene_marker_filter: Object.keys(sceneMarkerFilter).length > 0 ? sceneMarkerFilter : {},
       },
       signal,
@@ -777,27 +822,22 @@ export class StashAPI {
    * Fetch scenes directly for shuffle mode (includes scenes with 0 markers)
    * @param filters Filter options
    * @param signal Abort signal
-   * @returns Array of synthetic scene markers (one per scene)
+   * @returns Array of synthetic scene markers (one per scene) and sortSeed
    */
-  private async fetchScenesForShuffle(filters?: FilterOptions, signal?: AbortSignal): Promise<SceneMarker[]> {
+  private async fetchScenesForShuffle(filters?: FilterOptions, signal?: AbortSignal): Promise<{ markers: SceneMarker[]; sortSeed: string }> {
     try {
       const limit = filters?.limit || 20;
       let page = filters?.offset ? Math.floor(filters?.offset / limit) + 1 : 1;
 
       if (!filters?.offset) {
         page = await this.calculateRandomScenePage(filters, limit, signal);
-        if (this.isAborted(signal)) return [];
+        if (this.isAborted(signal)) return { markers: [], sortSeed: generateRandomSortSeed() };
       }
 
-      if (this.isAborted(signal)) return [];
+      if (this.isAborted(signal)) return { markers: [], sortSeed: generateRandomSortSeed() };
 
       // Reuse existing sort seed for pagination, or generate new one for first page
       const sortSeed = filters?.sortSeed || generateRandomSortSeed();
-      
-      // Store the sort seed back in filters for pagination (if we generated a new one)
-      if (filters && !filters.sortSeed) {
-        filters.sortSeed = sortSeed;
-      }
 
       const filter: FindFilterInput = {
         per_page: limit,
@@ -808,13 +848,14 @@ export class StashAPI {
       const sceneFilter = this.buildShuffleSceneFilter(filters);
       const scenes = await this.fetchScenesQuery(filter, sceneFilter, signal);
       
-      if (this.isAborted(signal)) return [];
+      if (this.isAborted(signal)) return { markers: [], sortSeed };
 
       let markers = this.createSyntheticMarkers(scenes);
       
-      return markers;
+      return { markers, sortSeed };
     } catch (error: unknown) {
-      return this.handleError('fetchScenesForShuffle', error, signal, []);
+      const emptyResult = { markers: [] as SceneMarker[], sortSeed: generateRandomSortSeed() };
+      return this.handleError('fetchScenesForShuffle', error, signal, emptyResult);
     }
   }
 
@@ -892,7 +933,7 @@ export class StashAPI {
    */
   private createSyntheticMarkers(scenes: Scene[], idPrefix: string = 'synthetic'): SceneMarker[] {
     return scenes.map((scene) => ({
-      id: `${idPrefix}-${scene.id}-${Date.now()}-${Math.random()}`,
+      id: `${idPrefix}-${scene.id}`,
       title: scene.title || 'Untitled',
       seconds: 0,
       end_seconds: undefined,
@@ -918,18 +959,18 @@ export class StashAPI {
     limit: number = 20,
     offset: number = 0,
     signal?: AbortSignal
-  ): Promise<{ markers: SceneMarker[]; totalCount: number; unfilteredOffsetConsumed: number }> {
-    if (this.isAborted(signal)) return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 };
+  ): Promise<{ markers: SceneMarker[]; totalCount: number; unfilteredOffsetConsumed: number; sortSeed: string }> {
+    if (this.isAborted(signal)) return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0, sortSeed: generateRandomSortSeed() };
 
     try {
 
-      const scenesPerPage = 24; // Fetch 24 scenes per page
+      const scenesPerPage = StashAPI.SHORT_FORM_SCENES_PER_PAGE;
       
       const sceneFilter = this.buildShortFormSceneFilter(filters, maxDuration);
       
       const { maxPage, totalCount } = await this.getMaxPageForShortForm(sceneFilter, scenesPerPage, signal);
       if (maxPage === 0) {
-        return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 };
+        return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0, sortSeed: generateRandomSortSeed() };
       }
       
       // Calculate page from offset based on scenesPerPage
@@ -943,13 +984,6 @@ export class StashAPI {
       // Reuse existing sort seed for pagination, or generate new one for first page
       const sortSeed = filters?.sortSeed || generateRandomSortSeed();
       
-      // NOTE: Mutation of filters parameter is necessary for pagination consistency.
-      // The sortSeed must be preserved across pagination calls. A proper fix would
-      // return sortSeed in the result, but that requires changes to all callers.
-      if (filters && !filters.sortSeed) {
-        filters.sortSeed = sortSeed;
-      }
-      
       // Fetch only the single page needed
       const filter: FindFilterInput = {
         per_page: scenesPerPage,
@@ -958,32 +992,9 @@ export class StashAPI {
       };
       
       const scenes = await this.fetchScenesQuery(filter, sceneFilter, signal);
-      if (this.isAborted(signal)) return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 };
+      if (this.isAborted(signal)) return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0, sortSeed: generateRandomSortSeed() };
       
-      // Calculate how many unfiltered scenes we processed
-      // We fetch a full page (24 scenes), filter them, then take the requested amount
-      // The unfiltered offset consumed is: offsetInPage + number of scenes we actually looked at
-      // Since we slice from offsetInPage, we process (offsetInPage + limit) scenes at most
-      // But we need to account for filtering - we process scenes until we have enough filtered results
-      let unfilteredScenesProcessed = 0;
-      let filteredScenesFound = 0;
-      
-      // Count how many unfiltered scenes we need to process to get 'limit' filtered scenes
-      for (let i = offsetInPage; i < scenes.length && filteredScenesFound < limit; i++) {
-        unfilteredScenesProcessed++;
-        const scene = scenes[i];
-        const file = scene.files?.[0];
-        if (file?.duration && file.duration < maxDuration) {
-          filteredScenesFound++;
-        }
-      }
-      
-      // If we didn't get enough filtered scenes, we processed all remaining scenes in the page
-      if (filteredScenesFound < limit) {
-        unfilteredScenesProcessed = scenes.length - offsetInPage;
-      }
-      
-      // Filter by duration (in case any scenes don't match the duration filter)
+      // Filter by duration (GraphQL filter should handle this, but filter client-side as backup)
       const shortFormScenes = this.filterShortFormScenes(scenes, maxDuration);
       
       // Apply offset within page and limit to results
@@ -991,13 +1002,13 @@ export class StashAPI {
       
       const markers = this.createShortFormMarkers(limitedScenes);
       
-      // Calculate unfiltered offset consumed: offsetInPage + unfilteredScenesProcessed
-      // This represents how many unfiltered scenes we processed in this page
-      const unfilteredOffsetConsumed = offsetInPage + unfilteredScenesProcessed;
+      // Calculate unfiltered offset consumed: offsetInPage + number of scenes we actually processed
+      // Since we slice from offsetInPage and take up to limit, we process at most offsetInPage + limit scenes
+      const unfilteredOffsetConsumed = offsetInPage + limitedScenes.length;
       
-      return { markers, totalCount, unfilteredOffsetConsumed };
+      return { markers, totalCount, unfilteredOffsetConsumed, sortSeed };
     } catch (error: unknown) {
-      return this.handleError('fetchShortFormVideos', error, signal, { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 });
+      return this.handleError('fetchShortFormVideos', error, signal, { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0, sortSeed: generateRandomSortSeed() });
     }
   }
 
@@ -1009,7 +1020,7 @@ export class StashAPI {
     scenesPerPage: number,
     signal?: AbortSignal
   ): Promise<{ maxPage: number; totalCount: number }> {
-    let maxPage = 100; // Default fallback
+    let maxPage = StashAPI.MAX_PAGE_FALLBACK;
     let totalCount = 0;
     try {
       const countFilter: FindFilterInput = { per_page: 1, page: 1 };
@@ -1207,7 +1218,9 @@ export class StashAPI {
   /**
    * Find a tag by name
    */
-  async findTagByName(tagName: string): Promise<{ id: string; name: string } | null> {
+  async findTagByName(tagName: string, signal?: AbortSignal): Promise<{ id: string; name: string } | null> {
+    if (this.isAborted(signal)) return null;
+    
     const variables = {
       filter: { per_page: 1, page: 1 },
       tag_filter: { name: { value: tagName, modifier: 'EQUALS' } }
@@ -1218,7 +1231,11 @@ export class StashAPI {
       const result = await this.gqlClient.query<FindTagsResponse>({
         query: queries.FIND_TAGS,
         variables,
+        signal,
       });
+      
+      if (this.isAborted(signal)) return null;
+      
       const tags = result.data?.findTags?.tags || [];
       if (tags.length > 0) {
         const tag = tags[0];
@@ -1233,8 +1250,7 @@ export class StashAPI {
       }
       return null;
     } catch (error: unknown) {
-      this.logError('findTagByName', error);
-      return null;
+      return this.handleError('findTagByName', error, signal, null);
     }
   }
 
@@ -1242,7 +1258,9 @@ export class StashAPI {
    * Create a new tag
    * If the tag already exists, attempts to find and return it
    */
-  async createTag(tagName: string): Promise<{ id: string; name: string } | null> {
+  async createTag(tagName: string, signal?: AbortSignal): Promise<{ id: string; name: string } | null> {
+    if (this.isAborted(signal)) return null;
+    
     const variables: { input: TagCreateInput } = {
       input: { name: tagName }
     };
@@ -1251,15 +1269,23 @@ export class StashAPI {
       const result = await this.gqlClient.mutate<TagCreateResponse>({
         mutation: mutations.TAG_CREATE,
         variables,
+        signal,
       });
+      
+      if (this.isAborted(signal)) return null;
+      
       return result.data?.tagCreate || null;
     } catch (error: unknown) {
+      if (isAbortError(error) || this.isAborted(signal)) {
+        return null;
+      }
+      
       // If tag already exists, try to find it
       const errorMessage = error instanceof Error ? error.message : String(error);
       if (errorMessage.includes('already exists') || errorMessage.includes('duplicate')) {
         this.logError('createTag', new Error(`Tag "${tagName}" already exists, attempting to find it`));
         // Try to find the existing tag
-        const existingTag = await this.findTagByName(tagName);
+        const existingTag = await this.findTagByName(tagName, signal);
         if (existingTag) {
           return existingTag;
         }
@@ -1278,22 +1304,80 @@ export class StashAPI {
   }
 
   /**
-   * Check if a scene has a specific tag (kept for backwards compatibility)
+   * Check if a scene has a specific tag
+   * @param sceneId Scene ID
+   * @param tagId Tag ID to check
+   * @param tags Optional array of tags to check against (avoids query if provided)
+   * @param signal Optional abort signal
+   * @returns True if scene has the tag
    */
-  async sceneHasTag(sceneId: string, tagId: string): Promise<boolean> {
+  async sceneHasTag(sceneId: string, tagId: string, tags?: Array<{ id: string }>, signal?: AbortSignal): Promise<boolean> {
+    if (this.isAborted(signal)) return false;
+    
+    // If tags array is provided, use it directly (more efficient)
+    if (tags) {
+      return tags.some((tag) => tag.id === tagId);
+    }
+    
+    // Otherwise, query for scene tags
     const variables = { id: sceneId };
 
     try {
       const result = await this.gqlClient.query<FindSceneResponse>({
         query: queries.FIND_SCENE_MINIMAL,
         variables,
+        signal,
       });
-      const tags = result.data?.findScene?.tags || [];
-      return tags.some((tag: { id: string }) => tag.id === tagId);
+      
+      if (this.isAborted(signal)) return false;
+      
+      const sceneTags = result.data?.findScene?.tags || [];
+      return sceneTags.some((tag: { id: string }) => tag.id === tagId);
     } catch (error: unknown) {
-      this.logError('sceneHasTag', error);
-      return false;
+      return this.handleError('sceneHasTag', error, signal, false);
     }
+  }
+
+  /**
+   * Update tags on a scene marker
+   */
+  private async updateMarkerTags(
+    marker: {
+      id: string;
+      title: string;
+      seconds: number;
+      end_seconds?: number | null;
+      scene: { id: string };
+      primary_tag?: { id: string } | null;
+      tags?: Array<{ id: string }>;
+    },
+    newTagIds: string[],
+    signal?: AbortSignal
+  ): Promise<void> {
+    if (this.isAborted(signal)) return;
+    
+    // Ensure we have required fields
+    if (!marker.primary_tag?.id) {
+      throw new Error('Marker must have a primary_tag');
+    }
+
+    const variables: SceneMarkerUpdateInput = {
+      id: marker.id,
+      title: marker.title,
+      seconds: marker.seconds,
+      end_seconds: marker.end_seconds ?? null,
+      scene_id: marker.scene.id,
+      primary_tag_id: marker.primary_tag.id,
+      tag_ids: newTagIds
+    };
+
+    await this.gqlClient.mutate<SceneMarkerUpdateResponse>({
+      mutation: mutations.SCENE_MARKER_UPDATE,
+      variables: variables as unknown as Record<string, unknown>,
+      signal,
+    });
+    
+    if (this.isAborted(signal)) return;
   }
 
   /**
@@ -1310,37 +1394,23 @@ export class StashAPI {
       primary_tag?: { id: string } | null;
       tags?: Array<{ id: string }>;
     },
-    tagId: string
+    tagId: string,
+    signal?: AbortSignal
   ): Promise<void> {
+    if (this.isAborted(signal)) return;
+    
     try {
       // Get current tags from marker data
       const currentTags: string[] = (marker.tags || []).map(t => t.id);
 
       // Add the new tag if not already present
       if (!currentTags.includes(tagId)) {
-        const tagIds = [...currentTags, tagId];
-
-        // Ensure we have required fields
-        if (!marker.primary_tag?.id) {
-          throw new Error('Marker must have a primary_tag');
-        }
-
-        const variables: SceneMarkerUpdateInput = {
-          id: marker.id,
-          title: marker.title,
-          seconds: marker.seconds,
-          end_seconds: marker.end_seconds ?? null,
-          scene_id: marker.scene.id,
-          primary_tag_id: marker.primary_tag.id,
-          tag_ids: tagIds
-        };
-
-        await this.gqlClient.mutate<SceneMarkerUpdateResponse>({
-          mutation: mutations.SCENE_MARKER_UPDATE,
-          variables: variables as unknown as Record<string, unknown>,
-        });
+        await this.updateMarkerTags(marker, [...currentTags, tagId], signal);
       }
     } catch (error) {
+      if (isAbortError(error) || this.isAborted(signal)) {
+        return;
+      }
       this.logError('addTagToMarker', error);
       throw error;
     }
@@ -1349,7 +1419,9 @@ export class StashAPI {
   /**
    * Update tags for an image
    */
-  async updateImageTags(imageId: string, tagIds: string[]): Promise<void> {
+  async updateImageTags(imageId: string, tagIds: string[], signal?: AbortSignal): Promise<void> {
+    if (this.isAborted(signal)) return;
+    
     try {
       await this.gqlClient.mutate<ImageUpdateResponse>({
         mutation: mutations.IMAGE_UPDATE,
@@ -1359,8 +1431,14 @@ export class StashAPI {
             tag_ids: tagIds,
           },
         },
+        signal,
       });
+      
+      if (this.isAborted(signal)) return;
     } catch (error) {
+      if (isAbortError(error) || this.isAborted(signal)) {
+        return;
+      }
       this.logError('updateImageTags', error);
       throw error;
     }
@@ -1369,51 +1447,79 @@ export class StashAPI {
   /**
    * Increment image o-counter
    */
-  async incrementImageOCount(imageId: string): Promise<number> {
+  async incrementImageOCount(imageId: string, signal?: AbortSignal): Promise<number> {
+    if (this.isAborted(signal)) return 0;
+    
     try {
       const result = await this.gqlClient.mutate<ImageIncrementOResponse>({
         mutation: mutations.IMAGE_INCREMENT_O,
         variables: {
           id: imageId,
         },
+        signal,
       });
+      
+      if (this.isAborted(signal)) return 0;
+      
       return result.data?.imageIncrementO ?? 0;
     } catch (error) {
+      if (isAbortError(error) || this.isAborted(signal)) {
+        return 0;
+      }
       this.logError('incrementImageOCount', error);
       throw error;
     }
   }
 
   /**
+   * Update tags on a scene
+   */
+  private async updateSceneTags(sceneId: string, tagIds: string[], signal?: AbortSignal): Promise<void> {
+    if (this.isAborted(signal)) return;
+    
+    const variables = {
+      input: {
+        id: sceneId,
+        tag_ids: tagIds
+      }
+    };
+
+    await this.gqlClient.mutate<SceneUpdateResponse>({
+      mutation: mutations.SCENE_UPDATE,
+      variables,
+      signal,
+    });
+    
+    if (this.isAborted(signal)) return;
+  }
+
+  /**
    * Add a tag to a scene (kept for backwards compatibility)
    */
-  async addTagToScene(sceneId: string, tagId: string): Promise<void> {
+  async addTagToScene(sceneId: string, tagId: string, signal?: AbortSignal): Promise<void> {
+    if (this.isAborted(signal)) return;
+    
     // First get current scene tags
     try {
       // Get current tags
       const result = await this.gqlClient.query<FindSceneResponse>({
         query: queries.FIND_SCENE_MINIMAL,
         variables: { id: sceneId },
+        signal,
       });
+      
+      if (this.isAborted(signal)) return;
+      
       const currentTags: string[] = (result.data?.findScene?.tags || []).map((t: { id: string }) => t.id);
 
       // Add the new tag if not already present
       if (!currentTags.includes(tagId)) {
-        const tagIds = [...currentTags, tagId];
-
-        const variables = {
-          input: {
-            id: sceneId,
-            tag_ids: tagIds
-          }
-        };
-
-        await this.gqlClient.mutate<SceneUpdateResponse>({
-          mutation: mutations.SCENE_UPDATE,
-          variables,
-        });
+        await this.updateSceneTags(sceneId, [...currentTags, tagId], signal);
       }
     } catch (error) {
+      if (isAbortError(error) || this.isAborted(signal)) {
+        return;
+      }
       this.logError('addTagToScene', error);
       throw error;
     }
@@ -1433,8 +1539,11 @@ export class StashAPI {
       primary_tag?: { id: string } | null;
       tags?: Array<{ id: string }>;
     },
-    tagId: string
+    tagId: string,
+    signal?: AbortSignal
   ): Promise<void> {
+    if (this.isAborted(signal)) return;
+    
     try {
       // Get current tags from marker data
       const currentTags: string[] = (marker.tags || []).map(t => t.id);
@@ -1442,26 +1551,11 @@ export class StashAPI {
       // Remove the tag
       const tagIds = currentTags.filter(id => id !== tagId);
 
-      // Ensure we have required fields
-      if (!marker.primary_tag?.id) {
-        throw new Error('Marker must have a primary_tag');
-      }
-
-      const variables = {
-        id: marker.id,
-        title: marker.title,
-        seconds: marker.seconds,
-        end_seconds: marker.end_seconds ?? null,
-        scene_id: marker.scene.id,
-        primary_tag_id: marker.primary_tag.id,
-        tag_ids: tagIds
-      };
-
-      await this.gqlClient.mutate<SceneMarkerUpdateResponse>({
-        mutation: mutations.SCENE_MARKER_UPDATE,
-        variables,
-      });
+      await this.updateMarkerTags(marker, tagIds, signal);
     } catch (error) {
+      if (isAbortError(error) || this.isAborted(signal)) {
+        return;
+      }
       this.logError('removeTagFromMarker', error);
       throw error;
     }
@@ -1470,31 +1564,30 @@ export class StashAPI {
   /**
    * Remove a tag from a scene (kept for backwards compatibility)
    */
-  async removeTagFromScene(sceneId: string, tagId: string): Promise<void> {
+  async removeTagFromScene(sceneId: string, tagId: string, signal?: AbortSignal): Promise<void> {
+    if (this.isAborted(signal)) return;
+    
     // First get current scene tags
     try {
       // Get current tags
       const result = await this.gqlClient.query<FindSceneResponse>({
         query: queries.FIND_SCENE_MINIMAL,
         variables: { id: sceneId },
+        signal,
       });
+      
+      if (this.isAborted(signal)) return;
+      
       const currentTags: string[] = (result.data?.findScene?.tags || []).map((t: { id: string }) => t.id);
 
       // Remove the tag
       const tagIds = currentTags.filter(id => id !== tagId);
 
-      const variables = {
-        input: {
-          id: sceneId,
-          tag_ids: tagIds
-        }
-      };
-
-      await this.gqlClient.mutate<SceneUpdateResponse>({
-        mutation: mutations.SCENE_UPDATE,
-        variables,
-      });
+      await this.updateSceneTags(sceneId, tagIds, signal);
     } catch (error) {
+      if (isAbortError(error) || this.isAborted(signal)) {
+        return;
+      }
       this.logError('removeTagFromScene', error);
       throw error;
     }
@@ -1504,9 +1597,12 @@ export class StashAPI {
    * Increment the o count for a scene
    * @param sceneId The scene ID
    * @param times Optional array of timestamps (if not provided, uses current time)
+   * @param signal Optional abort signal
    * @returns The updated o count and history
    */
-  async incrementOCount(sceneId: string, times?: string[]): Promise<{ count: number; history: string[] }> {
+  async incrementOCount(sceneId: string, times?: string[], signal?: AbortSignal): Promise<{ count: number; history: string[] }> {
+    if (this.isAborted(signal)) return { count: 0, history: [] };
+    
     const variables = {
       id: sceneId,
       times: times || undefined
@@ -1516,13 +1612,21 @@ export class StashAPI {
       const result = await this.gqlClient.mutate<SceneAddOResponse>({
         mutation: mutations.SCENE_ADD_O,
         variables,
+        signal,
       });
+      
+      if (this.isAborted(signal)) return { count: 0, history: [] };
+      
       const sceneAddO = result.data?.sceneAddO;
       if (sceneAddO && 'count' in sceneAddO) {
         return { count: sceneAddO.count ?? 0, history: times || [] };
       }
-      return { count: 0, history: [] };
+      // Return provided times in history even when count is missing
+      return { count: 0, history: times || [] };
     } catch (error) {
+      if (isAbortError(error) || this.isAborted(signal)) {
+        return { count: 0, history: [] };
+      }
       this.logError('incrementOCount', error);
       throw error;
     }
@@ -1532,9 +1636,20 @@ export class StashAPI {
    * Update the rating for a scene (0-10 scale → rating100)
    * @param sceneId Scene identifier
    * @param rating10 Rating on a 0-10 scale (can include decimals)
+   * @param signal Optional abort signal
    * @returns Updated rating100 value from Stash
    */
-  async updateSceneRating(sceneId: string, rating10: number): Promise<number> {
+  async updateSceneRating(sceneId: string, rating10: number, signal?: AbortSignal): Promise<number> {
+    if (this.isAborted(signal)) return 0;
+    
+    // Input validation
+    if (!sceneId || typeof sceneId !== 'string' || sceneId.trim() === '') {
+      throw new Error('updateSceneRating: sceneId is required and must be a non-empty string');
+    }
+    if (typeof rating10 !== 'number' || !Number.isFinite(rating10)) {
+      throw new Error('updateSceneRating: rating10 must be a finite number');
+    }
+    
     const normalized = Number.isFinite(rating10) ? rating10 : 0;
     const clamped = Math.min(10, Math.max(0, normalized));
     const rating100 = Math.round(clamped * 10);
@@ -1550,11 +1665,17 @@ export class StashAPI {
       await this.gqlClient.mutate<SceneUpdateResponse>({
         mutation: mutations.SCENE_UPDATE,
         variables,
+        signal,
       });
+      
+      if (this.isAborted(signal)) return 0;
 
       // SceneUpdateResponse doesn't include rating100, so we return the value we set
       return rating100;
     } catch (error) {
+      if (isAbortError(error) || this.isAborted(signal)) {
+        return 0;
+      }
       this.logError('updateSceneRating', error);
       throw error;
     }
@@ -1586,12 +1707,12 @@ export class StashAPI {
         variables,
         signal,
       });
-      if (signal?.aborted) {
+      if (this.isAborted(signal)) {
         return [];
       }
       return result.data?.findTags?.tags || [];
     } catch (error: unknown) {
-      if (isAbortError(error) || signal?.aborted) {
+      if (isAbortError(error) || this.isAborted(signal)) {
         return [];
       }
       this.logError('findTagsForSelect', error);
@@ -1607,6 +1728,7 @@ export class StashAPI {
    * @param title Optional title (defaults to empty string)
    * @param endSeconds Optional end time in seconds
    * @param tagIds Optional array of additional tag IDs
+   * @param signal Optional abort signal
    * @returns Created marker data
    */
   async createSceneMarker(
@@ -1615,8 +1737,35 @@ export class StashAPI {
     primaryTagId: string,
     title: string = '',
     endSeconds?: number | null,
-    tagIds: string[] = []
+    tagIds: string[] = [],
+    signal?: AbortSignal
   ): Promise<{ id: string; title: string; seconds: number; end_seconds?: number; stream?: string; preview?: string; scene: { id: string; title?: string; files?: Array<{ width?: number; height?: number; path?: string }>; performers?: Array<{ id: string; name: string; image_path?: string }> } | Scene; primary_tag: { id: string; name: string }; tags: Array<{ id: string; name: string }> }> {
+    if (this.isAborted(signal)) {
+      throw new Error('Operation aborted');
+    }
+    
+    // Input validation
+    if (!sceneId || typeof sceneId !== 'string' || sceneId.trim() === '') {
+      throw new Error('createSceneMarker: sceneId is required and must be a non-empty string');
+    }
+    if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) {
+      throw new Error('createSceneMarker: seconds must be a non-negative number');
+    }
+    if (!primaryTagId || typeof primaryTagId !== 'string' || primaryTagId.trim() === '') {
+      throw new Error('createSceneMarker: primaryTagId is required and must be a non-empty string');
+    }
+    if (endSeconds !== null && endSeconds !== undefined) {
+      if (typeof endSeconds !== 'number' || !Number.isFinite(endSeconds) || endSeconds < 0) {
+        throw new Error('createSceneMarker: endSeconds must be a non-negative number or null');
+      }
+      if (endSeconds < seconds) {
+        throw new Error('createSceneMarker: endSeconds must be greater than or equal to seconds');
+      }
+    }
+    if (!Array.isArray(tagIds)) {
+      throw new Error('createSceneMarker: tagIds must be an array');
+    }
+    
     const variables = {
       title,
       seconds,
@@ -1630,7 +1779,13 @@ export class StashAPI {
       const result = await this.gqlClient.mutate<SceneMarkerCreateResponse>({
         mutation: mutations.SCENE_MARKER_CREATE,
         variables,
+        signal,
       });
+      
+      if (this.isAborted(signal)) {
+        throw new Error('Operation aborted');
+      }
+      
       const marker = result.data?.sceneMarkerCreate;
       if (!marker) {
         throw new Error('Failed to create scene marker: response was null');
@@ -1641,6 +1796,9 @@ export class StashAPI {
         end_seconds: marker.end_seconds ?? undefined,
       };
     } catch (error) {
+      if (isAbortError(error) || this.isAborted(signal)) {
+        throw new Error('Operation aborted');
+      }
       this.logError('createSceneMarker', error);
       throw error;
     }
@@ -1678,39 +1836,26 @@ export class StashAPI {
 
   /**
    * Extract marker times from scene marker tags response
+   * Consolidates the extraction logic into a single method
    */
   private extractMarkerTimes(sceneMarkerTags: unknown): number[] {
     const tagGroups = Array.isArray(sceneMarkerTags) ? sceneMarkerTags : [sceneMarkerTags];
     const markerTimes: number[] = [];
     
     for (const tagGroup of tagGroups) {
-      if (this.isTagGroup(tagGroup)) {
-        const times = this.extractTimesFromTagGroup(tagGroup);
-        markerTimes.push(...times);
+      // Check if value is a tag group with scene_markers
+      if (typeof tagGroup === 'object' && tagGroup !== null && 'scene_markers' in tagGroup) {
+        const sceneMarkers = (tagGroup as { scene_markers?: Array<{ seconds?: number }> }).scene_markers;
+        if (Array.isArray(sceneMarkers)) {
+          const times = sceneMarkers
+            .map(marker => marker.seconds)
+            .filter((seconds): seconds is number => typeof seconds === 'number');
+          markerTimes.push(...times);
+        }
       }
     }
     
     return markerTimes;
-  }
-
-  /**
-   * Check if value is a tag group with scene_markers
-   */
-  private isTagGroup(value: unknown): value is { scene_markers?: Array<{ seconds?: number }> } {
-    return typeof value === 'object' && value !== null && 'scene_markers' in value;
-  }
-
-  /**
-   * Extract times from a tag group
-   */
-  private extractTimesFromTagGroup(tagGroup: { scene_markers?: Array<{ seconds?: number }> }): number[] {
-    if (!Array.isArray(tagGroup.scene_markers)) {
-      return [];
-    }
-    
-    return tagGroup.scene_markers
-      .map(marker => marker.seconds)
-      .filter((seconds): seconds is number => typeof seconds === 'number');
   }
 
   /**
@@ -1725,9 +1870,8 @@ export class StashAPI {
     }
     
     const aspectRatio = width / height;
-    const tolerance = 0.05; // 5% tolerance for square detection
     
-    if (Math.abs(aspectRatio - 1) < tolerance) {
+    if (Math.abs(aspectRatio - 1) < StashAPI.ORIENTATION_TOLERANCE) {
       return 'square';
     } else if (aspectRatio > 1) {
       return 'landscape';
@@ -1737,7 +1881,47 @@ export class StashAPI {
   }
 
   /**
-   * Filter items by orientation
+   * Get visual file dimensions from image
+   */
+  private getImageDimensions(image: Image): { width?: number; height?: number } | null {
+    if (!image.visual_files || image.visual_files.length === 0) {
+      return null;
+    }
+    
+    const visualFile = image.visual_files.find(
+      (file): file is VisualFile & { width: number; height: number } =>
+        typeof file.width === 'number' &&
+        typeof file.height === 'number'
+    );
+    
+    return visualFile ? { width: visualFile.width, height: visualFile.height } : null;
+  }
+
+  /**
+   * Filter images by orientation
+   */
+  private filterImagesByOrientation(
+    images: Image[],
+    orientationFilter: ('landscape' | 'portrait' | 'square')[]
+  ): Image[] {
+    if (orientationFilter.length === 0) {
+      return images;
+    }
+    
+    return images.filter(image => {
+      const dimensions = this.getImageDimensions(image);
+      if (!dimensions || !dimensions.width || !dimensions.height) {
+        // If orientation cannot be determined, include the image
+        return true;
+      }
+      
+      const orientation = this.getOrientation(dimensions.width, dimensions.height);
+      return orientation === null || orientationFilter.includes(orientation);
+    });
+  }
+
+  /**
+   * Filter items by orientation (generic version for other types)
    * @param items Array of items with width/height properties
    * @param orientationFilter Array of allowed orientations
    * @param getWidth Function to get width from item
@@ -1771,10 +1955,11 @@ export class StashAPI {
   /**
    * Build regex pattern from file extensions
    * Converts ['.gif', '.webm'] to "(?i)\.(gif|webm)$" (case-insensitive)
+   * @throws Error if fileExtensions is empty or all extensions are invalid
    */
   private buildPathRegex(fileExtensions: string[]): string {
     if (fileExtensions.length === 0) {
-      return String.raw`(?i)\.(gif)$`; // Default to .gif if empty
+      throw new Error('buildPathRegex: fileExtensions array cannot be empty');
     }
     
     // Strip leading dots and validate
@@ -1783,7 +1968,7 @@ export class StashAPI {
       .filter(ext => ext.length > 0 && /^[a-z0-9]+$/i.test(ext));
     
     if (extensions.length === 0) {
-      return String.raw`(?i)\.(gif)$`; // Default to .gif if all invalid
+      throw new Error('buildPathRegex: all file extensions are invalid');
     }
     
     // Build regex: (?i)\.(gif|webm|mp4)$ (case-insensitive)
@@ -1809,8 +1994,19 @@ export class StashAPI {
     limit: number = 40,
     offset: number = 0,
     signal?: AbortSignal
-  ): Promise<{ images: Image[]; totalCount: number }> {
-    if (signal?.aborted) return { images: [], totalCount: 0 };
+  ): Promise<{ images: Image[]; totalCount: number; sortSeed: string }> {
+    if (this.isAborted(signal)) return { images: [], totalCount: 0, sortSeed: generateRandomSortSeed() };
+
+    // Input validation
+    if (!Array.isArray(fileExtensions)) {
+      throw new Error('findImages: fileExtensions must be an array');
+    }
+    if (typeof limit !== 'number' || !Number.isFinite(limit) || limit < 1) {
+      throw new Error('findImages: limit must be a positive number');
+    }
+    if (typeof offset !== 'number' || !Number.isFinite(offset) || offset < 0) {
+      throw new Error('findImages: offset must be a non-negative number');
+    }
 
     // Build regex pattern from file extensions
     const regexPattern = this.buildPathRegex(fileExtensions);
@@ -1842,13 +2038,6 @@ export class StashAPI {
     // Reuse existing sort seed for pagination, or generate new one for first page
     const sortSeed = filters?.sortSeed || generateRandomSortSeed();
     
-    // NOTE: Mutation of filters parameter is necessary for pagination consistency.
-    // The sortSeed must be preserved across pagination calls. A proper fix would
-    // return sortSeed in the result, but that requires changes to all callers.
-    if (filters && !filters.sortSeed) {
-      filters.sortSeed = sortSeed;
-    }
-    
     const findFilter: FindFilterInput = {
       per_page: limit,
       page: Math.floor(offset / limit) + 1,
@@ -1869,49 +2058,41 @@ export class StashAPI {
         signal,
       });
 
-      if (signal?.aborted) return { images: [], totalCount: 0 };
+      if (this.isAborted(signal)) return { images: [], totalCount: 0, sortSeed: generateRandomSortSeed() };
 
       let images = result.data?.findImages?.images || [];
       const totalCount = result.data?.findImages?.count ?? 0;
       
       // Filter by orientation if specified
       if (filters?.orientationFilter && filters.orientationFilter.length > 0) {
-        images = this.filterByOrientation(
-          images,
-          filters.orientationFilter,
-          (img) => {
-            const visualFile = img.visual_files?.find(
-              (file) => typeof (file as { width?: number }).width === 'number' && typeof (file as { height?: number }).height === 'number'
-            ) as { width?: number; height?: number } | undefined;
-            return visualFile?.width;
-          },
-          (img) => {
-            const visualFile = img.visual_files?.find(
-              (file) => typeof (file as { width?: number }).width === 'number' && typeof (file as { height?: number }).height === 'number'
-            ) as { width?: number; height?: number } | undefined;
-            return visualFile?.height;
-          }
-        );
+        images = this.filterImagesByOrientation(images, filters.orientationFilter);
       }
       
-      return { images, totalCount };
+      return { images, totalCount, sortSeed };
     } catch (e: unknown) {
-      if (isAbortError(e) || signal?.aborted) {
-        return { images: [], totalCount: 0 };
+      if (isAbortError(e) || this.isAborted(signal)) {
+        return { images: [], totalCount: 0, sortSeed: generateRandomSortSeed() };
       }
-      return this.handleError('findImages', e, signal, { images: [], totalCount: 0 });
+      return this.handleError('findImages', e, signal, { images: [], totalCount: 0, sortSeed: generateRandomSortSeed() });
     }
   }
 
   /**
    * Get current UI configuration, including rating system settings
+   * @param signal Optional abort signal
    * @returns Current rating system configuration or null if unavailable
    */
-  async getUIConfiguration(): Promise<{ type?: string; starPrecision?: string } | null> {
+  async getUIConfiguration(signal?: AbortSignal): Promise<{ type?: string; starPrecision?: string } | null> {
+    if (this.isAborted(signal)) return null;
+    
     try {
       const result = await this.gqlClient.query<UIConfigurationResponse>({
         query: queries.GET_UI_CONFIGURATION,
+        signal,
       });
+      
+      if (this.isAborted(signal)) return null;
+      
       // UI is returned as a JSON string, need to parse it
       const uiConfig = result.data?.configuration?.ui;
       if (typeof uiConfig === 'string') {
@@ -1926,8 +2107,7 @@ export class StashAPI {
       }
       return null;
     } catch (error) {
-      this.logError('getUIConfiguration', error);
-      return null;
+      return this.handleError('getUIConfiguration', error, signal, null);
     }
   }
 

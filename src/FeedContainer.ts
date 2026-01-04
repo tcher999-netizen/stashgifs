@@ -3301,13 +3301,20 @@ export class FeedContainer {
     offset: number,
     signal?: AbortSignal
   ): Promise<{ markers: SceneMarker[]; totalCount: number }> {
-    return await this.api.fetchSceneMarkers({
+    const result = await this.api.fetchSceneMarkers({
       ...currentFilters,
       limit,
       offset,
       shuffleMode: this.shuffleMode > 0,
       includeScenesWithoutMarkers: this.shuffleMode === 2,
     }, signal);
+    
+    // Update sortSeed in filters if returned
+    if (result.sortSeed && currentFilters) {
+      currentFilters.sortSeed = result.sortSeed;
+    }
+    
+    return result;
   }
 
   /**
@@ -3987,19 +3994,26 @@ export class FeedContainer {
     limit: number,
     offset: number,
     signal?: AbortSignal
-  ): Promise<{ markers: SceneMarker[]; totalCount: number }> {
+  ): Promise<{ markers: SceneMarker[]; totalCount: number; unfilteredOffsetConsumed: number }> {
     if (!this.api) {
-      return { markers: [], totalCount: 0 };
+      return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 };
     }
 
     const maxDuration = this.settings.shortFormMaxDuration || 120;
-    return await this.api.fetchShortFormVideos(
+    const result = await this.api.fetchShortFormVideos(
       currentFilters,
       maxDuration,
       limit,
       offset,
       signal
     );
+    
+    // Update sortSeed in filters if returned
+    if (result.sortSeed && currentFilters) {
+      currentFilters.sortSeed = result.sortSeed;
+    }
+    
+    return result;
   }
 
   /**
@@ -4042,7 +4056,7 @@ export class FeedContainer {
         ...(filters.sortSeed ? { sortSeed: filters.sortSeed } : {}),
       };
 
-      const { images: graphQLImages, totalCount } = await this.api.findImages(
+      const { images: graphQLImages, totalCount, sortSeed } = await this.api.findImages(
         fileExtensions,
         Object.keys(imageFiltersWithOrientation).length > 0 ? imageFiltersWithOrientation : undefined,
         limit,
@@ -4051,8 +4065,8 @@ export class FeedContainer {
       );
       
       // Store the sort seed back in filters for pagination (if it was generated)
-      if (imageFiltersWithOrientation.sortSeed && filters) {
-        filters.sortSeed = imageFiltersWithOrientation.sortSeed;
+      if (sortSeed && filters) {
+        filters.sortSeed = sortSeed;
       }
 
       // Convert GraphQL Image to simplified Image type
