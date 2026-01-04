@@ -64,6 +64,7 @@ function isNativeVideoPlayer(player: NativeVideoPlayer | ImagePlayer | undefined
 type ContentType = 'marker' | 'shortform' | 'image';
 
 export class FeedContainer {
+  private static readonly CONTENT_LOAD_LIMIT: number = 4;
   private readonly container: HTMLElement;
   private scrollContainer: HTMLElement;
   private readonly api: StashAPI;
@@ -110,8 +111,6 @@ export class FeedContainer {
   private lastScrollTime: number = 0;
   private scrollVelocity: number = 0;
   private currentlyPreloadingCount: number = 0;
-  private initialLoadLimit: number; // Set in constructor based on device
-  private readonly subsequentLoadLimit: number = 12; // Load 12 items on subsequent loads (reduced from 20)
   private placeholderAnimationInterval?: ReturnType<typeof setInterval>; // For scrolling placeholder animation
   private savedFiltersCache: Array<{ id: string; name: string }> = [];
   private savedFiltersLoaded: boolean = false;
@@ -150,7 +149,6 @@ export class FeedContainer {
     this.postOrder = [];
     this.maxSimultaneousPreloads = 0;
     this.isMobileDevice = false;
-    this.initialLoadLimit = 0;
     this.deviceCapabilities = null!; // Will be set in initializeDeviceConfiguration
 
     this.initializeDeviceConfiguration();
@@ -184,9 +182,6 @@ export class FeedContainer {
    */
   private initializeDeviceConfiguration(): void {
     this.isMobileDevice = isMobileDevice();
-    
-    // Mobile: reduce initial load for faster perceived performance
-    this.initialLoadLimit = this.isMobileDevice ? 6 : 8; // Load 6 on mobile, 8 on desktop (reduced to prevent overload)
     
     // Extremely reduced to prevent 8GB+ RAM usage: max 2 on mobile, 2 on desktop
     this.maxSimultaneousPreloads = 2;
@@ -881,7 +876,7 @@ export class FeedContainer {
         this.selectedPerformerName = undefined;
         this.closeSuggestions();
         updateSearchBarDisplay();
-        this.currentFilters = { savedFilterId: filter.id, limit: this.initialLoadLimit, offset: 0 };
+        this.currentFilters = { savedFilterId: filter.id, limit: FeedContainer.CONTENT_LOAD_LIMIT, offset: 0 };
         // Scroll to top (same approach as refreshFeed)
         globalThis.scrollTo(0, 0);
         if (this.scrollContainer) {
@@ -1137,7 +1132,7 @@ export class FeedContainer {
             this.selectedPerformerName = undefined;
             this.closeSuggestions();
             updateSearchBarDisplay();
-            this.currentFilters = { savedFilterId: filter.id, limit: this.initialLoadLimit, offset: 0 };
+            this.currentFilters = { savedFilterId: filter.id, limit: FeedContainer.CONTENT_LOAD_LIMIT, offset: 0 };
             this.loadVideos(this.currentFilters, false).catch((e) => console.error('Apply saved filter failed', e));
           })
         );
@@ -2639,7 +2634,7 @@ export class FeedContainer {
    */
   private async applyRandomModeFilters(loadSignal?: AbortSignal): Promise<void> {
     const newFilters: FilterOptions = {
-      limit: this.initialLoadLimit,
+      limit: FeedContainer.CONTENT_LOAD_LIMIT,
       offset: 0,
       shuffleMode: true,
       includeScenesWithoutMarkers: this.shuffleMode === 2,
@@ -2764,7 +2759,7 @@ export class FeedContainer {
       tags: tags,
       performers: performers,
       savedFilterId: this.selectedSavedFilter?.id || undefined,
-      limit: this.initialLoadLimit,
+      limit: FeedContainer.CONTENT_LOAD_LIMIT,
       offset: 0,
     };
     this.currentFilters = newFilters;
@@ -2849,7 +2844,7 @@ export class FeedContainer {
       tags: filterValues.tags,
       performers: filterValues.performers,
       savedFilterId: this.selectedSavedFilter?.id || undefined,
-      limit: this.initialLoadLimit,
+      limit: FeedContainer.CONTENT_LOAD_LIMIT,
       offset: 0,
     };
     this.currentFilters = newFilters;
@@ -2934,10 +2929,10 @@ export class FeedContainer {
     append: boolean
   ): { limit: number; offset: number; page: number } {
     const page = append ? this.currentPage + 1 : 1;
-    const limit = append ? this.subsequentLoadLimit : (filters.limit || this.initialLoadLimit);
+    const limit = filters.limit || FeedContainer.CONTENT_LOAD_LIMIT;
     let offset = 0;
     if (append && page > 1) {
-      offset = this.initialLoadLimit + (page - 2) * this.subsequentLoadLimit;
+      offset = FeedContainer.CONTENT_LOAD_LIMIT + (page - 2) * FeedContainer.CONTENT_LOAD_LIMIT;
     }
     return { limit, offset, page };
   }
@@ -3320,7 +3315,7 @@ export class FeedContainer {
    */
   private prefetchPosters(markers: SceneMarker[], append: boolean, currentFilters: FilterOptions): void {
     try {
-      const prefetchCount = append ? this.subsequentLoadLimit : (currentFilters.limit || this.initialLoadLimit);
+      const prefetchCount = currentFilters.limit || FeedContainer.CONTENT_LOAD_LIMIT;
       posterPreloader.prefetchForMarkers(markers, prefetchCount);
     } catch (e) {
       console.warn('Poster prefetch failed', e);
@@ -3467,10 +3462,9 @@ export class FeedContainer {
     shouldLoadShortForm: boolean
   ): { markerLimit: number; shortFormLimit: number } {
     if (shouldLoadMarkers && shouldLoadShortForm) {
-      // Split limit evenly between markers and shortform
       return {
-        markerLimit: Math.ceil(limit / 2),
-        shortFormLimit: Math.floor(limit / 2)
+        markerLimit: limit,
+        shortFormLimit: limit
       };
     }
     
@@ -3608,7 +3602,7 @@ export class FeedContainer {
     // Merge regular markers, short-form markers, and images
     const mergedContent = this.mergeMarkersShortFormAndImages(markers, shortFormMarkers, images);
 
-    const expectedLimit = append ? this.subsequentLoadLimit : (currentFilters.limit || this.initialLoadLimit);
+    const expectedLimit = currentFilters.limit || FeedContainer.CONTENT_LOAD_LIMIT;
     
     // Track loaded counts for each content type separately
     if (append) {
@@ -6229,7 +6223,7 @@ export class FeedContainer {
       this.skeletonLoaders = existingSkeletons as HTMLElement[];
       
       // If we need more skeletons than exist, create additional ones
-      const skeletonCount = this.initialLoadLimit;
+      const skeletonCount = FeedContainer.CONTENT_LOAD_LIMIT;
       const needed = skeletonCount - existingSkeletons.length;
       if (needed > 0) {
         for (let i = 0; i < needed; i++) {
@@ -6250,7 +6244,7 @@ export class FeedContainer {
       this.hideSkeletonLoaders();
       
       // Create skeleton loaders matching expected initial load count
-      const skeletonCount = this.initialLoadLimit;
+      const skeletonCount = FeedContainer.CONTENT_LOAD_LIMIT;
       this.skeletonLoaders = [];
       
       for (let i = 0; i < skeletonCount; i++) {

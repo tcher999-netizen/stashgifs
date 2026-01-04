@@ -42,6 +42,7 @@ export abstract class BasePost {
   private performerOverlayAbortController?: AbortController;
   private hadOverlayBefore: boolean = false; // Track if overlay was showing before (for delay logic)
   private performerOverlayScrollHandler?: () => void;
+  private performerOverlayClickTime?: number; // Track when chip was clicked to prevent immediate re-show
   // Tag overlay properties
   private tagOverlay?: HTMLElement;
   private tagOverlayTimeout?: number;
@@ -49,6 +50,7 @@ export abstract class BasePost {
   private currentHoveredTagId?: string;
   private tagOverlayAbortController?: AbortController;
   private hadTagOverlayBefore: boolean = false; // Track if tag overlay was showing before (for delay logic)
+  private tagOverlayClickTime?: number; // Track when chip was clicked to prevent immediate re-show
 
   constructor(
     container: HTMLElement,
@@ -187,6 +189,8 @@ export abstract class BasePost {
     const handleClick = () => {
       // Hide overlay when clicking to filter
       this.hidePerformerOverlay(true);
+      // Record click time to prevent immediate re-show on hover
+      this.performerOverlayClickTime = Date.now();
       
       if (this.onPerformerChipClick) {
         const performerId = Number.parseInt(performer.id, 10);
@@ -330,6 +334,7 @@ export abstract class BasePost {
     imageSection.style.overflow = 'hidden';
     imageSection.style.borderRadius = '8px';
     imageSection.style.flexShrink = '0';
+    imageSection.style.position = 'relative';
 
     if (performerData.image_path) {
       const imageSrc = performerData.image_path.startsWith('http')
@@ -344,12 +349,41 @@ export abstract class BasePost {
         img.style.objectFit = 'cover';
         img.style.objectPosition = 'center center';
         imageSection.appendChild(img);
-        return imageSection;
+      } else {
+        imageSection.textContent = performerData.name.charAt(0).toUpperCase();
+        imageSection.style.fontSize = '64px';
+        imageSection.style.color = 'rgba(255, 255, 255, 0.5)';
+      }
+    } else {
+      imageSection.textContent = performerData.name.charAt(0).toUpperCase();
+      imageSection.style.fontSize = '64px';
+      imageSection.style.color = 'rgba(255, 255, 255, 0.5)';
+    }
+
+    // Add country flag overlay in bottom right corner
+    if (performerData.country) {
+      const flag = this.getCountryFlag(performerData.country);
+      if (flag) {
+        const flagElement = document.createElement('div');
+        flagElement.textContent = flag;
+        flagElement.style.position = 'absolute';
+        flagElement.style.bottom = '8px';
+        flagElement.style.right = '8px';
+        flagElement.style.fontSize = '24px';
+        flagElement.style.lineHeight = '1';
+        flagElement.style.width = '32px';
+        flagElement.style.height = '32px';
+        flagElement.style.display = 'flex';
+        flagElement.style.alignItems = 'center';
+        flagElement.style.justifyContent = 'center';
+        flagElement.style.backgroundColor = 'rgba(0, 0, 0, 0.4)';
+        flagElement.style.borderRadius = '4px';
+        flagElement.style.backdropFilter = 'blur(4px)';
+        flagElement.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.3)';
+        imageSection.appendChild(flagElement);
       }
     }
-    imageSection.textContent = performerData.name.charAt(0).toUpperCase();
-    imageSection.style.fontSize = '64px';
-    imageSection.style.color = 'rgba(255, 255, 255, 0.5)';
+
     return imageSection;
   }
 
@@ -434,7 +468,35 @@ export abstract class BasePost {
   }
 
   /**
-   * Add basic info metadata (age, gender, country)
+   * Convert ISO 3166-1 alpha-2 country code to flag emoji
+   */
+  private getCountryFlag(countryCode: string): string {
+    if (!countryCode || countryCode.length !== 2) {
+      return '';
+    }
+    
+    const code = countryCode.toUpperCase();
+    // Convert each letter to regional indicator symbol (U+1F1E6 to U+1F1FF)
+    // 'A' (0x41) maps to U+1F1E6, so we add 0x1F1E6 - 0x41 = 0x1F1A5
+    const base = 0x1F1E6;
+    const offset = 0x41; // 'A'
+    
+    const firstChar = code.charCodeAt(0);
+    const secondChar = code.charCodeAt(1);
+    
+    // Validate that both characters are letters
+    if (firstChar < 0x41 || firstChar > 0x5A || secondChar < 0x41 || secondChar > 0x5A) {
+      return '';
+    }
+    
+    const firstFlag = String.fromCodePoint(base + (firstChar - offset));
+    const secondFlag = String.fromCodePoint(base + (secondChar - offset));
+    
+    return firstFlag + secondFlag;
+  }
+
+  /**
+   * Add basic info metadata (age, gender)
    */
   private addBasicInfoMetadata(
     metadata: Array<{ label: string; value: string | undefined; isIcon?: boolean }>,
@@ -448,9 +510,6 @@ export abstract class BasePost {
     if (performerData.gender) {
       const genderIcon = this.getGenderIcon(performerData.gender);
       metadata.push({ label: 'Gender', value: genderIcon, isIcon: true });
-    }
-    if (performerData.country) {
-      metadata.push({ label: 'Country', value: performerData.country });
     }
   }
 
@@ -658,6 +717,16 @@ export abstract class BasePost {
       this.hidePerformerOverlay();
     });
 
+    // Close overlay when clicking on overlay background (not on interactive elements)
+    overlay.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      // Only close if clicking on the overlay itself or non-interactive areas
+      // Don't close if clicking on links, buttons, or other interactive elements
+      if (target === overlay || (!target.closest('a') && !target.closest('button'))) {
+        this.hidePerformerOverlay(true);
+      }
+    });
+
     // Image section (left side)
     const imageSection = this.createPerformerOverlayImageSection(performerData);
     overlay.appendChild(imageSection);
@@ -694,6 +763,11 @@ export abstract class BasePost {
    * Show performer overlay on hover
    */
   private showPerformerOverlay(performerId: string, chipElement: HTMLElement): void {
+    // Prevent showing overlay immediately after a click (within 300ms)
+    if (this.performerOverlayClickTime && Date.now() - this.performerOverlayClickTime < 300) {
+      return;
+    }
+
     // Clear any existing timeout
     if (this.performerOverlayTimeout) {
       clearTimeout(this.performerOverlayTimeout);
@@ -819,11 +893,9 @@ export abstract class BasePost {
       }
     }
 
-    // Only clear currentHoveredPerformerId if not immediately hiding (for rapid changes)
-    if (!immediate) {
-      this.currentHoveredPerformerId = undefined;
-      this.hadOverlayBefore = false; // Reset when fully hiding
-    }
+    // Always clear hover state to prevent re-showing overlay after click
+    this.currentHoveredPerformerId = undefined;
+    this.hadOverlayBefore = false; // Reset when fully hiding
 
     // Cancel any pending fetch
     if (this.performerOverlayAbortController) {
@@ -1005,6 +1077,16 @@ export abstract class BasePost {
       this.hideTagOverlay();
     });
 
+    // Close overlay when clicking on overlay background (not on interactive elements)
+    overlay.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      // Only close if clicking on the overlay itself or non-interactive areas
+      // Don't close if clicking on links, buttons, or other interactive elements
+      if (target === overlay || (!target.closest('a') && !target.closest('button'))) {
+        this.hideTagOverlay(true);
+      }
+    });
+
     // Image section (left side)
     const imageSection = this.createTagOverlayImageSection(tagData);
     overlay.appendChild(imageSection);
@@ -1034,6 +1116,11 @@ export abstract class BasePost {
    * Show tag overlay on hover
    */
   private showTagOverlay(tagId: string, chipElement: HTMLElement): void {
+    // Prevent showing overlay immediately after a click (within 300ms)
+    if (this.tagOverlayClickTime && Date.now() - this.tagOverlayClickTime < 300) {
+      return;
+    }
+
     // Clear any existing timeout
     if (this.tagOverlayTimeout) {
       clearTimeout(this.tagOverlayTimeout);
@@ -1159,11 +1246,9 @@ export abstract class BasePost {
       }
     }
 
-    // Only clear currentHoveredTagId if not immediately hiding (for rapid changes)
-    if (!immediate) {
-      this.currentHoveredTagId = undefined;
-      this.hadTagOverlayBefore = false; // Reset when fully hiding
-    }
+    // Always clear hover state to prevent re-showing overlay after click
+    this.currentHoveredTagId = undefined;
+    this.hadTagOverlayBefore = false; // Reset when fully hiding
 
     // Cancel any pending fetch
     if (this.tagOverlayAbortController) {
@@ -1195,6 +1280,11 @@ export abstract class BasePost {
     hashtag.style.height = '44px';
     
     const handleClick = () => {
+      // Hide overlay when clicking to filter
+      this.hideTagOverlay(true);
+      // Record click time to prevent immediate re-show on hover
+      this.tagOverlayClickTime = Date.now();
+      
       if (this.onTagChipClick) {
         const tagId = Number.parseInt(tag.id, 10);
         if (!Number.isNaN(tagId)) {
