@@ -73,11 +73,9 @@ export class StashAPI {
   private readonly pluginApi?: StashPluginApi;
   // Centralized GraphQL client
   private readonly gqlClient: GraphQLClient;
-  // Simple cache for search results (TTL: 5 minutes)
+  // Simple cache for autocomplete search results only (not filtered queries)
   private readonly searchCache: Map<string, { data: unknown; timestamp: number }> = new Map();
-  private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-  private cacheCleanupInterval?: ReturnType<typeof setInterval>;
-  private readonly MAX_CACHE_SIZE = 1000; // Maximum cache entries before cleanup
+  private readonly SEARCH_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
   constructor(baseUrl?: string, apiKey?: string) {
     // Get from globalThis if available (Stash plugin context)
@@ -99,59 +97,13 @@ export class StashAPI {
     
     this.apiKey = apiKey || this.pluginApi?.apiKey;
     
-    // Initialize GraphQL client
+    // Initialize GraphQL client (response caching disabled - we handle caching selectively)
     this.gqlClient = new GraphQLClient({
       baseUrl: this.baseUrl,
       apiKey: this.apiKey,
       pluginApi: this.pluginApi,
+      enableResponseCache: false, // Disabled: filtered queries should not be cached
     });
-    
-    // Start periodic cache cleanup
-    this.startCacheCleanup();
-  }
-
-  /**
-   * Start periodic cache cleanup to prevent memory leaks
-   */
-  private startCacheCleanup(): void {
-    // Clean up every 5 minutes
-    this.cacheCleanupInterval = setInterval(() => {
-      this.cleanupCache();
-    }, 5 * 60 * 1000);
-  }
-
-  /**
-   * Clean up expired and oversized cache entries
-   */
-  private cleanupCache(): void {
-    const now = Date.now();
-    
-    // Clean up expired search cache entries
-    for (const [key, value] of this.searchCache.entries()) {
-      if (now - value.timestamp > this.CACHE_TTL) {
-        this.searchCache.delete(key);
-      }
-    }
-    
-    // Limit search cache size (remove oldest entries if over limit)
-    if (this.searchCache.size > this.MAX_CACHE_SIZE) {
-      const entries = Array.from(this.searchCache.entries())
-        .sort((a, b) => a[1].timestamp - b[1].timestamp);
-      const toRemove = entries.slice(0, this.searchCache.size - this.MAX_CACHE_SIZE);
-      for (const [key] of toRemove) {
-        this.searchCache.delete(key);
-      }
-    }
-  }
-
-  /**
-   * Stop cache cleanup (for cleanup/destroy)
-   */
-  private stopCacheCleanup(): void {
-    if (this.cacheCleanupInterval) {
-      clearInterval(this.cacheCleanupInterval);
-      this.cacheCleanupInterval = undefined;
-    }
   }
 
   /**
@@ -244,36 +196,21 @@ export class StashAPI {
   /**
    * Search marker tags (by name) for autocomplete
    * Only returns tags that have more than 10 markers (filtered directly in GraphQL)
-   * Includes request deduplication and caching
+   * Includes caching for autocomplete results only
    */
   async searchMarkerTags(term: string, limit: number = 10, signal?: AbortSignal): Promise<Array<{ id: string; name: string }>> {
+    if (this.isAborted(signal)) return [];
+
     const isEmptyTerm = !term || term.trim() === '';
     const cacheKey = `tags:${term}:${limit}`;
     
     // Check cache first (only for non-empty terms)
     if (!isEmptyTerm) {
       const cached = this.searchCache.get(cacheKey);
-      if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-        return cached.data as Promise<Array<{ id: string; name: string }>>;
+      if (cached && Date.now() - cached.timestamp < this.SEARCH_CACHE_TTL) {
+        return cached.data as Array<{ id: string; name: string }>;
       }
     }
-    
-    // Create new request (deduplication handled by GraphQL client)
-    const result = await this._searchMarkerTags(term, limit, signal);
-    
-    // Cache the result (only for non-empty terms)
-    if (!isEmptyTerm) {
-      this.searchCache.set(cacheKey, { data: result, timestamp: Date.now() });
-    }
-    
-    return result;
-  }
-  
-  /**
-   * Internal implementation of searchMarkerTags
-   */
-  private async _searchMarkerTags(term: string, limit: number = 10, signal?: AbortSignal): Promise<Array<{ id: string; name: string }>> {
-    if (this.isAborted(signal)) return [];
 
     const hasSearchTerm = term && term.trim() !== '';
     const fetchLimit = hasSearchTerm ? limit * 3 : Math.max(limit, 20);
@@ -307,67 +244,66 @@ export class StashAPI {
       if (this.isAborted(signal)) return [];
       
       const tags = result.data?.findTags?.tags ?? [];
-      return tags.slice(0, limit);
-    } catch (error: unknown) {
-      if (isAbortError(error) || this.isAborted(signal)) {
-        return [];
+      const resultTags = tags.slice(0, limit);
+      
+      // Cache the result (only for non-empty terms)
+      if (!isEmptyTerm) {
+        this.searchCache.set(cacheKey, { data: resultTags, timestamp: Date.now() });
       }
-      this.logSearchError('searchMarkerTags', error);
-      return [];
+      
+      return resultTags;
+    } catch (error: unknown) {
+      return this.handleError('searchMarkerTags', error, signal, []);
     }
   }
 
   /**
-   * Check if operation is aborted
+   * Check if operation is aborted (only check at critical points)
    */
   private isAborted(signal?: AbortSignal): boolean {
     return signal?.aborted ?? false;
   }
 
   /**
-   * Log search error with appropriate detail level
+   * Standardized error logging
    */
-  private logSearchError(method: string, error: unknown): void {
+  private logError(method: string, error: unknown): void {
     if (error instanceof GraphQLRequestError || error instanceof GraphQLResponseError || error instanceof GraphQLNetworkError) {
-      console.warn(`${method} failed`, error);
+      console.warn(`[StashAPI] ${method} failed`, error);
     } else {
-      console.warn(`${method} failed`, error instanceof Error ? error.message : 'Unknown error');
+      console.warn(`[StashAPI] ${method} failed`, error instanceof Error ? error.message : 'Unknown error');
     }
+  }
+
+  /**
+   * Handle errors consistently - returns empty result for aborted operations, logs others
+   */
+  private handleError<T>(method: string, error: unknown, signal: AbortSignal | undefined, emptyResult: T): T {
+    if (isAbortError(error) || this.isAborted(signal)) {
+      return emptyResult;
+    }
+    this.logError(method, error);
+    return emptyResult;
   }
 
   /**
    * Search performers (by name) for autocomplete
    * Only returns performers that have more than 1 scene (filtered directly in GraphQL)
-   * Includes request deduplication and caching
+   * Includes caching for autocomplete results only
    */
   async searchPerformers(term: string, limit: number = 10, signal?: AbortSignal): Promise<Array<{ id: string; name: string; image_path?: string }>> {
+    if (this.isAborted(signal)) return [];
+
     const isEmptyTerm = !term || term.trim() === '';
     const cacheKey = `performers:${term}:${limit}`;
     
     // Check cache first (only for non-empty terms)
     if (!isEmptyTerm) {
       const cached = this.searchCache.get(cacheKey);
-      if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-        return cached.data as Promise<Array<{ id: string; name: string; image_path?: string }>>;
+      if (cached && Date.now() - cached.timestamp < this.SEARCH_CACHE_TTL) {
+        return cached.data as Array<{ id: string; name: string; image_path?: string }>;
       }
     }
-    
-    // Create new request (deduplication handled by GraphQL client)
-    const result = await this._searchPerformers(term, limit, signal);
-    
-    // Cache the result (only for non-empty terms)
-    if (!isEmptyTerm) {
-      this.searchCache.set(cacheKey, { data: result, timestamp: Date.now() });
-    }
-    
-    return result;
-  }
-  
-  /**
-   * Internal implementation of searchPerformers
-   */
-  private async _searchPerformers(term: string, limit: number = 10, signal?: AbortSignal): Promise<Array<{ id: string; name: string; image_path?: string }>> {
-    if (this.isAborted(signal)) return [];
 
     const hasSearchTerm = term && term.trim() !== '';
     const fetchLimit = hasSearchTerm ? limit * 3 : Math.max(limit, 20);
@@ -397,13 +333,16 @@ export class StashAPI {
       if (this.isAborted(signal)) return [];
       
       const performers = result.data?.findPerformers?.performers ?? [];
-      return performers.slice(0, limit);
-    } catch (e: unknown) {
-      if (isAbortError(e) || this.isAborted(signal)) {
-        return [];
+      const resultPerformers = performers.slice(0, limit);
+      
+      // Cache the result (only for non-empty terms)
+      if (!isEmptyTerm) {
+        this.searchCache.set(cacheKey, { data: resultPerformers, timestamp: Date.now() });
       }
-      this.logSearchError('searchPerformers', e);
-      return [];
+      
+      return resultPerformers;
+    } catch (error: unknown) {
+      return this.handleError('searchPerformers', error, signal, []);
     }
   }
 
@@ -425,12 +364,8 @@ export class StashAPI {
 
       const performers = result.data?.findPerformers?.performers ?? [];
       return performers[0] ?? null;
-    } catch (e: unknown) {
-      if (isAbortError(e) || this.isAborted(signal)) {
-        return null;
-      }
-      this.logSearchError('getPerformerDetails', e);
-      return null;
+    } catch (error: unknown) {
+      return this.handleError('getPerformerDetails', error, signal, null);
     }
   }
 
@@ -451,12 +386,8 @@ export class StashAPI {
 
       const tags = result.data?.findTags?.tags ?? [];
       return tags[0] ?? null;
-    } catch (e: unknown) {
-      if (isAbortError(e) || this.isAborted(signal)) {
-        return null;
-      }
-      this.logSearchError('getTagDetails', e);
-      return null;
+    } catch (error: unknown) {
+      return this.handleError('getTagDetails', error, signal, null);
     }
   }
 
@@ -465,24 +396,18 @@ export class StashAPI {
    * Fetch saved marker filters from Stash
    */
   async fetchSavedMarkerFilters(signal?: AbortSignal): Promise<Array<{ id: string; name: string }>> {
+    if (this.isAborted(signal)) return [];
+    
     try {
-      // Check if already aborted
-      if (signal?.aborted) return [];
-      
       const result = await this.gqlClient.query<GetSavedMarkerFiltersResponse>({
         query: queries.GET_SAVED_MARKER_FILTERS,
         signal,
       });
-      // Check if aborted after query
-      if (signal?.aborted) return [];
+      
+      if (this.isAborted(signal)) return [];
       return result.data?.findSavedFilters || [];
-    } catch (e: unknown) {
-      // Ignore AbortError - it's expected when cancelling
-      if (isAbortError(e) || signal?.aborted) {
-        return [];
-      }
-      console.error('Error fetching saved marker filters:', e);
-      return [];
+    } catch (error: unknown) {
+      return this.handleError('fetchSavedMarkerFilters', error, signal, []);
     }
   }
 
@@ -496,8 +421,8 @@ export class StashAPI {
         variables: { id }
       });
       return result.data?.findSavedFilter || null;
-    } catch (e) {
-      console.error('Error fetching saved filter:', e);
+    } catch (error: unknown) {
+      this.logError('getSavedFilter', error);
       return null;
     }
   }
@@ -534,11 +459,6 @@ export class StashAPI {
       const filter = this.buildFindFilter(filters, savedFilterCriteria, page, limit);
       const sceneMarkerFilter = this.buildSceneMarkerFilter(filters, savedFilterCriteria);
       
-      // Store the sort seed back in filters for pagination (if we generated a new one)
-      if (filters && !filters.sortSeed && filter.sort) {
-        filters.sortSeed = filter.sort;
-      }
-      
       const { markers, totalCount } = await this.executeMarkerQueryWithCount(filter, sceneMarkerFilter, signal);
       if (this.isAborted(signal)) return { markers: [], totalCount: 0 };
       
@@ -548,12 +468,8 @@ export class StashAPI {
       }
       
       return { markers: finalMarkers, totalCount };
-    } catch (e: unknown) {
-      if ((e instanceof Error && e.name === 'AbortError') || this.isAborted(signal)) {
-        return { markers: [], totalCount: 0 };
-      }
-      console.error('Error fetching scene markers:', e);
-      return { markers: [], totalCount: 0 };
+    } catch (error: unknown) {
+      return this.handleError('fetchSceneMarkers', error, signal, { markers: [], totalCount: 0 });
     }
   }
 
@@ -610,31 +526,46 @@ export class StashAPI {
         const totalPages = Math.ceil(totalCount / limit);
         return Math.floor(Math.random() * totalPages) + 1;
       }
-    } catch (e: unknown) {
-      if (isAbortError(e) || this.isAborted(signal)) {
+    } catch (error: unknown) {
+      if (isAbortError(error) || this.isAborted(signal)) {
         return 1;
       }
-      console.warn('Failed to get count for random page, using page 1', e);
+      this.logError('calculateRandomPage', error);
     }
     
     return 1;
   }
 
   /**
-   * Build count filter for random page calculation
+   * Merge saved filter criteria and query into a base FindFilterInput
    */
-  private buildCountFilter(filters: FilterOptions | undefined, savedFilterCriteria: GetSavedFilterResponse['findSavedFilter']): FindFilterInput {
-    const countFilter: FindFilterInput = { per_page: 1, page: 1 };
+  private mergeSavedFilterAndQuery(
+    baseFilter: FindFilterInput,
+    filters: FilterOptions | undefined,
+    savedFilterCriteria: GetSavedFilterResponse['findSavedFilter']
+  ): FindFilterInput {
+    const merged = { ...baseFilter };
     
     if (savedFilterCriteria?.find_filter) {
-      Object.assign(countFilter, savedFilterCriteria.find_filter);
+      Object.assign(merged, savedFilterCriteria.find_filter);
     }
     
     if (filters?.query?.trim()) {
-      countFilter.q = filters.query.trim();
+      merged.q = filters.query.trim();
     }
     
-    return countFilter;
+    return merged;
+  }
+
+  /**
+   * Build count filter for random page calculation
+   */
+  private buildCountFilter(filters: FilterOptions | undefined, savedFilterCriteria: GetSavedFilterResponse['findSavedFilter']): FindFilterInput {
+    return this.mergeSavedFilterAndQuery(
+      { per_page: 1, page: 1 },
+      filters,
+      savedFilterCriteria
+    );
   }
 
   /**
@@ -710,25 +641,19 @@ export class StashAPI {
   ): FindFilterInput {
     const sortSeed = filters?.sortSeed || generateRandomSortSeed();
     
-    const filter: FindFilterInput = {
+    const baseFilter: FindFilterInput = {
       per_page: limit,
       page: page,
       sort: sortSeed,
     };
     
-    if (savedFilterCriteria?.find_filter) {
-      Object.assign(filter, savedFilterCriteria.find_filter);
-    }
-    
-    if (filters?.query && filters.query.trim() !== '') {
-      filter.q = filters.query;
-    }
+    const merged = this.mergeSavedFilterAndQuery(baseFilter, filters, savedFilterCriteria);
     
     // Ensure page and per_page are set correctly (may have been overridden by saved filter)
-    filter.page = page;
-    filter.per_page = limit;
+    merged.page = page;
+    merged.per_page = limit;
     
-    return filter;
+    return merged;
   }
 
   /**
@@ -825,7 +750,7 @@ export class StashAPI {
     sceneMarkerFilter: SceneMarkerFilterInput,
     signal?: AbortSignal
   ): Promise<{ markers: SceneMarker[]; totalCount: number }> {
-    console.warn('[StashAPI] Count > 0 but no markers returned - retrying with page 1');
+    this.logError('retryMarkerQueryWithCount', new Error('Count > 0 but no markers returned - retrying with page 1'));
     
     if (this.isAborted(signal)) return { markers: [], totalCount: 0 };
     
@@ -888,12 +813,8 @@ export class StashAPI {
       let markers = this.createSyntheticMarkers(scenes);
       
       return markers;
-    } catch (e: unknown) {
-      if (isAbortError(e) || this.isAborted(signal)) {
-        return [];
-      }
-      console.error('Error fetching scenes for shuffle', e);
-      return [];
+    } catch (error: unknown) {
+      return this.handleError('fetchScenesForShuffle', error, signal, []);
     }
   }
 
@@ -924,7 +845,7 @@ export class StashAPI {
       if (isAbortError(e) || this.isAborted(signal)) {
         return 1;
       }
-      console.warn('Failed to get scene count for shuffle, using page 1', e);
+      this.logError('calculateRandomScenePage', e);
     }
     
     return 1;
@@ -966,12 +887,15 @@ export class StashAPI {
 
   /**
    * Create synthetic markers from scenes
+   * @param scenes Scenes to convert to markers
+   * @param idPrefix Prefix for marker IDs (default: 'synthetic')
    */
-  private createSyntheticMarkers(scenes: Scene[]): SceneMarker[] {
+  private createSyntheticMarkers(scenes: Scene[], idPrefix: string = 'synthetic'): SceneMarker[] {
     return scenes.map((scene) => ({
-      id: `synthetic-${scene.id}-${Date.now()}-${Math.random()}`,
+      id: `${idPrefix}-${scene.id}-${Date.now()}-${Math.random()}`,
       title: scene.title || 'Untitled',
       seconds: 0,
+      end_seconds: undefined,
       stream: undefined,
       scene: scene,
       primary_tag: undefined,
@@ -998,7 +922,6 @@ export class StashAPI {
     if (this.isAborted(signal)) return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 };
 
     try {
-      if (this.isAborted(signal)) return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 };
 
       const scenesPerPage = 24; // Fetch 24 scenes per page
       
@@ -1020,7 +943,9 @@ export class StashAPI {
       // Reuse existing sort seed for pagination, or generate new one for first page
       const sortSeed = filters?.sortSeed || generateRandomSortSeed();
       
-      // Store the sort seed back in filters for pagination (if we generated a new one)
+      // NOTE: Mutation of filters parameter is necessary for pagination consistency.
+      // The sortSeed must be preserved across pagination calls. A proper fix would
+      // return sortSeed in the result, but that requires changes to all callers.
       if (filters && !filters.sortSeed) {
         filters.sortSeed = sortSeed;
       }
@@ -1071,12 +996,8 @@ export class StashAPI {
       const unfilteredOffsetConsumed = offsetInPage + unfilteredScenesProcessed;
       
       return { markers, totalCount, unfilteredOffsetConsumed };
-    } catch (e: unknown) {
-      if (isAbortError(e) || this.isAborted(signal)) {
-        return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 };
-      }
-      console.error('[ShortForm] Error fetching short-form videos', e);
-      return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 };
+    } catch (error: unknown) {
+      return this.handleError('fetchShortFormVideos', error, signal, { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 });
     }
   }
 
@@ -1105,11 +1026,11 @@ export class StashAPI {
       if (totalCount > 0) {
         maxPage = Math.max(1, Math.ceil(totalCount / scenesPerPage));
       } else {
-        console.warn('[ShortForm] No scenes found matching filter');
+        this.logError('getMaxPageForShortForm', new Error('No scenes found matching filter'));
         return { maxPage: 0, totalCount: 0 };
       }
-    } catch (countError: unknown) {
-      console.warn('[ShortForm] Failed to get scene count, using default max page:', maxPage, countError);
+    } catch (error: unknown) {
+      this.logError('getMaxPageForShortForm', error);
       // If we can't get count, we can't reliably calculate totalCount, so return 0
       return { maxPage, totalCount: 0 };
     }
@@ -1166,16 +1087,7 @@ export class StashAPI {
    * These play from start to end (seconds: 0, no end_seconds)
    */
   private createShortFormMarkers(scenes: Scene[]): SceneMarker[] {
-    return scenes.map((scene) => ({
-      id: `shortform-${scene.id}-${Date.now()}-${Math.random()}`,
-      title: scene.title || 'Untitled',
-      seconds: 0,
-      end_seconds: undefined,
-      stream: undefined,
-      scene: scene,
-      primary_tag: undefined,
-      tags: [],
-    }));
+    return this.createSyntheticMarkers(scenes, 'shortform');
   }
 
   /**
@@ -1315,13 +1227,13 @@ export class StashAPI {
           // Found matching tag
           return tag;
         } else {
-          console.warn('[StashAPI] Tag name mismatch:', { searched: tagName, found: tag.name, id: tag.id });
+          this.logError('findTagByName', new Error(`Tag name mismatch: searched="${tagName}", found="${tag.name}"`));
           return null;
         }
       }
       return null;
-    } catch (error) {
-      console.error('StashAPI: Failed to find tag', error);
+    } catch (error: unknown) {
+      this.logError('findTagByName', error);
       return null;
     }
   }
@@ -1345,31 +1257,24 @@ export class StashAPI {
       // If tag already exists, try to find it
       const errorMessage = error instanceof Error ? error.message : String(error);
       if (errorMessage.includes('already exists') || errorMessage.includes('duplicate')) {
-        console.warn(`StashAPI: Tag "${tagName}" already exists, attempting to find it`, error);
+        this.logError('createTag', new Error(`Tag "${tagName}" already exists, attempting to find it`));
         // Try to find the existing tag
         const existingTag = await this.findTagByName(tagName);
         if (existingTag) {
           return existingTag;
         }
       }
-      console.error('StashAPI: Failed to create tag', error);
+      this.logError('createTag', error);
       return null;
     }
   }
 
   /**
    * Check if a scene marker has a specific tag
-   * Uses the marker's existing tags array if available, otherwise queries
+   * Uses the marker's existing tags array
    */
   async markerHasTag(marker: { id: string; tags?: Array<{ id: string }> }, tagId: string): Promise<boolean> {
-    // If we have tags in the marker data, use them directly
-    if (marker.tags && marker.tags.length > 0) {
-      return marker.tags.some(tag => tag.id === tagId);
-    }
-
-    // Otherwise, fall back to querying (though this shouldn't be necessary)
-    // Since we always have marker data with tags, this is just a safety fallback
-    return false;
+    return marker.tags?.some(tag => tag.id === tagId) ?? false;
   }
 
   /**
@@ -1385,8 +1290,8 @@ export class StashAPI {
       });
       const tags = result.data?.findScene?.tags || [];
       return tags.some((tag: { id: string }) => tag.id === tagId);
-    } catch (error) {
-      console.error('StashAPI: Failed to check scene tag', error);
+    } catch (error: unknown) {
+      this.logError('sceneHasTag', error);
       return false;
     }
   }
@@ -1436,7 +1341,7 @@ export class StashAPI {
         });
       }
     } catch (error) {
-      console.error('StashAPI: Failed to add tag to marker', error);
+      this.logError('addTagToMarker', error);
       throw error;
     }
   }
@@ -1456,7 +1361,7 @@ export class StashAPI {
         },
       });
     } catch (error) {
-      console.error('StashAPI: Failed to update image tags', error);
+      this.logError('updateImageTags', error);
       throw error;
     }
   }
@@ -1474,7 +1379,7 @@ export class StashAPI {
       });
       return result.data?.imageIncrementO ?? 0;
     } catch (error) {
-      console.error('StashAPI: Failed to increment image o-counter', error);
+      this.logError('incrementImageOCount', error);
       throw error;
     }
   }
@@ -1509,7 +1414,7 @@ export class StashAPI {
         });
       }
     } catch (error) {
-      console.error('StashAPI: Failed to add tag to scene', error);
+      this.logError('addTagToScene', error);
       throw error;
     }
   }
@@ -1557,7 +1462,7 @@ export class StashAPI {
         variables,
       });
     } catch (error) {
-      console.error('StashAPI: Failed to remove tag from marker', error);
+      this.logError('removeTagFromMarker', error);
       throw error;
     }
   }
@@ -1590,7 +1495,7 @@ export class StashAPI {
         variables,
       });
     } catch (error) {
-      console.error('StashAPI: Failed to remove tag from scene', error);
+      this.logError('removeTagFromScene', error);
       throw error;
     }
   }
@@ -1618,7 +1523,7 @@ export class StashAPI {
       }
       return { count: 0, history: [] };
     } catch (error) {
-      console.error('StashAPI: Failed to increment o count', error);
+      this.logError('incrementOCount', error);
       throw error;
     }
   }
@@ -1650,7 +1555,7 @@ export class StashAPI {
       // SceneUpdateResponse doesn't include rating100, so we return the value we set
       return rating100;
     } catch (error) {
-      console.error('StashAPI: Failed to save scene rating', error);
+      this.logError('updateSceneRating', error);
       throw error;
     }
   }
@@ -1689,7 +1594,7 @@ export class StashAPI {
       if (isAbortError(error) || signal?.aborted) {
         return [];
       }
-      console.error('StashAPI: Failed to find tags for select', error);
+      this.logError('findTagsForSelect', error);
       throw error;
     }
   }
@@ -1736,7 +1641,7 @@ export class StashAPI {
         end_seconds: marker.end_seconds ?? undefined,
       };
     } catch (error) {
-      console.error('StashAPI: Failed to create scene marker', error);
+      this.logError('createSceneMarker', error);
       throw error;
     }
   }
@@ -1767,8 +1672,7 @@ export class StashAPI {
       if (isAbortError(e) || this.isAborted(signal)) {
         return [];
       }
-      console.warn('StashAPI: Failed to fetch scene marker tags', e);
-      return [];
+      return this.handleError('fetchSceneMarkerTags', e, signal, []);
     }
   }
 
@@ -1938,11 +1842,13 @@ export class StashAPI {
     // Reuse existing sort seed for pagination, or generate new one for first page
     const sortSeed = filters?.sortSeed || generateRandomSortSeed();
     
-    // Store the sort seed back in filters for pagination (if we generated a new one)
+    // NOTE: Mutation of filters parameter is necessary for pagination consistency.
+    // The sortSeed must be preserved across pagination calls. A proper fix would
+    // return sortSeed in the result, but that requires changes to all callers.
     if (filters && !filters.sortSeed) {
       filters.sortSeed = sortSeed;
     }
-
+    
     const findFilter: FindFilterInput = {
       per_page: limit,
       page: Math.floor(offset / limit) + 1,
@@ -1993,8 +1899,7 @@ export class StashAPI {
       if (isAbortError(e) || signal?.aborted) {
         return { images: [], totalCount: 0 };
       }
-      console.error('StashAPI: Failed to find images', e);
-      return { images: [], totalCount: 0 };
+      return this.handleError('findImages', e, signal, { images: [], totalCount: 0 });
     }
   }
 
@@ -2021,7 +1926,7 @@ export class StashAPI {
       }
       return null;
     } catch (error) {
-      console.error('StashAPI: Failed to get UI configuration', error);
+      this.logError('getUIConfiguration', error);
       return null;
     }
   }
