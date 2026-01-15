@@ -136,25 +136,14 @@ export class ImageVideoPost extends BasePost {
    * Render the complete image video post structure
    */
   private render(): void {
-    this.container.className = 'video-post';
-    this.container.dataset.postId = this.data.image.id;
-    // Clear container
-    while (this.container.firstChild) {
-      this.container.firstChild.remove();
-    }
-
-    // Header with performers and tags
-    const header = this.createHeader();
-    this.container.appendChild(header);
-
-    // Player container
-    const playerContainer = this.createPlayerContainer();
-    this.container.appendChild(playerContainer);
+    const { playerContainer, footer } = this.renderBasePost({
+      className: 'video-post',
+      postId: this.data.image.id,
+      createHeader: () => this.createHeader(),
+      createPlayerContainer: () => this.createPlayerContainer(),
+      createFooter: () => this.createFooter()
+    });
     this.playerContainer = playerContainer;
-
-    // Footer with buttons
-    const footer = this.createFooter();
-    this.container.appendChild(footer);
     this.footer = footer;
   }
 
@@ -1420,7 +1409,7 @@ export class ImageVideoPost extends BasePost {
     wrapper.appendChild(displayButton);
 
     const dialog = this.createRatingDialog();
-    wrapper.appendChild(dialog);
+    this.container.appendChild(dialog);
 
     this.updateRatingDisplay();
     this.updateRatingStarButtons();
@@ -1487,6 +1476,12 @@ export class ImageVideoPost extends BasePost {
     dialog.setAttribute('aria-modal', 'true');
     dialog.setAttribute('aria-hidden', 'true');
     dialog.hidden = true;
+    dialog.style.position = 'absolute';
+    dialog.style.bottom = 'calc(100% + 10px)';
+    dialog.style.left = 'auto';
+    dialog.style.right = 'var(--rating-dialog-right, auto)';
+    dialog.style.width = 'var(--rating-dialog-width, auto)';
+    dialog.style.minWidth = '200px';
     this.ratingDialog = dialog;
 
     const dialogHeader = document.createElement('div');
@@ -2134,26 +2129,62 @@ export class ImageVideoPost extends BasePost {
     const wrapperRect = this.ratingWrapper.getBoundingClientRect();
     if (!cardRect.width || !wrapperRect.width) return;
 
-    const starsWidth = this.calculateStarsWidth(dialog);
-    const dialogWidth = starsWidth;
-    const margin = 8;
+    const margin = 8; // Small margin from card edges
     const maxWidth = cardRect.width - (margin * 2);
-    const finalWidth = Math.min(dialogWidth, maxWidth);
-    
-    this.ratingWrapper.style.setProperty('--rating-dialog-width', `${finalWidth}px`);
+    const starsContainer = dialog.querySelector('.rating-dialog__stars') as HTMLElement | null;
+    let requiredWidth = 0;
 
-    const wrapperCenter = wrapperRect.left + (wrapperRect.width / 2);
-    const dialogCenter = finalWidth / 2;
-    let leftPosition = wrapperCenter - dialogCenter;
-    
-    const minLeft = cardRect.left + margin;
-    const maxLeft = cardRect.right - finalWidth - margin;
-    
-    leftPosition = Math.max(minLeft, Math.min(maxLeft, leftPosition));
-    const relativeLeft = leftPosition - wrapperRect.left;
-    
-    this.ratingWrapper.style.setProperty('--rating-dialog-left', `${relativeLeft}px`);
-    this.ratingWrapper.style.setProperty('--rating-dialog-right', 'auto');
+    if (this.ratingStarButtons.length > 0 && starsContainer) {
+      const starCount = this.ratingStarButtons.length;
+      let gap = 2;
+      let marginX = 0;
+      let paddingX = 8;
+      let paddingY = 8;
+      starsContainer.style.flexWrap = 'nowrap';
+
+      const computeButtonSize = () => {
+        const totalSpacing = (starCount - 1) * gap + starCount * (marginX * 2);
+        const availableWidth = maxWidth - (paddingX * 2) - totalSpacing;
+        const size = Math.floor(availableWidth / starCount);
+        return { size, totalSpacing };
+      };
+
+      let { size: buttonSize, totalSpacing } = computeButtonSize();
+
+      if (buttonSize < 18) {
+        gap = 1;
+        paddingX = 4;
+        paddingY = 6;
+        ({ size: buttonSize, totalSpacing } = computeButtonSize());
+      }
+
+      buttonSize = Math.min(44, Math.max(16, buttonSize));
+      dialog.style.padding = `${paddingY}px ${paddingX}px`;
+      starsContainer.style.gap = `${gap}px`;
+
+      for (const starBtn of this.ratingStarButtons) {
+        starBtn.style.margin = `0 ${marginX}px`;
+        starBtn.style.width = `${buttonSize}px`;
+        starBtn.style.minWidth = `${buttonSize}px`;
+        starBtn.style.height = `${buttonSize}px`;
+        starBtn.style.minHeight = `${buttonSize}px`;
+      }
+
+      requiredWidth = (paddingX * 2) + (buttonSize * starCount) + totalSpacing;
+      this.cachedStarButtonWidth = undefined;
+    }
+
+    const starsWidth = this.calculateStarsWidth(dialog);
+    const dialogWidth = requiredWidth > 0 ? requiredWidth : starsWidth;
+    const finalWidth = Math.min(dialogWidth, maxWidth);
+
+    dialog.style.boxSizing = 'border-box';
+    dialog.style.width = `${finalWidth}px`;
+    dialog.style.minWidth = `${finalWidth}px`;
+    dialog.style.left = 'auto';
+    dialog.style.right = `${margin}px`;
+    const bottomOffset = cardRect.bottom - wrapperRect.top + 10;
+    dialog.style.bottom = `${bottomOffset}px`;
   }
 
   /**

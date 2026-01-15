@@ -186,26 +186,60 @@ export class StashAPI {
 
     type TagsModifier = 'INCLUDES' | 'INCLUDES_ALL' | 'EXCLUDES';
 
+    const normalizeValueArray = (values: number[]): string[] | number[] => {
+      return asString ? values.map(String) : values.map(Number);
+    };
+
+    const normalizeFieldValue = (rawValue: unknown): number[] | undefined => {
+      let raw = rawValue;
+      if (raw && typeof raw === 'object' && Array.isArray((raw as { items?: unknown[] }).items)) {
+        raw = (raw as { items: unknown[] }).items;
+      }
+      return this.normalizeIdArray(raw);
+    };
+
     if (Array.isArray(fieldValue)) {
       const ids = this.normalizeIdArray(fieldValue);
       if (!ids) return undefined;
       return {
-        value: asString ? ids.map(String) : ids.map(Number),
+        value: normalizeValueArray(ids),
         modifier: 'INCLUDES' as TagsModifier
       };
     }
 
     if (typeof fieldValue === 'object') {
-      const fieldObj = fieldValue as { value?: unknown; modifier?: TagsModifier };
-      let raw = fieldObj.value;
-      if (raw && typeof raw === 'object' && Array.isArray((raw as { items?: unknown[] }).items)) {
-        raw = (raw as { items: unknown[] }).items;
-      }
-      const ids = this.normalizeIdArray(raw);
+      const fieldObj = fieldValue as {
+        value?: unknown;
+        modifier?: TagsModifier;
+        excludes?: unknown;
+        depth?: number | string;
+        include_subtags?: boolean | number | string;
+      };
+      const valueObj = fieldObj.value as { depth?: unknown; include_subtags?: unknown; excludes?: unknown; modifier?: TagsModifier } | undefined;
+      const ids = normalizeFieldValue(fieldObj.value);
       if (!ids) return undefined;
+
+      const excludesSource = fieldObj.excludes ?? valueObj?.excludes;
+      const normalizedExcludes = normalizeFieldValue(excludesSource);
+      const depthSource = fieldObj.depth ?? valueObj?.depth;
+      const includeSubtags = fieldObj.include_subtags ?? valueObj?.include_subtags;
+      const depth = typeof depthSource === 'number'
+        ? depthSource
+        : typeof depthSource === 'string'
+          ? Number.parseInt(depthSource, 10)
+          : includeSubtags === true
+            ? 1
+            : typeof includeSubtags === 'string'
+              ? Number.parseInt(includeSubtags, 10)
+              : typeof includeSubtags === 'number'
+                ? includeSubtags
+                : undefined;
+
       return {
-        value: asString ? ids.map(String) : ids.map(Number),
-        modifier: fieldObj.modifier ?? 'INCLUDES'
+        value: normalizeValueArray(ids),
+        modifier: fieldObj.modifier ?? valueObj?.modifier ?? 'INCLUDES',
+        ...(normalizedExcludes ? { excludes: normalizeValueArray(normalizedExcludes) } : {}),
+        ...(Number.isFinite(depth) ? { depth } : {})
       };
     }
 

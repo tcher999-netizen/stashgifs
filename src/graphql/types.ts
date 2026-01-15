@@ -43,6 +43,8 @@ export interface SceneMarkerFilterInput {
   scene_tags?: {
     value: string[];
     modifier: FilterModifier;
+    excludes?: string[];
+    depth?: number;
   };
   scene_performers?: {
     value: number[];

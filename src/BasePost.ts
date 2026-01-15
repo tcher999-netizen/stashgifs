@@ -16,6 +16,7 @@ interface HoverHandlers {
   mouseleave: () => void;
 }
 
+
 /**
  * Base class for post components (VideoPost and ImagePost)
  * Contains shared functionality to reduce code duplication
@@ -52,6 +53,7 @@ export abstract class BasePost {
   private hadTagOverlayBefore: boolean = false; // Track if tag overlay was showing before (for delay logic)
   private tagOverlayClickTime?: number; // Track when chip was clicked to prevent immediate re-show
 
+
   constructor(
     container: HTMLElement,
     favoritesManager?: FavoritesManager,
@@ -69,6 +71,32 @@ export abstract class BasePost {
     
     // Setup scroll listener to hide overlay when scrolling
     this.setupPerformerOverlayScrollListener();
+  }
+
+  protected renderBasePost(config: {
+    className: string;
+    postId: string;
+    createHeader: () => HTMLElement;
+    createPlayerContainer: () => HTMLElement;
+    createFooter: () => HTMLElement;
+  }): { header: HTMLElement; playerContainer: HTMLElement; footer: HTMLElement } {
+    this.container.className = config.className;
+    this.container.dataset.postId = config.postId;
+    this.container.style.position = 'relative';
+    while (this.container.firstChild) {
+      this.container.firstChild.remove();
+    }
+
+    const header = config.createHeader();
+    this.container.appendChild(header);
+
+    const playerContainer = config.createPlayerContainer();
+    this.container.appendChild(playerContainer);
+
+    const footer = config.createFooter();
+    this.container.appendChild(footer);
+
+    return { header, playerContainer, footer };
   }
 
   /**
