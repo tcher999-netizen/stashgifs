@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.23.0] - 2026-01-19
+
+### Changed
+- Add quick-remove controls for tags and performers
+
 ## [5.22.0] - 2026-01-16
 
 ### Changed
