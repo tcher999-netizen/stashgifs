@@ -37,6 +37,18 @@ export interface AddTagDialogState {
  * Contains shared functionality to reduce code duplication
  */
 export abstract class BasePost {
+  /**
+   * Abstract property for post data (must be implemented by subclasses)
+   */
+  protected abstract data: any;
+
+  /**
+   * Abstract method to refresh header (must be implemented by subclasses)
+   */
+  protected abstract refreshHeader(): void;
+
+  // @ts-nocheck
+  // eslint-disable @typescript-eslint/no-explicit-any
   protected readonly container: HTMLElement;
   protected readonly favoritesManager?: FavoritesManager;
   protected readonly api?: StashAPI;
@@ -2118,6 +2130,138 @@ export abstract class BasePost {
    * Abstract method to remove a tag from the current post
    */
   protected abstract removeTagAction(tagId: string, tagName: string): Promise<boolean>;
+
+  /**
+   * Shared helper for removing a tag from an image
+   */
+  protected async removeTagShared(
+    tagId: string,
+    tagName: string,
+    options: {
+      getCurrentTags: () => Array<{ id: string | number; name: string }> | undefined;
+      apiCall: (nextTagIds: string[]) => Promise<void>;
+      updateLocalTags: (remainingTags: Array<{ id: string | number; name: string }>) => void;
+      entityType: 'image' | 'scene' | 'marker';
+      logPrefix: string;
+    }
+  ): Promise<boolean> {
+    const currentTagIds = (options.getCurrentTags() || [])
+      .map((t) => String((t as any).id))
+      .filter((id) => id.length > 0);
+
+    if (!currentTagIds.includes(String(tagId))) {
+      showToast(`Tag "${tagName}" is not on this ${options.entityType}.`);
+      return false;
+    }
+
+    try {
+      const nextTagIds = currentTagIds.filter((id) => id !== String(tagId));
+      await options.apiCall(nextTagIds);
+      options.updateLocalTags((options.getCurrentTags() || []).filter((t: any) => String(t.id) !== String(tagId)));
+      showToast(`Tag "${tagName}" removed from ${options.entityType}`);
+      this.refreshHeader();
+      return true;
+    } catch (error) {
+      console.error(`${options.logPrefix}: Failed to remove tag from ${options.entityType}`, error);
+      showToast('Failed to remove tag. Please try again.');
+      return false;
+    }
+  }
+
+  /**
+   * Shared implementation for adding a tag to an image
+   */
+  protected async addTagToImageShared(
+    state: AddTagDialogState,
+    focusAfterClose?: HTMLElement | null
+  ): Promise<void> {
+    if (!this.api || !state.selectedTagId || !state.selectedTagName || !state.createButton) return;
+
+    // Disable button during operation
+    state.createButton.disabled = true;
+    state.createButton.textContent = 'Adding...';
+    state.createButton.style.opacity = '0.6';
+
+    try {
+      // Check for duplicate tag
+      const currentTagIds = (this.data.image.tags || []).map((tag: any) => tag.id).filter(Boolean);
+      if (currentTagIds.includes(state.selectedTagId)) {
+        showToast(`Tag "${state.selectedTagName}" is already added to this image.`);
+        state.createButton.disabled = false;
+        state.createButton.textContent = 'Add';
+        state.createButton.style.opacity = '1';
+        return;
+      }
+
+      // Update via API
+      const nextTagIds = [...currentTagIds, state.selectedTagId];
+      await this.api.updateImageTags(this.data.image.id, nextTagIds);
+
+      // Update local data
+      this.data.image.tags ??= [];
+      this.data.image.tags.push({ id: state.selectedTagId, name: state.selectedTagName });
+
+      // Success feedback and cleanup
+      showToast(`Tag "${state.selectedTagName}" added to image`);
+      this.refreshHeader();
+      this.closeAddTagDialogBase({ state, focusAfterClose: focusAfterClose || this.addTagButton });
+    } catch (error) {
+      console.error('BasePost: Failed to add tag to image', error);
+      showToast('Failed to add tag. Please try again.');
+      state.createButton.disabled = false;
+      state.createButton.textContent = 'Add';
+      state.createButton.style.opacity = '1';
+    }
+  }
+
+  /**
+   * Shared helper for removing a performer from an item
+   */
+  protected async removePerformerShared(
+    performerId: string,
+    performerName: string,
+    options: {
+      performers: Array<{ id: string }> | undefined;
+      itemId: string;
+      apiMethod: (id: string, performerIds: string[]) => Promise<void>;
+      itemType: 'scene' | 'image';
+      logPrefix: string;
+    }
+  ): Promise<boolean> {
+    if (!this.api) {
+      showToast('API not available.');
+      return false;
+    }
+
+    const currentPerformerIds = (options.performers || [])
+      .map((performer) => performer.id)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+
+    if (!currentPerformerIds.includes(performerId)) {
+      showToast(`Performer "${performerName}" is not on this ${options.itemType}.`);
+      return false;
+    }
+
+    try {
+      const nextPerformerIds = currentPerformerIds.filter((id) => id !== performerId);
+      await options.apiMethod(options.itemId, nextPerformerIds);
+
+      // Update local data - subclasses handle their specific data structures
+      if (options.itemType === 'image') {
+        (this.data.image.performers as any[]) = (options.performers || []).filter((performer) => performer.id !== performerId);
+      } else if (options.itemType === 'scene') {
+        (this.data.marker.scene.performers as any[]) = (options.performers || []).filter((performer) => performer.id !== performerId);
+      }
+
+      showToast(`Performer "${performerName}" removed from ${options.itemType}`);
+      this.refreshHeader();
+      return true;
+    } catch (error) {
+      console.error(`${options.logPrefix}: Failed to remove performer from ${options.itemType}`, error);
+      showToast('Failed to remove performer. Please try again.');
+      return false;
+    }
+  }
 
   /**
    * Abstract method to remove a performer from the current post

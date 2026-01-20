@@ -35,7 +35,7 @@ interface ImageVideoPostOptions {
 }
 
 export class ImageVideoPost extends BasePost {
-  private readonly data: ImageVideoPostData;
+  protected readonly data: ImageVideoPostData;
   private player?: NativeVideoPlayer;
   private isLoaded: boolean = false;
   private hqButton?: HTMLElement;
@@ -714,112 +714,36 @@ export class ImageVideoPost extends BasePost {
   }
 
   protected async removeTagAction(tagId: string, tagName: string): Promise<boolean> {
-    if (!this.api) {
-      showToast('API not available.');
-      return false;
-    }
-
-    const currentTagIds = (this.data.image.tags || [])
-      .map((tag) => tag.id)
-      .filter((id): id is string => typeof id === 'string' && id.length > 0);
-
-    if (!currentTagIds.includes(tagId)) {
-      showToast(`Tag "${tagName}" is not on this image.`);
-      return false;
-    }
-
-    try {
-      const nextTagIds = currentTagIds.filter((id) => id !== tagId);
-      await this.api.updateImageTags(this.data.image.id, nextTagIds);
-
-      this.data.image.tags = (this.data.image.tags || []).filter((tag) => tag.id !== tagId);
-      showToast(`Tag "${tagName}" removed from image`);
-      this.refreshHeader();
-      return true;
-    } catch (error) {
-      console.error('ImageVideoPost: Failed to remove tag from image', error);
-      showToast('Failed to remove tag. Please try again.');
-      return false;
-    }
+    return this.removeTagShared(tagId, tagName, {
+      getCurrentTags: () => this.data.image.tags || [],
+      apiCall: (nextTagIds) => this.api!.updateImageTags(this.data.image.id, nextTagIds),
+      updateLocalTags: (remainingTags) => { this.data.image.tags = remainingTags as any[]; },
+      entityType: 'image',
+      logPrefix: 'ImageVideoPost'
+    });
   }
 
   protected async removePerformerAction(performerId: string, performerName: string): Promise<boolean> {
-    if (!this.api) {
-      showToast('API not available.');
-      return false;
-    }
-
-    const currentPerformerIds = (this.data.image.performers || [])
-      .map((performer) => performer.id)
-      .filter((id): id is string => typeof id === 'string' && id.length > 0);
-
-    if (!currentPerformerIds.includes(performerId)) {
-      showToast(`Performer "${performerName}" is not on this image.`);
-      return false;
-    }
-
-    try {
-      const nextPerformerIds = currentPerformerIds.filter((id) => id !== performerId);
-      await this.api.updateImagePerformers(this.data.image.id, nextPerformerIds);
-
-      this.data.image.performers = (this.data.image.performers || []).filter((performer) => performer.id !== performerId);
-      showToast(`Performer "${performerName}" removed from image`);
-      this.refreshHeader();
-      return true;
-    } catch (error) {
-      console.error('ImageVideoPost: Failed to remove performer from image', error);
-      showToast('Failed to remove performer. Please try again.');
-      return false;
-    }
+    return this.removePerformerShared(performerId, performerName, {
+      performers: this.data.image.performers,
+      itemId: this.data.image.id,
+      apiMethod: (id, performerIds) => this.api!.updateImagePerformers(id, performerIds),
+      itemType: 'image',
+      logPrefix: 'ImageVideoPost'
+    });
   }
 
   /**
    * Add tag to image
    */
   private async addTagToImage(): Promise<void> {
-    const state = this.addTagDialogState;
-    if (!this.api || !state.selectedTagId || !state.selectedTagName || !state.createButton) return;
-
-    state.createButton.disabled = true;
-    state.createButton.textContent = 'Adding...';
-    state.createButton.style.opacity = '0.6';
-
-    try {
-      const currentTagIds = (this.data.image.tags || [])
-        .map((tag) => tag.id)
-        .filter((id): id is string => typeof id === 'string' && id.length > 0);
-      if (currentTagIds.includes(state.selectedTagId)) {
-        showToast(`Tag "${state.selectedTagName}" is already added to this image.`);
-        state.createButton.disabled = false;
-        state.createButton.textContent = 'Add';
-        state.createButton.style.opacity = '1';
-        return;
-      }
-
-      const nextTagIds = [...currentTagIds, state.selectedTagId];
-      await this.api.updateImageTags(this.data.image.id, nextTagIds);
-
-      this.data.image.tags ??= [];
-      this.data.image.tags.push({ id: state.selectedTagId, name: state.selectedTagName });
-
-      showToast(`Tag "${state.selectedTagName}" added to image`);
-      
-      this.refreshHeader();
-      
-      this.closeAddTagDialogBase({ state, focusAfterClose: this.addTagButton });
-    } catch (error) {
-      console.error('ImageVideoPost: Failed to add tag to image', error);
-      showToast('Failed to add tag. Please try again.');
-      state.createButton.disabled = false;
-      state.createButton.textContent = 'Add';
-      state.createButton.style.opacity = '1';
-    }
+    await this.addTagToImageShared(this.addTagDialogState, this.addTagButton);
   }
 
   /**
    * Refresh header to show updated tags
    */
-  private refreshHeader(): void {
+  protected refreshHeader(): void {
     const header = this.container.querySelector('.video-post__header');
     if (header) {
       const newHeader = this.createHeader();

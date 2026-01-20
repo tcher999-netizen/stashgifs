@@ -39,7 +39,7 @@ interface VideoPostOptions {
 }
 
 export class VideoPost extends BasePost {
-  private readonly data: VideoPostData;
+  protected readonly data: VideoPostData;
   private player?: NativeVideoPlayer;
   private isLoaded: boolean = false;
   private markerButton?: HTMLElement;
@@ -403,7 +403,7 @@ export class VideoPost extends BasePost {
   /**
    * Refresh the header to show updated tag chips (e.g., after creating a marker)
    */
-  private refreshHeader(): void {
+  protected refreshHeader(): void {
     const header = this.container.querySelector('.video-post__header');
     if (header) {
       const newHeader = this.createHeader();

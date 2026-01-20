@@ -4,7 +4,7 @@
  */
 
 import { FeedSettings } from './types.js';
-import { VERSION } from './version.js';
+import { VERSION, BUILD_HASH } from './version.js';
 import { THEME, THEME_DEFAULTS } from './utils.js';
 
 export class SettingsPage {
@@ -931,7 +931,7 @@ export class SettingsPage {
     versionFooter.style.textAlign = 'center';
 
     const versionText = document.createElement('div');
-    versionText.textContent = `Version ${VERSION}`;
+    versionText.textContent = `Version ${VERSION} (${BUILD_HASH})`;
     versionText.style.color = THEME.colors.textMuted;
     versionText.style.fontSize = THEME.typography.sizeMeta;
     versionFooter.appendChild(versionText);
