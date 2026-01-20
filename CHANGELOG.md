@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.23.1] - 2026-01-20
+
+### Changed
+- Fix rating selection handling
+- Simplify theme color labels to Background / Primary / Secondary / Accent
+- Adjust ONYX theme: cards #2a2a2a, inputs #343b41
+- Add ONYX theme preset with requested colors
+- Deduplicate image-post tag/performer logic and restore build hash in settings
+- Add AMOLED theme preset and simplify version display
+
 ## [5.23.0] - 2026-01-19
 
 ### Changed
