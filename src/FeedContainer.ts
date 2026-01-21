@@ -3802,28 +3802,18 @@ export class FeedContainer {
     const { currentFilters, limits, signal, loadingFlags, append } = options;
     const { limit, markerLimit, shortFormLimit } = limits;
     const { shouldLoadMarkers, shouldLoadImages, shouldLoadShortForm } = loadingFlags;
-    
-    // Generate a single sortSeed before parallel fetches to ensure all content types use the same seed
-    if (!currentFilters.sortSeed) {
-      currentFilters.sortSeed = generateRandomSortSeed();
-    }
-    
-    // Calculate pagination parameters
+
+    this.ensureSortSeed(currentFilters);
+
     const { markerPageSize, imagePageSize } = this.calculatePaginationForContent(append, markerLimit, limit);
-    
-    // Calculate offsets using the consistent page sizes
-    const markerOffset = append ? this.markersLoadedCount : 0;
-    const imageOffset = append ? this.imagesLoadedCount : 0;
-    
-    // For short-form: Use unfiltered offset (not filtered count)
-    const shortFormOffset = append ? this.shortFormUnfilteredOffset : 0;
-    
+    const { markerOffset, imageOffset, shortFormOffset } = this.getLoadOffsets(append);
+
     const [markersResult, imagesResult, shortFormResult] = await Promise.all([
-      shouldLoadMarkers ? this.fetchMarkersForLoad(currentFilters, markerPageSize, markerOffset, signal) : Promise.resolve<{ markers: SceneMarker[]; totalCount: number }>({ markers: [], totalCount: 0 }),
-      shouldLoadImages ? this.loadImages(currentFilters, imagePageSize, imageOffset, signal) : Promise.resolve<{ images: Image[]; totalCount: number }>({ images: [], totalCount: 0 }),
-      shouldLoadShortForm ? this.fetchShortFormVideosForLoad(currentFilters, shortFormLimit, shortFormOffset, signal) : Promise.resolve<{ markers: SceneMarker[]; totalCount: number; unfilteredOffsetConsumed: number }>({ markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 }),
+      this.fetchMarkersIfNeeded({ currentFilters, markerPageSize, markerOffset, signal, shouldLoadMarkers }),
+      this.fetchImagesIfNeeded({ currentFilters, imagePageSize, imageOffset, signal, shouldLoadImages }),
+      this.fetchShortFormIfNeeded({ currentFilters, shortFormLimit, shortFormOffset, signal, shouldLoadShortForm })
     ]);
-    
+
     this.logFetchedContentResults({
       shouldLoadMarkers,
       shouldLoadShortForm,
@@ -3836,9 +3826,7 @@ export class FeedContainer {
       imagesResult
     });
 
-    if (shouldLoadShortForm) {
-      this.updateShortFormUnfilteredOffset(append, shortFormResult);
-    }
+    this.updateShortFormOffsetIfNeeded(shouldLoadShortForm, append, shortFormResult);
     
     return {
       markers: markersResult.markers,
@@ -3848,6 +3836,77 @@ export class FeedContainer {
       imageCount: imagesResult.totalCount,
       shortFormCount: shortFormResult.totalCount
     };
+  }
+
+  private ensureSortSeed(filters: FilterOptions): void {
+    if (!filters.sortSeed) {
+      filters.sortSeed = generateRandomSortSeed();
+    }
+  }
+
+  private getLoadOffsets(append: boolean): {
+    markerOffset: number;
+    imageOffset: number;
+    shortFormOffset: number;
+  } {
+    return {
+      markerOffset: append ? this.markersLoadedCount : 0,
+      imageOffset: append ? this.imagesLoadedCount : 0,
+      shortFormOffset: append ? this.shortFormUnfilteredOffset : 0
+    };
+  }
+
+  private async fetchMarkersIfNeeded(options: {
+    currentFilters: FilterOptions;
+    markerPageSize: number;
+    markerOffset: number;
+    signal: AbortSignal | undefined;
+    shouldLoadMarkers: boolean;
+  }): Promise<{ markers: SceneMarker[]; totalCount: number }> {
+    const { currentFilters, markerPageSize, markerOffset, signal, shouldLoadMarkers } = options;
+    if (!shouldLoadMarkers) {
+      return { markers: [], totalCount: 0 };
+    }
+    return this.fetchMarkersForLoad(currentFilters, markerPageSize, markerOffset, signal);
+  }
+
+  private async fetchImagesIfNeeded(options: {
+    currentFilters: FilterOptions;
+    imagePageSize: number;
+    imageOffset: number;
+    signal: AbortSignal | undefined;
+    shouldLoadImages: boolean;
+  }): Promise<{ images: Image[]; totalCount: number }> {
+    const { currentFilters, imagePageSize, imageOffset, signal, shouldLoadImages } = options;
+    if (!shouldLoadImages) {
+      return { images: [], totalCount: 0 };
+    }
+    return this.loadImages(currentFilters, imagePageSize, imageOffset, signal);
+  }
+
+  private async fetchShortFormIfNeeded(options: {
+    currentFilters: FilterOptions;
+    shortFormLimit: number;
+    shortFormOffset: number;
+    signal: AbortSignal | undefined;
+    shouldLoadShortForm: boolean;
+  }): Promise<{ markers: SceneMarker[]; totalCount: number; unfilteredOffsetConsumed?: number }> {
+    const { currentFilters, shortFormLimit, shortFormOffset, signal, shouldLoadShortForm } = options;
+    if (!shouldLoadShortForm) {
+      return { markers: [], totalCount: 0, unfilteredOffsetConsumed: 0 };
+    }
+    return this.fetchShortFormVideosForLoad(currentFilters, shortFormLimit, shortFormOffset, signal);
+  }
+
+  private updateShortFormOffsetIfNeeded(
+    shouldLoadShortForm: boolean,
+    append: boolean,
+    shortFormResult: { unfilteredOffsetConsumed?: number }
+  ): void {
+    if (!shouldLoadShortForm) {
+      return;
+    }
+    this.updateShortFormUnfilteredOffset(append, shortFormResult);
   }
 
   private logFetchedContentResults(options: {

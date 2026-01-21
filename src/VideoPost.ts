@@ -1689,7 +1689,7 @@ export class VideoPost extends BasePost {
       return this.cachedStarButtonWidth * this.ratingStarButtons.length;
     }
     // Fallback: use container scrollWidth if buttons aren't available yet
-    const starsContainer = dialog.querySelector('.rating-dialog__stars') as HTMLElement;
+    const starsContainer = dialog.querySelector<HTMLElement>('.rating-dialog__stars');
     if (starsContainer) {
       return starsContainer.scrollWidth;
     }
