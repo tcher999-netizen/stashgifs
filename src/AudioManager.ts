@@ -120,8 +120,51 @@ export class AudioManager {
       }
     }
 
-    // No hover or manual videos - release audio
+    // Priority 3: Most centered visible playing video (focus-based)
+    const centeredCandidate = this.getCenteredPlayingVideo();
+    if (centeredCandidate) {
+      this.setAudioOwner(centeredCandidate, AudioPriority.CENTER);
+      return;
+    }
+
+    // No eligible video - release audio
     this.setAudioOwner(undefined, AudioPriority.NONE);
+  }
+
+  private getCenteredPlayingVideo(): string | undefined {
+    const viewportCenterY = globalThis.window.innerHeight / 2;
+    const viewportCenterX = globalThis.window.innerWidth / 2;
+
+    let bestId: string | undefined;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    for (const [postId, entry] of this.entries) {
+      if (!entry.player || !entry.isVisible || !entry.player.isPlaying()) {
+        continue;
+      }
+
+      const rect = entry.element.getBoundingClientRect();
+      const containsCenter =
+        rect.top <= viewportCenterY &&
+        rect.bottom >= viewportCenterY &&
+        rect.left <= viewportCenterX &&
+        rect.right >= viewportCenterX;
+
+      if (!containsCenter) {
+        continue;
+      }
+
+      const centerY = rect.top + rect.height / 2;
+      const centerX = rect.left + rect.width / 2;
+      const distance = Math.hypot(centerX - viewportCenterX, centerY - viewportCenterY);
+
+      if (distance < bestScore) {
+        bestScore = distance;
+        bestId = postId;
+      }
+    }
+
+    return bestId;
   }
 
   /**

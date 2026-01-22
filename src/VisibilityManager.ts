@@ -128,6 +128,8 @@ export class VisibilityManager {
       
       this.lastScrollTop = scrollTop;
       this.lastScrollTime = now;
+
+      this.audioManager.updateAudioFocus();
       
       this.scrollVelocityRafHandle = requestAnimationFrame(updateScrollVelocity);
     };
