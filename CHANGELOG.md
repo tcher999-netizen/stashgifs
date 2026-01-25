@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.29.0] - 2026-01-25
+
+## [5.28.0] - 2026-01-25
+
+### Changed
+- Refine header icons and reel shadows
+- Improve UX path and standardize UI sizing
+- Update icons.ts
+- Fix tag filter handling
+
 ## [5.27.1] - 2026-01-22
 
 ## [5.27.0] - 2026-01-22

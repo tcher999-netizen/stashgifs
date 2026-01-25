@@ -185,44 +185,6 @@
   line-height: var(--line-height-relaxed);
 }
 
-/* Skeleton Loaders */
-.video-post-skeleton {
-  opacity: 0.6;
-}
-
-.chip-skeleton,
-.button-skeleton {
-  background: linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0.08) 0%,
-    rgba(255, 255, 255, 0.12) 50%,
-    rgba(255, 255, 255, 0.08) 100%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.5s ease-in-out infinite;
-  will-change: background-position;
-}
-
-.video-post-skeleton .video-post__player {
-  background: linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0.05) 0%,
-    rgba(255, 255, 255, 0.08) 50%,
-    rgba(255, 255, 255, 0.05) 100%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.5s ease-in-out infinite;
-  will-change: background-position;
-}
-
-@keyframes shimmer {
-  0% {
-    background-position: -200% 0;
-  }
-  100% {
-    background-position: 200% 0;
-  }
-}
 
 @keyframes spin {
   0% {
@@ -301,6 +263,23 @@
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
+  max-width: 80%; /* Constrain to 80% of card width */
+}
+
+/* Performer section - name and image */
+.video-post__performers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+  align-items: center;
+}
+
+/* Tag chips line - no box styling */
+.video-post__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
 }
 
 .video-post__title {
@@ -561,6 +540,7 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 12px;
 }
 
 .video-post__info {
@@ -784,32 +764,22 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--spacing-sm);
-  margin-top: var(--spacing-xs);
-  min-height: var(--spacing-2xl);
   align-items: center;
 }
 
+/* Chip - clean line styling without box background */
 .chip {
   display: inline-flex;
   touch-action: manipulation;
   align-items: center;
   gap: var(--spacing-sm);
-  padding: var(--spacing-sm) var(--spacing-md);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
   color: var(--color-text-primary);
   font-size: var(--font-footnote);
   font-weight: 500;
   line-height: var(--line-height-tight);
   text-decoration: none;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: color 0.2s ease;
   -webkit-tap-highlight-color: transparent;
-  min-height: 32px;
-  min-width: 32px;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
 .chip:hover {
@@ -847,13 +817,18 @@
   flex-shrink: 0;
 }
 
-/* Tag chip - subtle background styling */
+/* Tag chip - clean line styling without box */
 .tag-chip {
   display: inline-flex;
   align-items: center;
   text-decoration: none;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-footnote);
+  font-weight: 500;
+  line-height: var(--line-height-tight);
+  transition: color 0.2s ease;
 }
 
 /* Icon button */
@@ -884,6 +859,18 @@
               color 0.2s ease,
               opacity 0.2s ease;
   will-change: transform;
+}
+
+/* Icon SVG sizing - make icons 24px */
+.icon-svg {
+  width: 24px;
+  height: 24px;
+}
+
+/* Logo SVG sizing - maintain original size */
+.logo-svg {
+  width: 84px;
+  height: 24px;
 }
 
 .icon-btn:hover svg,
@@ -1026,8 +1013,20 @@
   .video-post__footer .icon-btn {
     min-width: 44px;
     min-height: 44px;
+    width: 44px;
+    height: 44px;
     touch-action: manipulation;
     -webkit-tap-highlight-color: rgba(255, 255, 255, 0.1);
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Ensure icons in video footer buttons are properly sized and centered */
+  .video-post__footer .icon-btn .icon-svg {
+    width: 24px;
+    height: 24px;
   }
 
   /* Mute overlay button - ensure it's easily tappable */
@@ -1440,4 +1439,40 @@
   height: 1px;
   background: var(--opacity-08);
   margin: 6px 0;
+}
+
+/* Reel mode chip styling - remove box/border effects */
+[data-reel-mode="true"] .performer-chip,
+[data-reel-mode="true"] .tag-chip {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+[data-reel-mode="true"] .performer-chip:hover,
+[data-reel-mode="true"] .tag-chip:hover {
+  background: transparent !important;
+  border-color: transparent !important;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+/* Reel mode gradient overlay - 20% from bottom */
+.reel-gradient-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 20%;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.4) 0%, transparent 100%);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Ensure header and footer are above gradient */
+[data-reel-mode="true"] .video-post__header,
+[data-reel-mode="true"] .video-post__footer {
+  z-index: 6;
 }
