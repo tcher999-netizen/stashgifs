@@ -115,6 +115,7 @@ export interface FeedSettings {
   themePrimary?: string; // Primary surface color for cards
   themeSecondary?: string; // Secondary surface color for inputs/panels
   themeAccent?: string; // Accent color for highlights
+  showVerifiedCheckmarks?: boolean; // Toggle verified checkmark badges
   excludedTagNames?: string[]; // Tags to exclude from feed (names)
 }
 

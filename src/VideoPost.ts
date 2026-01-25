@@ -33,6 +33,7 @@ interface VideoPostOptions {
   visibilityManager?: VisibilityManager;
   onPerformerChipClick?: (performerId: number, performerName: string) => void;
   onTagChipClick?: (tagId: number, tagName: string) => void;
+  showVerifiedCheckmarks?: boolean;
   useShuffleMode?: boolean;
   onCancelRequests?: () => void;
   ratingSystemConfig?: { type?: string; starPrecision?: string } | null; // Rating system configuration
@@ -111,7 +112,8 @@ export class VideoPost extends BasePost {
       options.api,
       options.visibilityManager,
       options.onPerformerChipClick,
-      options.onTagChipClick
+      options.onTagChipClick,
+      options.showVerifiedCheckmarks
     );
     this.data = data;
     this.useShuffleMode = options.useShuffleMode || false;

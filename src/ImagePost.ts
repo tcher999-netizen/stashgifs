@@ -71,6 +71,7 @@ export class ImagePost extends BasePost {
       visibilityManager?: VisibilityManager;
       onPerformerChipClick?: (performerId: number, performerName: string) => void;
       onTagChipClick?: (tagId: number, tagName: string) => void;
+      showVerifiedCheckmarks?: boolean;
       onLoadFullVideo?: () => void;
       ratingSystemConfig?: { type?: string; starPrecision?: string } | null;
       reelMode?: boolean;
@@ -82,7 +83,8 @@ export class ImagePost extends BasePost {
       options?.api,
       options?.visibilityManager,
       options?.onPerformerChipClick,
-      options?.onTagChipClick
+      options?.onTagChipClick,
+      options?.showVerifiedCheckmarks
     );
     this.data = data;
     this.oCount = this.data.image.o_counter || 0;

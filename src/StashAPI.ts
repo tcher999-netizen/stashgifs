@@ -37,7 +37,6 @@ import {
   SceneMarkerUpdateInput,
   TypedGraphQLClient,
   Image,
-  VisualFile,
   UIConfigurationResponse,
 } from './graphql/types.js';
 import {
@@ -48,7 +47,6 @@ import {
 } from './graphql/errors.js';
 import { GraphQLClient } from './graphql/client.js';
 
-type Orientation = 'landscape' | 'portrait' | 'square' | null;
 type ImageOrientation = 'landscape' | 'portrait' | 'square';
 
 interface StashPluginApi {
@@ -86,7 +84,6 @@ export class StashAPI {
   private static readonly MIN_MARKER_COUNT_FOR_TAG_FILTER = 10; // Minimum markers required for tag to appear in suggestions
   private static readonly SHORT_FORM_SCENES_PER_PAGE = 24; // Number of scenes to fetch per page for short-form content
   private static readonly MAX_PAGE_FALLBACK = 100; // Fallback max page when count query fails
-  private static readonly ORIENTATION_TOLERANCE = 0.05; // 5% tolerance for square aspect ratio detection
   private static readonly MAX_MARKERS_PER_SCENE_FOR_SHUFFLE = 5; // Maximum markers per scene in shuffle mode
 
   constructor(baseUrl?: string, apiKey?: string) {
@@ -656,6 +653,8 @@ export class StashAPI {
     if (excludedTagIds.length > 0) {
       this.applyExcludedTagsToMarkerFilter(countSceneFilter, excludedTagIds);
     }
+
+    this.applyOrientationToMarkerFilter(countSceneFilter, filters);
     
     return countSceneFilter;
   }
@@ -749,6 +748,8 @@ export class StashAPI {
     if (!filters?.savedFilterId) {
       this.applyTagAndPerformerFilters(filters, sceneMarkerFilter, { isMarkerFilter: true });
     }
+
+    this.applyOrientationToMarkerFilter(sceneMarkerFilter, filters);
     
     return sceneMarkerFilter;
   }
@@ -826,6 +827,47 @@ export class StashAPI {
         modifier: performerIds.length === 1 ? 'INCLUDES_ALL' : 'INCLUDES'
       };
     }
+  }
+
+  private resolveOrientationEnumValues(filters?: FilterOptions): string[] {
+    const orientationFilter = filters?.orientationFilter ?? [];
+    if (orientationFilter.length === 0) {
+      return [];
+    }
+
+    const orientationMap: Record<string, string> = {
+      portrait: 'PORTRAIT',
+      landscape: 'LANDSCAPE',
+      square: 'SQUARE'
+    };
+
+    return orientationFilter
+      .map((value) => orientationMap[value])
+      .filter((value): value is string => Boolean(value));
+  }
+
+  private applyOrientationToSceneFilter(targetFilter: SceneFilterInput, filters?: FilterOptions): void {
+    const orientations = this.resolveOrientationEnumValues(filters);
+    if (orientations.length === 0) {
+      return;
+    }
+
+    targetFilter.orientation = {
+      value: orientations.length === 1 ? orientations[0] : orientations
+    };
+  }
+
+  private applyOrientationToMarkerFilter(targetFilter: SceneMarkerFilterInput, filters?: FilterOptions): void {
+    const orientations = this.resolveOrientationEnumValues(filters);
+    if (orientations.length === 0) {
+      return;
+    }
+
+    const sceneFilter = (targetFilter.scene_filter ?? {}) as SceneFilterInput;
+    sceneFilter.orientation = {
+      value: orientations.length === 1 ? orientations[0] : orientations
+    };
+    targetFilter.scene_filter = sceneFilter;
   }
 
   /**
@@ -1005,6 +1047,7 @@ export class StashAPI {
       sceneFilter.has_markers = 'false';
     }
     this.applyTagAndPerformerFilters(filters, sceneFilter, { isMarkerFilter: false });
+    this.applyOrientationToSceneFilter(sceneFilter, filters);
 
     
     return Object.keys(sceneFilter).length > 0 ? sceneFilter : null;
@@ -1171,6 +1214,7 @@ export class StashAPI {
     }
 
     this.applyTagAndPerformerFilters(filters, sceneFilter, { isMarkerFilter: false });
+    this.applyOrientationToSceneFilter(sceneFilter, filters);
 
     return Object.keys(sceneFilter).length > 0 ? sceneFilter : null;
   }
@@ -2098,100 +2142,6 @@ export class StashAPI {
   }
 
   /**
-   * Determine orientation from width and height
-   * @param width Width in pixels
-   * @param height Height in pixels
-   * @returns 'landscape', 'portrait', or 'square'
-   */
-  private getOrientation(width?: number, height?: number): Orientation {
-    if (!width || !height || width <= 0 || height <= 0) {
-      return null;
-    }
-    
-    const aspectRatio = width / height;
-    
-    if (Math.abs(aspectRatio - 1) < StashAPI.ORIENTATION_TOLERANCE) {
-      return 'square';
-    } else if (aspectRatio > 1) {
-      return 'landscape';
-    } else {
-      return 'portrait';
-    }
-  }
-
-  /**
-   * Get visual file dimensions from image
-   */
-  private getImageDimensions(image: Image): { width?: number; height?: number } | null {
-    if (!image.visual_files || image.visual_files.length === 0) {
-      return null;
-    }
-    
-    const visualFile = image.visual_files.find(
-      (file): file is VisualFile & { width: number; height: number } =>
-        typeof file.width === 'number' &&
-        typeof file.height === 'number'
-    );
-    
-    return visualFile ? { width: visualFile.width, height: visualFile.height } : null;
-  }
-
-  /**
-   * Filter images by orientation
-   */
-  private filterImagesByOrientation(
-    images: Image[],
-    orientationFilter: ImageOrientation[]
-  ): Image[] {
-    if (orientationFilter.length === 0) {
-      return images;
-    }
-    
-    return images.filter(image => {
-      const dimensions = this.getImageDimensions(image);
-      if (!dimensions?.width || !dimensions?.height) {
-        // If orientation cannot be determined, include the image
-        return true;
-      }
-      
-      const orientation = this.getOrientation(dimensions.width, dimensions.height);
-      return orientation === null || orientationFilter.includes(orientation);
-    });
-  }
-
-  /**
-   * Filter items by orientation (generic version for other types)
-   * @param items Array of items with width/height properties
-   * @param orientationFilter Array of allowed orientations
-   * @param getWidth Function to get width from item
-   * @param getHeight Function to get height from item
-   * @returns Filtered array of items
-   */
-  private filterByOrientation<T>(
-    items: T[],
-    orientationFilter: ImageOrientation[] | undefined,
-    getWidth: (item: T) => number | undefined,
-    getHeight: (item: T) => number | undefined
-  ): T[] {
-    if (!orientationFilter || orientationFilter.length === 0) {
-      return items;
-    }
-    
-    return items.filter(item => {
-      const width = getWidth(item);
-      const height = getHeight(item);
-      const orientation = this.getOrientation(width, height);
-      
-      if (orientation === null) {
-        // If orientation cannot be determined, include the item
-        return true;
-      }
-      
-      return orientationFilter.includes(orientation);
-    });
-  }
-
-  /**
    * Build regex pattern from file extensions
    * Converts ['.gif', '.webm'] to "(?i)\.(gif|webm)$" (case-insensitive)
    * @throws Error if fileExtensions is empty or all extensions are invalid
@@ -2278,6 +2228,13 @@ export class StashAPI {
       (imageFilter.tags as { excludes?: string[] }).excludes = excludedTagIds;
     }
 
+    const imageOrientations = this.resolveOrientationEnumValues(filters);
+    if (imageOrientations.length > 0) {
+      imageFilter.orientation = {
+        value: imageOrientations.length === 1 ? imageOrientations[0] : imageOrientations
+      };
+    }
+
     // Reuse existing sort seed for pagination, or generate new one for first page
     const sortSeed = filters?.sortSeed || generateRandomSortSeed();
     
@@ -2303,14 +2260,9 @@ export class StashAPI {
 
       if (this.isAborted(signal)) return { images: [], totalCount: 0, sortSeed: generateRandomSortSeed() };
 
-      let images = result.data?.findImages?.images || [];
+      const images = result.data?.findImages?.images || [];
       const totalCount = result.data?.findImages?.count ?? 0;
-      
-      // Filter by orientation if specified
-      if (filters?.orientationFilter && filters.orientationFilter.length > 0) {
-        images = this.filterImagesByOrientation(images, filters.orientationFilter);
-      }
-      
+
       return { images, totalCount, sortSeed };
     } catch (e: unknown) {
       if (isAbortError(e) || this.isAborted(signal)) {
@@ -2355,5 +2307,3 @@ export class StashAPI {
   }
 
 }
-
-

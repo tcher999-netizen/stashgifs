@@ -32,7 +32,7 @@ const DEFAULT_SETTINGS: FeedSettings = {
   backgroundPreloadFastScrollDelay: 400, // ms, delay during fast scrolling
   backgroundPreloadScrollVelocityThreshold: 2, // pixels/ms, threshold for fast scroll detection
   enabledFileTypes: ['.jpg', '.png', '.gif', '.mp4', '.m4v'], // Default file types to include
-  includeImagesInFeed: false, // Whether to include images in feed
+  includeImagesInFeed: true, // Whether to include images in feed
   imagesOnly: false,
   includeShortFormContent: false, // Enable/disable short-form content
   shortFormInHDMode: true, // Include short-form in HD mode
@@ -45,6 +45,7 @@ const DEFAULT_SETTINGS: FeedSettings = {
   themePrimary: THEME_DEFAULTS.surface,
   themeSecondary: THEME_DEFAULTS.backgroundSecondary,
   themeAccent: THEME_DEFAULTS.accentPrimary,
+  showVerifiedCheckmarks: true,
   excludedTagNames: [],
 };
 
@@ -614,7 +615,22 @@ export class FeedContainer {
     return names.map((name) => name.toLowerCase());
   }
 
+  private normalizeOrientationFilter(values: Array<'landscape' | 'portrait' | 'square'>): string[] {
+    return values.map((value) => value.toLowerCase());
+  }
+
   private areExcludedTagNamesEqual(a: string[], b: string[]): boolean {
+    if (a.length !== b.length) {
+      return false;
+    }
+
+    const sortedA = [...a].sort((left, right) => left.localeCompare(right));
+    const sortedB = [...b].sort((left, right) => left.localeCompare(right));
+
+    return sortedA.every((value, index) => value === sortedB[index]);
+  }
+
+  private areOrientationFiltersEqual(a: string[], b: string[]): boolean {
     if (a.length !== b.length) {
       return false;
     }
@@ -673,6 +689,15 @@ export class FeedContainer {
     delete filters.excludedTagIds;
   }
 
+  private applyOrientationFilterToFilters(filters: FilterOptions): void {
+    if (this.settings.orientationFilter && this.settings.orientationFilter.length > 0) {
+      filters.orientationFilter = [...this.settings.orientationFilter];
+      return;
+    }
+
+    delete filters.orientationFilter;
+  }
+
   private shouldExcludeTags(tags?: Array<{ id: string; name: string }>): boolean {
     if (!tags || tags.length === 0) {
       return false;
@@ -729,9 +754,12 @@ export class FeedContainer {
   private loadHDModePreference(): boolean {
     try {
       const savedHD = localStorage.getItem('stashgifs-useHDMode');
+      if (savedHD === null) {
+        return true;
+      }
       return savedHD === 'true';
     } catch {
-      return false;
+      return true;
     }
   }
 
@@ -2324,6 +2352,9 @@ export class FeedContainer {
       this.settingsContainer,
       this.settings,
       (newSettings) => {
+        const previousShowVerified = this.settings.showVerifiedCheckmarks;
+        const previousExcludedTags = this.normalizeExcludedTagNames(this.settings.excludedTagNames ?? []);
+        const previousOrientation = this.normalizeOrientationFilter(this.settings.orientationFilter ?? []);
         // Update settings by merging with current settings
         const updatedSettings = { ...this.settings, ...newSettings };
         this.settings = updatedSettings;
@@ -2331,9 +2362,13 @@ export class FeedContainer {
         this.saveSettingsToStorage(updatedSettings);
         this.applyThemeSettings(updatedSettings);
         const reelModeChanged = newSettings.reelMode !== undefined;
-        const previousExcludedTags = this.normalizeExcludedTagNames(this.settings.excludedTagNames ?? []);
         const nextExcludedTags = this.normalizeExcludedTagNames(updatedSettings.excludedTagNames ?? []);
+        const nextOrientation = this.normalizeOrientationFilter(updatedSettings.orientationFilter ?? []);
         const excludedTagsChanged = !this.areExcludedTagNamesEqual(previousExcludedTags, nextExcludedTags);
+        const showVerifiedChanged = newSettings.showVerifiedCheckmarks !== undefined
+          && updatedSettings.showVerifiedCheckmarks !== previousShowVerified;
+        const orientationFilterChanged = newSettings.orientationFilter !== undefined
+          && !this.areOrientationFiltersEqual(previousOrientation, nextOrientation);
         // Update card snapping if setting changed
         if (newSettings.snapToCards !== undefined || reelModeChanged) {
           this.setupCardSnapping();
@@ -2344,6 +2379,11 @@ export class FeedContainer {
         if (!reelModeChanged && newSettings.snapToCards !== undefined) {
           this.refreshAutoplayAfterLayout();
         }
+        if (showVerifiedChanged) {
+          for (const post of this.posts.values()) {
+            post.setShowVerifiedCheckmarks?.(updatedSettings.showVerifiedCheckmarks !== false);
+          }
+        }
         // Reload feed if images or short-form settings changed
         if (
           newSettings.includeImagesInFeed !== undefined ||
@@ -2353,14 +2393,14 @@ export class FeedContainer {
           newSettings.shortFormInNonHDMode !== undefined ||
           newSettings.shortFormMaxDuration !== undefined ||
           newSettings.shortFormOnly !== undefined ||
+          orientationFilterChanged ||
           reelModeChanged ||
           excludedTagsChanged
         ) {
-          this.loadVideos(this.currentFilters, false, undefined, true).catch(e => {
+          this.loadVideos(this.currentFilters, false, undefined, true).catch((e) => {
             console.error('Failed to reload feed after settings change', e);
           });
         }
-
       },
       () => {
         // On close, remove settings container and clear reference
@@ -3635,6 +3675,7 @@ export class FeedContainer {
         visibilityManager: this.visibilityManager,
         onPerformerChipClick: (performerId, performerName) => { void this.handlePerformerChipClick(performerId, performerName); },
         onTagChipClick: (tagId, tagName) => { void this.handleTagChipClick(tagId, tagName); },
+        showVerifiedCheckmarks: this.settings.showVerifiedCheckmarks !== false,
         onCancelRequests: () => this.cancelAllPendingRequests(),
         onMuteToggle: (isMuted: boolean) => this.setGlobalMuteState(isMuted),
         getGlobalMuteState: () => this.getGlobalMuteState(),
@@ -3778,6 +3819,7 @@ export class FeedContainer {
         visibilityManager: this.visibilityManager,
         onPerformerChipClick: (performerId, performerName) => { void this.handlePerformerChipClick(performerId, performerName); },
         onTagChipClick: (tagId, tagName) => { void this.handleTagChipClick(tagId, tagName); },
+        showVerifiedCheckmarks: this.settings.showVerifiedCheckmarks !== false,
         onLoadFullVideo: undefined,
         ratingSystemConfig: this.ratingSystemConfig,
         reelMode: this.settings.reelMode === true
@@ -4445,6 +4487,7 @@ export class FeedContainer {
       const currentFilters = filters || this.currentFilters || {};
       await this.updateExcludedTagIds();
       this.applyExcludedTagsToFilters(currentFilters);
+      this.applyOrientationFilterToFilters(currentFilters);
       const { limit, offset, page } = this.calculatePaginationParams(currentFilters, append);
 
       if (this.checkAbortAndCleanup(signal)) {
@@ -4814,8 +4857,8 @@ export class FeedContainer {
 
       const imageFiltersWithOrientation = {
         ...imageFilters,
-        ...(this.settings.orientationFilter && this.settings.orientationFilter.length > 0
-          ? { orientationFilter: this.settings.orientationFilter }
+        ...(filters.orientationFilter && filters.orientationFilter.length > 0
+          ? { orientationFilter: filters.orientationFilter }
           : {}),
         ...(filters.sortSeed ? { sortSeed: filters.sortSeed } : {}),
       };
@@ -5380,6 +5423,7 @@ export class FeedContainer {
         visibilityManager: this.visibilityManager,
         onPerformerChipClick: (performerId, performerName) => { void this.handlePerformerChipClick(performerId, performerName); },
         onTagChipClick: (tagId, tagName) => { void this.handleTagChipClick(tagId, tagName); },
+        showVerifiedCheckmarks: this.settings.showVerifiedCheckmarks !== false,
         useShuffleMode: this.shuffleMode > 0,
         onCancelRequests: () => this.cancelAllPendingRequests(),
         onMuteToggle: (isMuted: boolean) => this.setGlobalMuteState(isMuted),
@@ -7187,9 +7231,16 @@ export class FeedContainer {
   updateSettings(newSettings: Partial<FeedSettings>): void {
     const reelModeChanged = newSettings.reelMode !== undefined;
     const previousExcludedTags = this.normalizeExcludedTagNames(this.settings.excludedTagNames ?? []);
+    const previousShowVerified = this.settings.showVerifiedCheckmarks;
+    const previousOrientation = this.normalizeOrientationFilter(this.settings.orientationFilter ?? []);
     this.settings = { ...this.settings, ...newSettings };
     const nextExcludedTags = this.normalizeExcludedTagNames(this.settings.excludedTagNames ?? []);
+    const nextOrientation = this.normalizeOrientationFilter(this.settings.orientationFilter ?? []);
     const excludedTagsChanged = !this.areExcludedTagNamesEqual(previousExcludedTags, nextExcludedTags);
+    const showVerifiedChanged = newSettings.showVerifiedCheckmarks !== undefined
+      && this.settings.showVerifiedCheckmarks !== previousShowVerified;
+    const orientationFilterChanged = newSettings.orientationFilter !== undefined
+      && !this.areOrientationFiltersEqual(previousOrientation, nextOrientation);
     if (reelModeChanged || newSettings.snapToCards !== undefined) {
       this.setupCardSnapping();
     }
@@ -7203,9 +7254,21 @@ export class FeedContainer {
 
     this.refreshAutoplayAfterLayout();
 
+    if (showVerifiedChanged) {
+      for (const post of this.posts.values()) {
+        post.setShowVerifiedCheckmarks?.(this.settings.showVerifiedCheckmarks !== false);
+      }
+    }
+
     if (excludedTagsChanged) {
       this.loadVideos(this.currentFilters, false, undefined, true).catch((e) => {
         console.error('Failed to reload feed after excluded tag update', e);
+      });
+    }
+
+    if (orientationFilterChanged) {
+      this.loadVideos(this.currentFilters, false, undefined, true).catch((e) => {
+        console.error('Failed to reload feed after orientation filter update', e);
       });
     }
   }

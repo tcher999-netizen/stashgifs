@@ -54,6 +54,7 @@ export interface SceneMarkerFilterInput {
     value: number[];
     modifier: FilterModifier;
   };
+  scene_filter?: SceneFilterInput;
   [key: string]: unknown; // Allow additional filter properties
 }
 
@@ -62,6 +63,9 @@ export interface SceneMarkerFilterInput {
  */
 export interface SceneFilterInput {
   has_markers?: string; // 'true' | 'false'
+  orientation?: {
+    value: string | string[];
+  };
   tags?: {
     value: string[];
     modifier: FilterModifier;
@@ -114,6 +118,9 @@ export interface ImageFilterInput {
   path?: {
     value: string;
     modifier: 'MATCHES_REGEX' | 'NOT_MATCHES_REGEX' | 'EQUALS' | 'NOT_EQUALS' | 'INCLUDES' | 'EXCLUDES';
+  };
+  orientation?: {
+    value: string | string[];
   };
   performers?: {
     value: number[];
@@ -595,4 +602,3 @@ export interface TypedGraphQLClient {
     options: GraphQLMutationOptions<TVariables, TData>
   ): Promise<{ data?: TData; errors?: GraphQLError[] }>;
 }
-

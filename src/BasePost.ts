@@ -63,6 +63,7 @@ export abstract class BasePost {
   protected oCountButton?: HTMLElement;
   protected oCount: number = 0;
   protected isReelMode: boolean = false;
+  protected showVerifiedCheckmarks: boolean = true;
   // Performer overlay properties
   private performerOverlay?: HTMLElement;
   private performerOverlayTimeout?: number;
@@ -88,7 +89,8 @@ export abstract class BasePost {
     api?: StashAPI,
     visibilityManager?: VisibilityManager,
     onPerformerChipClick?: (performerId: number, performerName: string) => void | Promise<void>,
-    onTagChipClick?: (tagId: number, tagName: string) => void | Promise<void>
+    onTagChipClick?: (tagId: number, tagName: string) => void | Promise<void>,
+    showVerifiedCheckmarks?: boolean
   ) {
     this.container = container;
     this.favoritesManager = favoritesManager;
@@ -96,6 +98,7 @@ export abstract class BasePost {
     this.visibilityManager = visibilityManager;
     this.onPerformerChipClick = onPerformerChipClick;
     this.onTagChipClick = onTagChipClick;
+    this.showVerifiedCheckmarks = showVerifiedCheckmarks !== false;
     
     // Setup scroll listener to hide overlay when scrolling
     this.setupPerformerOverlayScrollListener();
@@ -398,6 +401,14 @@ export abstract class BasePost {
     }
   }
 
+  public setShowVerifiedCheckmarks(showVerified: boolean): void {
+    this.showVerifiedCheckmarks = showVerified;
+    const verifiedIcons = this.container.querySelectorAll<HTMLElement>('.performer-chip__verified');
+    for (const icon of verifiedIcons) {
+      icon.style.display = showVerified ? 'inline-flex' : 'none';
+    }
+  }
+
   protected buildFooterContainer(): {
     footer: HTMLElement;
     info: HTMLElement;
@@ -661,7 +672,7 @@ export abstract class BasePost {
     const checkmarkIcon = document.createElement('span');
     checkmarkIcon.className = 'performer-chip__verified';
     checkmarkIcon.innerHTML = VERIFIED_CHECKMARK_SVG;
-    checkmarkIcon.style.display = 'inline-flex';
+    checkmarkIcon.style.display = this.showVerifiedCheckmarks ? 'inline-flex' : 'none';
     checkmarkIcon.style.alignItems = 'center';
     checkmarkIcon.style.width = '18px';
     checkmarkIcon.style.height = '18px';

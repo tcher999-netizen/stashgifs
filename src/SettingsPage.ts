@@ -488,6 +488,25 @@ export class SettingsPage {
     themeSection.appendChild(secondaryRow.row);
     themeSection.appendChild(accentRow.row);
 
+    const verifiedCheckmarksContainer = document.createElement('div');
+    verifiedCheckmarksContainer.style.display = 'flex';
+    verifiedCheckmarksContainer.style.justifyContent = 'space-between';
+    verifiedCheckmarksContainer.style.alignItems = 'center';
+    verifiedCheckmarksContainer.style.marginBottom = '16px';
+
+    const verifiedCheckmarksLabel = document.createElement('span');
+    verifiedCheckmarksLabel.textContent = 'Show verified checkmarks';
+    verifiedCheckmarksLabel.style.color = THEME.colors.textSecondary;
+    verifiedCheckmarksLabel.style.fontSize = THEME.typography.sizeBody;
+    verifiedCheckmarksContainer.appendChild(verifiedCheckmarksLabel);
+
+    const { container: verifiedCheckmarksToggleContainer, input: verifiedCheckmarksToggle } = this.createToggleSwitch(
+      this.settings.showVerifiedCheckmarks !== false,
+      () => this.saveSettings()
+    );
+    verifiedCheckmarksContainer.appendChild(verifiedCheckmarksToggleContainer);
+    themeSection.appendChild(verifiedCheckmarksContainer);
+
     const updateThemeLabel = (input: HTMLInputElement, label: HTMLElement) => {
       label.textContent = input.value.toUpperCase();
     };
@@ -611,6 +630,7 @@ export class SettingsPage {
     (this as any).themePrimaryInput = primaryRow.input;
     (this as any).themeSecondaryInput = secondaryRow.input;
     (this as any).themeAccentInput = accentRow.input;
+    (this as any).showVerifiedCheckmarksToggle = verifiedCheckmarksToggle;
 
     themeContent.appendChild(themeSection);
 
@@ -648,6 +668,51 @@ export class SettingsPage {
     reelModeContainer.appendChild(reelModeToggleContainer);
 
     layoutSection.appendChild(reelModeContainer);
+
+    const orientationFilter = this.settings.orientationFilter ?? [];
+    const hasOrientationFilter = orientationFilter.length > 0;
+    const portraitEnabled = !hasOrientationFilter || orientationFilter.includes('portrait');
+    const landscapeEnabled = !hasOrientationFilter || orientationFilter.includes('landscape');
+
+    const portraitContainer = document.createElement('div');
+    portraitContainer.style.display = 'flex';
+    portraitContainer.style.justifyContent = 'space-between';
+    portraitContainer.style.alignItems = 'center';
+    portraitContainer.style.marginBottom = '16px';
+
+    const portraitLabel = document.createElement('span');
+    portraitLabel.textContent = 'Portrait';
+    portraitLabel.style.color = THEME.colors.textSecondary;
+    portraitLabel.style.fontSize = THEME.typography.sizeBody;
+    portraitContainer.appendChild(portraitLabel);
+
+    const { container: portraitToggleContainer, input: portraitToggle } = this.createToggleSwitch(
+      portraitEnabled,
+      () => this.saveSettings()
+    );
+    portraitContainer.appendChild(portraitToggleContainer);
+
+    layoutSection.appendChild(portraitContainer);
+
+    const landscapeContainer = document.createElement('div');
+    landscapeContainer.style.display = 'flex';
+    landscapeContainer.style.justifyContent = 'space-between';
+    landscapeContainer.style.alignItems = 'center';
+    landscapeContainer.style.marginBottom = '16px';
+
+    const landscapeLabel = document.createElement('span');
+    landscapeLabel.textContent = 'Landscape';
+    landscapeLabel.style.color = THEME.colors.textSecondary;
+    landscapeLabel.style.fontSize = THEME.typography.sizeBody;
+    landscapeContainer.appendChild(landscapeLabel);
+
+    const { container: landscapeToggleContainer, input: landscapeToggle } = this.createToggleSwitch(
+      landscapeEnabled,
+      () => this.saveSettings()
+    );
+    landscapeContainer.appendChild(landscapeToggleContainer);
+
+    layoutSection.appendChild(landscapeContainer);
 
     const excludedTagsContainer = document.createElement('div');
     excludedTagsContainer.style.marginBottom = '16px';
@@ -997,6 +1062,8 @@ export class SettingsPage {
     (this as any).shortFormIncludeToggle = shortFormIncludeToggle;
     (this as any).shortFormOnlyToggle = shortFormOnlyToggle;
     (this as any).reelModeToggle = reelModeToggle;
+    (this as any).portraitToggle = portraitToggle;
+    (this as any).landscapeToggle = landscapeToggle;
     (this as any).excludedTagsInput = excludedTagsInput;
 
     this.container.appendChild(modal);
@@ -1034,15 +1101,19 @@ export class SettingsPage {
     const shortFormIncludeToggle = (this as any).shortFormIncludeToggle as HTMLInputElement | undefined;
     const shortFormOnlyToggle = (this as any).shortFormOnlyToggle as HTMLInputElement | undefined;
     const reelModeToggle = (this as any).reelModeToggle as HTMLInputElement | undefined;
+    const portraitToggle = (this as any).portraitToggle as HTMLInputElement | undefined;
+    const landscapeToggle = (this as any).landscapeToggle as HTMLInputElement | undefined;
     const themeBackgroundInput = (this as any).themeBackgroundInput as HTMLInputElement | undefined;
     const themePrimaryInput = (this as any).themePrimaryInput as HTMLInputElement | undefined;
     const themeSecondaryInput = (this as any).themeSecondaryInput as HTMLInputElement | undefined;
     const themeAccentInput = (this as any).themeAccentInput as HTMLInputElement | undefined;
+    const showVerifiedCheckmarksToggle = (this as any).showVerifiedCheckmarksToggle as HTMLInputElement | undefined;
     const excludedTagsInput = (this as any).excludedTagsInput as HTMLInputElement | undefined;
 
     if (!fileTypesInput || !maxDurationInput || !includeImagesToggle || !imagesOnlyToggle || 
-        !shortFormIncludeToggle || !shortFormOnlyToggle || !reelModeToggle ||
-        !themeBackgroundInput || !themePrimaryInput || !themeSecondaryInput || !themeAccentInput || !excludedTagsInput) {
+        !shortFormIncludeToggle || !shortFormOnlyToggle || !reelModeToggle || !portraitToggle || !landscapeToggle ||
+        !themeBackgroundInput || !themePrimaryInput || !themeSecondaryInput || !themeAccentInput ||
+        !showVerifiedCheckmarksToggle || !excludedTagsInput) {
       return; // Settings not fully initialized yet
     }
 
@@ -1060,6 +1131,17 @@ export class SettingsPage {
       .map((name) => name.trim())
       .filter((name) => name.length > 0);
 
+    const selectedOrientations: Array<'portrait' | 'landscape'> = [];
+    if (portraitToggle.checked) {
+      selectedOrientations.push('portrait');
+    }
+    if (landscapeToggle.checked) {
+      selectedOrientations.push('landscape');
+    }
+    const orientationFilter = selectedOrientations.length === 0 || selectedOrientations.length === 2
+      ? undefined
+      : selectedOrientations;
+
     const newSettings: Partial<FeedSettings> = {
       includeImagesInFeed: includeImagesToggle.checked,
       enabledFileTypes: extensions.length > 0 ? extensions : ['.jpg', '.png', '.gif', '.mp4', '.m4v', '.webm'],
@@ -1070,10 +1152,12 @@ export class SettingsPage {
       shortFormOnly: shortFormOnlyToggle.checked,
       reelMode: reelModeToggle.checked,
       snapToCards: reelModeToggle.checked,
+      orientationFilter,
       themeBackground: themeBackgroundInput.value,
       themePrimary: themePrimaryInput.value,
       themeSecondary: themeSecondaryInput.value,
       themeAccent: themeAccentInput.value,
+      showVerifiedCheckmarks: showVerifiedCheckmarksToggle.checked,
       excludedTagNames,
     };
 
@@ -1092,4 +1176,3 @@ export class SettingsPage {
     this.container.style.display = 'none';
   }
 }
-
