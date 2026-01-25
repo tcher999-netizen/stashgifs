@@ -3324,7 +3324,7 @@ export class FeedContainer {
       this.ratingSystemConfig = { type: 'stars', starPrecision: 'full' }; // Default fallback
     }
     this.currentFilters = filters;
-    await this.loadVideos(filters);
+    await this.loadVideos(filters, false, undefined, true);
     
     // Defer suggestion preloading significantly to avoid competing with initial load
     // Wait 10 seconds on mobile, 5 seconds on desktop to ensure initial content is loaded first

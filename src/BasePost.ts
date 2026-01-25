@@ -344,7 +344,7 @@ export abstract class BasePost {
     const row = footer.querySelector<HTMLElement>('.video-post__row');
     const buttonGroup = footer.querySelector<HTMLElement>('.video-post__button-group');
 
-    const stackGap = isMobile ? '10px' : '8px';
+    const stackGap = '8px';
 
     if (info) {
       info.style.flexDirection = 'column';
@@ -363,15 +363,10 @@ export abstract class BasePost {
     if (buttonGroup) {
       buttonGroup.style.flexDirection = 'column';
       buttonGroup.style.alignItems = 'center';
-      buttonGroup.style.gap = '12px';
+      buttonGroup.style.gap = '8px';
 
-      const buttonSize = '44px';
       const buttons = Array.from(buttonGroup.querySelectorAll<HTMLElement>('button, a'));
       for (const button of buttons) {
-        button.style.width = buttonSize;
-        button.style.height = buttonSize;
-        button.style.minWidth = buttonSize;
-        button.style.minHeight = buttonSize;
         button.style.color = '#ffffff';
         button.style.textShadow = '0 2px 8px rgba(0, 0, 0, 0.65)';
         button.style.filter = 'drop-shadow(0 2px 6px rgba(0, 0, 0, 0.6))';
@@ -429,7 +424,7 @@ export abstract class BasePost {
     row.style.display = 'flex';
     row.style.alignItems = 'center';
     row.style.justifyContent = 'flex-end';
-    row.style.gap = '12px';
+    row.style.gap = '8px';
     row.style.position = 'relative';
     row.style.zIndex = '10';
 
@@ -437,7 +432,7 @@ export abstract class BasePost {
     buttonGroup.className = 'video-post__button-group';
     buttonGroup.style.display = 'flex';
     buttonGroup.style.alignItems = 'center';
-    buttonGroup.style.gap = '12px';
+    buttonGroup.style.gap = '8px';
     buttonGroup.style.position = 'relative';
     buttonGroup.style.zIndex = '10';
 
@@ -1966,10 +1961,6 @@ export abstract class BasePost {
     this.applyIconButtonStyles(iconBtn);
     iconBtn.style.color = THEME.colors.accentPrimary;
     iconBtn.style.padding = '0';
-    iconBtn.style.width = '44px';
-    iconBtn.style.height = '44px';
-    iconBtn.style.minWidth = '44px';
-    iconBtn.style.minHeight = '44px';
     iconBtn.innerHTML = EXTERNAL_LINK_SVG;
 
     this.addHoverEffect(iconBtn);
@@ -1989,10 +1980,6 @@ export abstract class BasePost {
     this.applyIconButtonStyles(displayButton);
     displayButton.style.padding = '0';
     displayButton.style.gap = '0';
-    displayButton.style.width = '44px';
-    displayButton.style.minWidth = '44px';
-    displayButton.style.height = '44px';
-    displayButton.style.minHeight = '44px';
 
     displayButton.addEventListener('click', (event) => {
       event.preventDefault();
@@ -2599,10 +2586,6 @@ export abstract class BasePost {
     heartBtn.title = 'Add to favorites';
     this.applyIconButtonStyles(heartBtn);
     heartBtn.style.padding = '0';
-    heartBtn.style.width = '56px';
-    heartBtn.style.height = '56px';
-    heartBtn.style.minWidth = '56px';
-    heartBtn.style.minHeight = '56px';
     heartBtn.style.flexShrink = '0';
 
     this.updateHeartButton(heartBtn);
@@ -2675,14 +2658,9 @@ export abstract class BasePost {
     oCountBtn.setAttribute('aria-label', 'Increment o count');
     oCountBtn.title = 'Increment o-count';
     this.applyIconButtonStyles(oCountBtn);
-    oCountBtn.style.padding = '5px 7px';
-    oCountBtn.style.gap = '3px';
+    oCountBtn.style.padding = '0';
     oCountBtn.style.flexShrink = '1';
-    oCountBtn.style.minHeight = '44px';
-    oCountBtn.style.height = 'auto';
     oCountBtn.style.fontSize = THEME.typography.sizeBody;
-    oCountBtn.style.width = 'auto';
-    oCountBtn.style.minWidth = '44px';
     
     this.oCountButton = oCountBtn;
     this.updateOCountButton();

@@ -672,11 +672,6 @@ export class VideoPost extends BasePost {
     this.applyIconButtonStyles(iconBtn);
     iconBtn.style.color = THEME.colors.accentPrimary;
     iconBtn.style.padding = '0';
-    // Keep 44x44px for touch target
-    iconBtn.style.width = '44px';
-    iconBtn.style.height = '44px';
-    iconBtn.style.minWidth = '44px';
-    iconBtn.style.minHeight = '44px';
     iconBtn.innerHTML = EXTERNAL_LINK_SVG;
     
     this.addHoverEffect(iconBtn);
