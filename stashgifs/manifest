@@ -3,9 +3,9 @@ name: StashGifs
 metadata:
   description: Social Media style browsing experience
 version: 5.31.0
-date: "2026-01-25 20:47:27"
+date: "2026-02-01 14:20:31"
 requires: []
-source_repository: https://raw.githubusercontent.com/evolite/stashgifs/refs/heads/master/index.yml
+source_repository: https://raw.githubusercontent.com/tcher999-netizen/stashgifs/refs/heads/master/index.yml
 files:
 - stashgifs.yml
 - app\favicon.ico
