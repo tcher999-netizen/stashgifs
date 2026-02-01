@@ -1,7 +1,7 @@
 name: StashGifs
 description: Social Media style browsing experience
 url: https://github.com/tcher999-netizen/stashgifs
-version: 5.31.0
+version: 5.32.0
 ui:
   assets:
     /: .

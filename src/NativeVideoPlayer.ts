@@ -77,6 +77,16 @@ export class NativeVideoPlayer {
   private scrollHandler?: () => void;
   private playerWrapper?: HTMLElement; // Store reference to player wrapper for hover handlers
   private readonly shouldShowLoadingIndicator: boolean;
+  // Playback speed control
+  private speedButton!: HTMLElement;
+  private currentSpeedIndex: number = 2; // Default 1x
+  private static readonly SPEEDS: number[] = [0.5, 0.75, 1, 1.25, 1.5, 2];
+  // Volume slider
+  private volumeContainer?: HTMLElement;
+  private volumeSlider?: HTMLInputElement;
+  private volumeHideTimeout?: ReturnType<typeof setTimeout>;
+  // Buffer indicator
+  private bufferBar?: HTMLElement;
 
   constructor(container: HTMLElement, videoUrl: string, options?: {
     autoplay?: boolean;
@@ -117,6 +127,11 @@ export class NativeVideoPlayer {
     };
 
     this.readyPromise = new Promise<void>((resolve) => { this.readyResolver = resolve; });
+
+    // Load saved playback speed
+    this.loadSavedSpeed();
+    // Load saved volume
+    this.loadSavedVolume();
 
     // Store original values for reload
     this.originalVideoUrl = videoUrl;
@@ -1046,6 +1061,41 @@ export class NativeVideoPlayer {
     this.container.appendChild(playerWrapper);
   }
 
+  /**
+   * Load saved playback speed from localStorage
+   */
+  private loadSavedSpeed(): void {
+    try {
+      const saved = localStorage.getItem('stashgifs-playback-speed');
+      if (saved) {
+        const speed = parseFloat(saved);
+        const idx = NativeVideoPlayer.SPEEDS.indexOf(speed);
+        if (idx !== -1) {
+          this.currentSpeedIndex = idx;
+        }
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  /**
+   * Load saved volume from localStorage
+   */
+  private loadSavedVolume(): void {
+    try {
+      const saved = localStorage.getItem('stashgifs-volume');
+      if (saved) {
+        const vol = parseFloat(saved);
+        if (Number.isFinite(vol) && vol >= 0 && vol <= 1) {
+          this.state.volume = vol;
+        }
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
   private createControls(): void {
     this.controlsContainer = document.createElement('div');
     this.controlsContainer.className = 'video-player__controls';
@@ -1061,16 +1111,23 @@ export class NativeVideoPlayer {
     this.playButton.style.display = 'none'; // Hide play button
     this.controlsContainer.appendChild(this.playButton);
 
-    // Progress bar
+    // Progress bar with buffer indicator
     const progressContainer = document.createElement('div');
     progressContainer.className = 'video-player__progress-container';
+
+    // Buffer bar (behind progress bar)
+    this.bufferBar = document.createElement('div');
+    this.bufferBar.className = 'video-player__buffer-bar';
+    progressContainer.appendChild(this.bufferBar);
+
     this.progressBar = document.createElement('input');
     this.progressBar.type = 'range';
     this.progressBar.min = '0';
     this.progressBar.max = '100';
     this.progressBar.value = '0';
     this.progressBar.className = 'video-player__progress';
-    this.progressBar.setAttribute('aria-label', 'Video progress');
+    this.progressBar.setAttribute('aria-label', 'Seek');
+    this.progressBar.setAttribute('aria-valuemin', '0');
     this.progressBar.style.accentColor = THEME.colors.accentPrimary;
     this.progressBar.style.height = '4px';
     this.progressBar.style.borderRadius = THEME.radius.button;
@@ -1085,6 +1142,21 @@ export class NativeVideoPlayer {
     progressContainer.appendChild(this.timeDisplay);
     this.controlsContainer.appendChild(progressContainer);
 
+    // Speed button
+    this.speedButton = document.createElement('button');
+    this.speedButton.className = 'video-player__speed-btn';
+    this.speedButton.setAttribute('aria-label', 'Playback speed');
+    this.updateSpeedButtonText();
+    this.speedButton.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.cycleSpeed();
+    });
+    this.controlsContainer.appendChild(this.speedButton);
+
+    // Volume container (wraps mute button + slider)
+    this.volumeContainer = document.createElement('div');
+    this.volumeContainer.className = 'video-player__volume-container';
+
     // Mute button (hidden - using overlay button in VideoPost instead)
     this.muteButton = document.createElement('button');
     this.muteButton.className = 'video-player__mute-button';
@@ -1092,12 +1164,55 @@ export class NativeVideoPlayer {
     this.updateMuteButton();
     // Hide mute button - overlay button in VideoPost controls global mute state
     this.muteButton.style.display = 'none';
-    this.controlsContainer.appendChild(this.muteButton);
+    this.volumeContainer.appendChild(this.muteButton);
+
+    // Volume slider
+    this.volumeSlider = document.createElement('input');
+    this.volumeSlider.type = 'range';
+    this.volumeSlider.min = '0';
+    this.volumeSlider.max = '1';
+    this.volumeSlider.step = '0.05';
+    this.volumeSlider.value = String(this.state.volume);
+    this.volumeSlider.className = 'video-player__volume-slider';
+    this.volumeSlider.setAttribute('aria-label', 'Volume');
+    this.volumeSlider.style.display = 'none'; // Hidden by default
+    this.volumeSlider.addEventListener('input', (e) => {
+      e.stopPropagation();
+      const val = parseFloat((e.target as HTMLInputElement).value);
+      this.setVolume(val);
+      try {
+        localStorage.setItem('stashgifs-volume', String(val));
+      } catch {
+        // Ignore storage errors
+      }
+    });
+    this.volumeContainer.appendChild(this.volumeSlider);
+
+    // Show/hide volume slider on hover
+    this.volumeContainer.addEventListener('mouseenter', () => {
+      if (this.volumeHideTimeout) {
+        clearTimeout(this.volumeHideTimeout);
+        this.volumeHideTimeout = undefined;
+      }
+      if (this.volumeSlider) {
+        this.volumeSlider.style.display = 'block';
+      }
+    });
+    this.volumeContainer.addEventListener('mouseleave', () => {
+      this.volumeHideTimeout = setTimeout(() => {
+        if (this.volumeSlider) {
+          this.volumeSlider.style.display = 'none';
+        }
+        this.volumeHideTimeout = undefined;
+      }, 300);
+    });
+
+    this.controlsContainer.appendChild(this.volumeContainer);
 
     // Fullscreen button
     this.fullscreenButton = document.createElement('button');
     this.fullscreenButton.className = 'video-player__fullscreen-button';
-    this.fullscreenButton.setAttribute('aria-label', 'Fullscreen');
+    this.fullscreenButton.setAttribute('aria-label', 'Toggle fullscreen');
     this.fullscreenButton.innerHTML = FULLSCREEN_SVG;
     this.controlsContainer.appendChild(this.fullscreenButton);
 
@@ -1110,7 +1225,17 @@ export class NativeVideoPlayer {
       if (!this.isVideoElementValid()) return;
       this.state.duration = this.videoElement.duration;
       this.progressBar.max = this.videoElement.duration.toString();
+      this.progressBar.setAttribute('aria-valuemax', this.videoElement.duration.toString());
       this.updateTimeDisplay();
+      // Apply saved playback speed
+      const savedSpeed = NativeVideoPlayer.SPEEDS[this.currentSpeedIndex];
+      if (savedSpeed !== 1) {
+        this.videoElement.playbackRate = savedSpeed;
+      }
+      // Apply saved volume
+      if (this.state.volume !== 1) {
+        this.videoElement.volume = this.state.volume;
+      }
       this.notifyStateChange();
     });
 
@@ -1118,6 +1243,7 @@ export class NativeVideoPlayer {
     this.progressHandler = () => {
       if (!this.isVideoElementValid()) return;
       this.lastProgressTime = Date.now();
+      this.updateBufferBar();
     };
     this.videoElement.addEventListener('progress', this.progressHandler);
 
@@ -1298,6 +1424,9 @@ export class NativeVideoPlayer {
       this.state.volume = this.videoElement.volume;
       this.state.isMuted = this.videoElement.muted;
       this.updateMuteButton();
+      if (this.volumeSlider) {
+        this.volumeSlider.value = String(this.videoElement.volume);
+      }
       this.notifyStateChange();
     });
 
@@ -1619,6 +1748,57 @@ export class NativeVideoPlayer {
       this.muteButton.innerHTML = VOLUME_UNMUTED_SVG;
       this.muteButton.setAttribute('aria-label', 'Mute');
     }
+  }
+
+  /**
+   * Cycle through playback speeds
+   */
+  private cycleSpeed(): void {
+    this.currentSpeedIndex = (this.currentSpeedIndex + 1) % NativeVideoPlayer.SPEEDS.length;
+    const speed = NativeVideoPlayer.SPEEDS[this.currentSpeedIndex];
+    if (this.isVideoElementValid()) {
+      this.videoElement.playbackRate = speed;
+    }
+    this.updateSpeedButtonText();
+    try {
+      localStorage.setItem('stashgifs-playback-speed', String(speed));
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  /**
+   * Update speed button display text
+   */
+  private updateSpeedButtonText(): void {
+    const speed = NativeVideoPlayer.SPEEDS[this.currentSpeedIndex];
+    this.speedButton.textContent = speed === 1 ? '1x' : `${speed}x`;
+  }
+
+  /**
+   * Update the buffer bar width based on video buffered ranges
+   */
+  private updateBufferBar(): void {
+    if (!this.bufferBar || !this.isVideoElementValid()) return;
+    const video = this.videoElement;
+    if (video.duration <= 0 || !Number.isFinite(video.duration)) {
+      this.bufferBar.style.width = '0%';
+      return;
+    }
+    // Find the buffered range that contains the current time
+    let bufferedEnd = 0;
+    for (let i = 0; i < video.buffered.length; i++) {
+      if (video.buffered.start(i) <= video.currentTime && video.buffered.end(i) >= video.currentTime) {
+        bufferedEnd = video.buffered.end(i);
+        break;
+      }
+      // Also use the furthest buffered range as fallback
+      if (video.buffered.end(i) > bufferedEnd) {
+        bufferedEnd = video.buffered.end(i);
+      }
+    }
+    const percent = (bufferedEnd / video.duration) * 100;
+    this.bufferBar.style.width = `${Math.min(100, percent)}%`;
   }
 
   private updateTimeDisplay(): void {
@@ -2732,8 +2912,16 @@ export class NativeVideoPlayer {
     this.progressBar = null!;
     this.timeDisplay = null!;
     this.fullscreenButton = null!;
+    this.speedButton = null!;
     this.loadingIndicator = undefined;
     this.playerWrapper = undefined;
+    this.volumeContainer = undefined;
+    this.volumeSlider = undefined;
+    this.bufferBar = undefined;
+    if (this.volumeHideTimeout) {
+      clearTimeout(this.volumeHideTimeout);
+      this.volumeHideTimeout = undefined;
+    }
     this.onStateChange = undefined;
     this.externalStateListener = undefined;
     this.readyResolver = undefined;

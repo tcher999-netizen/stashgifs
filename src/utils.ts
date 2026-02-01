@@ -531,6 +531,13 @@ export function hasFullscreenSupport(element: Element): boolean {
 }
 
 /**
+ * Check if user prefers reduced motion
+ */
+export function prefersReducedMotion(): boolean {
+  return globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false;
+}
+
+/**
  * Cached mobile device detection result
  */
 let cachedIsMobile: boolean | null = null;

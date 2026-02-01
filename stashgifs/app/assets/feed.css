@@ -1476,3 +1476,206 @@
 [data-reel-mode="true"] .video-post__footer {
   z-index: 6;
 }
+
+/* Double-tap heart animation */
+.double-tap-heart {
+  position: fixed;
+  transform: translate(-50%, -50%) scale(0.5);
+  pointer-events: none;
+  z-index: 9999;
+  animation: heart-pop 600ms ease-out forwards;
+}
+.double-tap-heart svg {
+  width: 80px;
+  height: 80px;
+  fill: #ff4757;
+  filter: drop-shadow(0 2px 8px rgba(0,0,0,0.3));
+}
+
+@keyframes heart-pop {
+  0% { transform: translate(-50%, -50%) scale(0.5); opacity: 1; }
+  50% { transform: translate(-50%, -50%) scale(1.2); opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(1.4); opacity: 0; }
+}
+
+/* Pull to refresh */
+.pull-to-refresh-indicator {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 16px;
+  color: #8A99A6;
+  font-size: 14px;
+  transition: opacity 0.2s;
+}
+.pull-to-refresh-indicator .spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #8A99A6;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: ptr-spin 0.8s linear infinite;
+}
+
+@keyframes ptr-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ===== Speed Button ===== */
+.video-player__speed-btn {
+  background: transparent;
+  border: none;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  padding: var(--spacing-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  transition: background 0.2s cubic-bezier(0.2, 0, 0, 1);
+  min-width: 36px;
+  min-height: 44px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  white-space: nowrap;
+  letter-spacing: -0.02em;
+}
+
+.video-player__speed-btn:hover {
+  background: var(--opacity-08);
+}
+
+/* ===== Volume Container & Slider ===== */
+.video-player__volume-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.video-player__volume-slider {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%) rotate(-90deg);
+  transform-origin: center center;
+  width: 80px;
+  height: 4px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--color-separator);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  margin-bottom: 20px;
+}
+
+.video-player__volume-slider::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.video-player__volume-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+}
+
+.video-player__volume-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  background: var(--color-separator);
+  border-radius: 2px;
+}
+
+.video-player__volume-slider::-moz-range-track {
+  height: 4px;
+  background: var(--color-separator);
+  border-radius: 2px;
+}
+
+/* ===== Buffer Bar ===== */
+.video-player__progress-container {
+  position: relative;
+}
+
+.video-player__buffer-bar {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  height: 4px;
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  width: 0%;
+  pointer-events: none;
+  z-index: 0;
+  transition: width 0.3s ease;
+}
+
+.video-player__progress {
+  position: relative;
+  z-index: 1;
+}
+
+/* ===== Sort Dropdown ===== */
+.sort-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  background: var(--color-bg, #1a1a2e);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  padding: 4px;
+  z-index: 100;
+  min-width: 140px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+.sort-dropdown__item {
+  padding: 8px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #ccc;
+  font-size: 13px;
+  transition: background 0.15s;
+}
+.sort-dropdown__item:hover {
+  background: rgba(255,255,255,0.1);
+}
+.sort-dropdown__item--active {
+  color: var(--color-accent, #e94560);
+  font-weight: 600;
+}
+
+/* ===== Reduced Motion ===== */
+@media (prefers-reduced-motion: reduce) {
+  .double-tap-heart,
+  .pull-to-refresh-indicator .spinner {
+    animation: none !important;
+  }
+
+  * {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ===== Mobile overrides ===== */
+@media (max-width: 768px) {
+  .video-player__speed-btn {
+    min-width: 32px;
+    min-height: 38px;
+    font-size: 11px;
+    padding: 4px;
+  }
+
+  .video-player__volume-slider {
+    width: 60px;
+  }
+}

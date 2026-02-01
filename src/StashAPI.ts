@@ -718,11 +718,13 @@ export class StashAPI {
     limit: number
   ): FindFilterInput {
     const sortSeed = filters?.sortSeed || generateRandomSortSeed();
-    
+    const isRandomSort = sortSeed.startsWith('random_');
+
     const baseFilter: FindFilterInput = {
       per_page: limit,
       page: page,
       sort: sortSeed,
+      ...(isRandomSort ? {} : { direction: 'DESC' as const }),
     };
     
     const merged = this.mergeSavedFilterAndQuery(baseFilter, filters, savedFilterCriteria);

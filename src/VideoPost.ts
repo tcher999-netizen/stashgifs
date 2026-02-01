@@ -13,17 +13,10 @@ import { posterPreloader } from './PosterPreloader.js';
 import { HQ_SVG_OUTLINE, HQ_SVG_FILLED, EXTERNAL_LINK_SVG, MARKER_SVG, STAR_SVG, STAR_SVG_OUTLINE, VOLUME_MUTED_SVG, VOLUME_UNMUTED_SVG } from './icons.js';
 import { BasePost } from './BasePost.js';
 import { setupTouchHandlers, preventClickAfterTouch } from './utils/touchHandlers.js';
+import { FAVORITE_TAG_NAME, RATING_MAX_STARS, RATING_MIN_STARS, OCOUNT_DIGIT_WIDTH_PX, RESIZE_THROTTLE_MS } from './constants.js';
 
-// Constants for magic numbers and strings
-const FAVORITE_TAG_NAME = 'StashGifs Favorite';
 const MARKER_TAG_NAME = 'StashGifs Marker';
-const RATING_MAX_STARS = 10;
-const RATING_MIN_STARS = 0;
-const RATING_DIALOG_MAX_WIDTH = 900;
-const RATING_DIALOG_MIN_WIDTH = 160;
-const OCOUNT_DIGIT_WIDTH_PX = 8; // Approximate pixels per digit for 14px font
 const OCOUNT_MIN_WIDTH_PX = 14;
-const RESIZE_THROTTLE_MS = 100;
 
 interface VideoPostOptions {
   onMuteToggle?: (isMuted: boolean) => void; // Callback to set global mute state
@@ -215,6 +208,9 @@ export class VideoPost extends BasePost {
     });
     this.playerContainer = playerContainer;
     this.footer = footer;
+
+    // Setup double-tap to favorite on mobile
+    this.setupDoubleTapFavorite(playerContainer);
 
     if (this.isReelMode) {
       this.applyReelModeLayout({ header, playerContainer, footer });
@@ -3546,13 +3542,7 @@ export class VideoPost extends BasePost {
       this.detachRatingGlobalListeners();
     }
 
-    // Remove all hover effect listeners
-    for (const [button] of this.hoverHandlers) {
-      this.removeHoverEffect(button);
-    }
-    this.hoverHandlers.clear();
-
-    // Remove container from DOM
-    this.container.remove();
+    // Clean up base class resources (scroll listener, overlays, hover handlers, DOM removal)
+    super.destroy();
   }
 }

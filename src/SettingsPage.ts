@@ -132,6 +132,8 @@ export class SettingsPage {
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.checked = checked;
+    input.setAttribute('role', 'switch');
+    input.setAttribute('aria-checked', String(checked));
     input.style.opacity = '0';
     input.style.width = '0';
     input.style.height = '0';
@@ -177,6 +179,7 @@ export class SettingsPage {
     });
 
     input.addEventListener('change', () => {
+      input.setAttribute('aria-checked', String(input.checked));
       updateVisualState();
       if (onChange) {
         onChange(input.checked);
@@ -259,6 +262,7 @@ export class SettingsPage {
     modal.appendChild(header);
 
     const tabBar = document.createElement('div');
+    tabBar.setAttribute('role', 'tablist');
     tabBar.style.display = 'flex';
     tabBar.style.gap = '8px';
     tabBar.style.marginBottom = '16px';
@@ -267,6 +271,8 @@ export class SettingsPage {
     const createTabButton = (label: string): HTMLButtonElement => {
       const button = document.createElement('button');
       button.type = 'button';
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-selected', 'false');
       button.textContent = label;
       button.style.padding = '0 14px';
       button.style.height = '34px';
@@ -306,10 +312,12 @@ export class SettingsPage {
       generalContent.style.display = isGeneral ? 'block' : 'none';
       themeContent.style.display = isGeneral ? 'none' : 'block';
 
+      generalTabButton.setAttribute('aria-selected', String(isGeneral));
       generalTabButton.style.background = isGeneral ? THEME.colors.surfaceHover : THEME.colors.backgroundSecondary;
       generalTabButton.style.color = isGeneral ? THEME.colors.textPrimary : THEME.colors.textSecondary;
       generalTabButton.style.borderColor = isGeneral ? THEME.colors.accentPrimary : THEME.colors.border;
 
+      themeTabButton.setAttribute('aria-selected', String(!isGeneral));
       themeTabButton.style.background = isGeneral ? THEME.colors.backgroundSecondary : THEME.colors.surfaceHover;
       themeTabButton.style.color = isGeneral ? THEME.colors.textSecondary : THEME.colors.textPrimary;
       themeTabButton.style.borderColor = isGeneral ? THEME.colors.border : THEME.colors.accentPrimary;

@@ -6,7 +6,7 @@
 import { FavoritesManager } from './FavoritesManager.js';
 import { StashAPI } from './StashAPI.js';
 import { VisibilityManager } from './VisibilityManager.js';
-import { toAbsoluteUrl, showToast, isMobileDevice, THEME } from './utils.js';
+import { toAbsoluteUrl, showToast, isMobileDevice, prefersReducedMotion, THEME } from './utils.js';
 import { VERIFIED_CHECKMARK_SVG, ADD_TAG_SVG, HEART_SVG_OUTLINE, HEART_SVG_FILLED, OCOUNT_SVG, EXTERNAL_LINK_SVG, STAR_SVG, STAR_SVG_OUTLINE } from './icons.js';
 import { setupTouchHandlers, preventClickAfterTouch } from './utils/touchHandlers.js';
 import { PerformerExtended } from './graphql/types.js';
@@ -81,6 +81,10 @@ export abstract class BasePost {
   private tagOverlayAbortController?: AbortController;
   private hadTagOverlayBefore: boolean = false; // Track if tag overlay was showing before (for delay logic)
   private tagOverlayClickTime?: number; // Track when chip was clicked to prevent immediate re-show
+  // Double-tap to favorite state
+  private lastTapTime: number = 0;
+  private lastTapX: number = 0;
+  private lastTapY: number = 0;
 
 
   constructor(
@@ -525,10 +529,12 @@ export abstract class BasePost {
 
     const mouseenter = () => {
       if (!(button instanceof HTMLButtonElement) || !button.disabled) {
-        const icon = getIconElement();
-        if (icon) {
-          icon.style.transform = 'scale(1.1)';
-          icon.style.transition = 'transform 0.2s cubic-bezier(0.2, 0, 0, 1)';
+        if (!prefersReducedMotion()) {
+          const icon = getIconElement();
+          if (icon) {
+            icon.style.transform = 'scale(1.1)';
+            icon.style.transition = 'transform 0.2s cubic-bezier(0.2, 0, 0, 1)';
+          }
         }
       }
     };
@@ -2660,6 +2666,54 @@ export abstract class BasePost {
   }
 
   /**
+   * Setup double-tap to favorite on a player/content element (mobile only)
+   */
+  protected setupDoubleTapFavorite(element: HTMLElement): void {
+    if (!isMobileDevice()) return;
+
+    element.addEventListener('touchend', (e: TouchEvent) => {
+      const now = Date.now();
+      const touch = e.changedTouches[0];
+      if (!touch) return;
+      const x = touch.clientX;
+      const y = touch.clientY;
+
+      const timeDelta = now - this.lastTapTime;
+      const distDelta = Math.sqrt((x - this.lastTapX) ** 2 + (y - this.lastTapY) ** 2);
+
+      if (timeDelta < 300 && distDelta < 50) {
+        e.preventDefault();
+        this.handleDoubleTapFavorite(x, y);
+        this.lastTapTime = 0; // Reset to prevent triple-tap
+      } else {
+        this.lastTapTime = now;
+        this.lastTapX = x;
+        this.lastTapY = y;
+      }
+    }, { passive: false });
+  }
+
+  private handleDoubleTapFavorite(x: number, y: number): void {
+    // Toggle favorite (reuse existing heart button logic)
+    if (this.heartButton) {
+      (this.heartButton as HTMLButtonElement).click();
+    }
+    // Show heart animation
+    this.showHeartAnimation(x, y);
+  }
+
+  private showHeartAnimation(x: number, y: number): void {
+    const heart = document.createElement('div');
+    heart.className = 'double-tap-heart';
+    heart.innerHTML = HEART_SVG_FILLED;
+    heart.style.left = `${x}px`;
+    heart.style.top = `${y}px`;
+    document.body.appendChild(heart);
+
+    heart.addEventListener('animationend', () => heart.remove());
+  }
+
+  /**
    * Create O-count button - shared implementation
    */
   protected createOCountButton(): HTMLElement {
@@ -2718,10 +2772,69 @@ export abstract class BasePost {
   protected async checkFavoriteStatus(): Promise<void> {
     const tags = this.getFavoriteTagSource();
     this.isFavorite = tags?.some((tag) => tag.name === 'StashGifs Favorite') ?? false;
-    
+
     // Update heart button if it exists
     if (this.heartButton) {
       this.updateHeartButton(this.heartButton);
     }
+  }
+
+  /**
+   * Clean up all base class resources. Subclasses should call super.destroy()
+   * after their own cleanup.
+   */
+  destroy(): void {
+    // Remove global scroll listener (leaks one per post currently)
+    if (this.performerOverlayScrollHandler) {
+      globalThis.removeEventListener('scroll', this.performerOverlayScrollHandler);
+      this.performerOverlayScrollHandler = undefined;
+    }
+
+    // Abort any pending overlay fetches
+    if (this.performerOverlayAbortController) {
+      this.performerOverlayAbortController.abort();
+      this.performerOverlayAbortController = undefined;
+    }
+    if (this.tagOverlayAbortController) {
+      this.tagOverlayAbortController.abort();
+      this.tagOverlayAbortController = undefined;
+    }
+
+    // Clear overlay timeouts
+    if (this.performerOverlayTimeout) {
+      clearTimeout(this.performerOverlayTimeout);
+      this.performerOverlayTimeout = undefined;
+    }
+    if (this.performerOverlayHideTimeout) {
+      clearTimeout(this.performerOverlayHideTimeout);
+      this.performerOverlayHideTimeout = undefined;
+    }
+    if (this.tagOverlayTimeout) {
+      clearTimeout(this.tagOverlayTimeout);
+      this.tagOverlayTimeout = undefined;
+    }
+    if (this.tagOverlayHideTimeout) {
+      clearTimeout(this.tagOverlayHideTimeout);
+      this.tagOverlayHideTimeout = undefined;
+    }
+
+    // Remove overlay elements
+    if (this.performerOverlay) {
+      this.performerOverlay.remove();
+      this.performerOverlay = undefined;
+    }
+    if (this.tagOverlay) {
+      this.tagOverlay.remove();
+      this.tagOverlay = undefined;
+    }
+
+    // Clean up hover handlers
+    for (const [button] of this.hoverHandlers) {
+      this.removeHoverEffect(button);
+    }
+    this.hoverHandlers.clear();
+
+    // Remove container from DOM
+    this.container?.remove();
   }
 }

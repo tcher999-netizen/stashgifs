@@ -5,7 +5,7 @@
 
 import { NativeVideoPlayer } from './NativeVideoPlayer.js';
 import { AudioManager, AudioPriority } from './AudioManager.js';
-import { isMobileDevice } from './utils.js';
+import { isMobileDevice, prefersReducedMotion } from './utils.js';
 
 interface HoverHandlers {
   handleEnter: () => void;
@@ -923,6 +923,12 @@ export class VisibilityManager {
       return;
     }
 
+    // Respect prefers-reduced-motion: skip autoplay unless user explicitly interacted
+    if (prefersReducedMotion() && origin !== 'register') {
+      this.debugLog('play-skipped-reduced-motion', { postId, origin });
+      return;
+    }
+
     const player = entry.player;
     const isMobile = isMobileDevice();
 
@@ -1226,6 +1232,13 @@ export class VisibilityManager {
 
   setLogger(logger?: (event: string, payload?: Record<string, unknown>) => void): void {
     this.logger = logger;
+  }
+
+  /**
+   * Get the post ID of the most visible (most centered) post in the viewport
+   */
+  getMostVisiblePostId(): string | undefined {
+    return this.getVideoThatShouldPlay();
   }
 
   /**

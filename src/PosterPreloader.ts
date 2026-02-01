@@ -9,7 +9,7 @@ import { toAbsoluteUrl } from './utils.js';
 
 class PosterPreloader {
   private readonly cache: Map<string, string> = new Map();
-  private readonly inflight: Set<string> = new Set();
+  private readonly inflight: Map<string, HTMLImageElement> = new Map();
 
   /**
    * Build the marker screenshot URL using scene + marker IDs.
@@ -44,9 +44,9 @@ class PosterPreloader {
       if (this.cache.has(idStr) || this.inflight.has(idStr)) continue;
       const url = this.buildMarkerScreenshotUrl(marker);
       if (!url) continue;
-      this.inflight.add(idStr);
       // Use Image to warm cache; store on load
       const img = new Image();
+      this.inflight.set(idStr, img);
       img.onload = () => {
         this.cache.set(idStr, url);
         this.inflight.delete(idStr);
@@ -57,6 +57,19 @@ class PosterPreloader {
       };
       img.src = url;
     }
+  }
+
+  /**
+   * Cancel all in-flight prefetch requests.
+   * Called when filters change or posts are cleared to avoid stale fetches.
+   */
+  cancelInflight(): void {
+    for (const [, img] of this.inflight) {
+      img.src = '';
+      img.onload = null;
+      img.onerror = null;
+    }
+    this.inflight.clear();
   }
 
   /**

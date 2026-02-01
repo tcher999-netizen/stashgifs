@@ -14,10 +14,11 @@ import { VisibilityManager } from './VisibilityManager.js';
 import { FavoritesManager } from './FavoritesManager.js';
 import { SettingsPage } from './SettingsPage.js';
 import { AudioManager, AudioPriority } from './AudioManager.js';
+import { KeyboardManager } from './KeyboardManager.js';
 import { debounce, isValidMediaUrl, detectDeviceCapabilities, DeviceCapabilities, isStandaloneNavigator, isMobileDevice, getNetworkInfo, isSlowNetwork, isCellularConnection, detectVideoFromVisualFiles, isMp4File, getImageUrlForDisplay, THEME, THEME_DEFAULTS } from './utils.js';
 import { posterPreloader } from './PosterPreloader.js';
 import { Image as GraphQLImage } from './graphql/types.js';
-import { HQ_SVG_OUTLINE, HQ_SVG_FILLED, RANDOM_SVG, SETTINGS_SVG, SHUFFLE_CHECK_SVG, STASHGIFS_LOGO_SVG } from './icons.js';
+import { HQ_SVG_OUTLINE, HQ_SVG_FILLED, RANDOM_SVG, SETTINGS_SVG, SHUFFLE_CHECK_SVG, STASHGIFS_LOGO_SVG, SORT_SVG } from './icons.js';
 
 const DEFAULT_SETTINGS: FeedSettings = {
   autoPlay: true, // Enable autoplay for markers
@@ -136,7 +137,13 @@ export class FeedContainer {
   private globalMuteState: boolean = false; // Global mute state - all videos muted when true
   private shuffleMode: number = 0; // 0 = off, 1 = shuffle with markers only, 2 = shuffle all (including no markers)
   private readonly loadObservers: Map<string, IntersectionObserver> = new Map(); // Track load observers for cleanup
+  private debouncedCleanup = debounce(() => this.cleanupDistantPosts(), 2000);
   private deviceCapabilities: DeviceCapabilities; // Device capabilities for adaptive quality
+  // Pull-to-refresh state
+  private pullToRefreshIndicator?: HTMLElement;
+  private pullStartY: number = 0;
+  private isPulling: boolean = false;
+  private pullThreshold: number = 80;
   private shuffleToggle?: HTMLElement; // Reference to shuffle toggle button
   private updatePlaceholderVisibilityRef?: () => void; // Reference to updatePlaceholderVisibility function
   // Card snapping state
@@ -148,6 +155,11 @@ export class FeedContainer {
   private touchStartTime: number = 0;
   private isSnapping: boolean = false; // Prevent multiple snaps in progress
   private snapThrottleTimeout?: ReturnType<typeof setTimeout>;
+  private keyboardManager?: KeyboardManager;
+  private currentSort: string = 'random';
+  private sortButton?: HTMLElement;
+  private sortDropdown?: HTMLElement;
+  private sortDropdownOutsideClickHandler?: (e: MouseEvent) => void;
 
   constructor(container: HTMLElement, api?: StashAPI, settings?: Partial<FeedSettings>) {
     this.container = container;
@@ -178,12 +190,23 @@ export class FeedContainer {
     this.applyReelModeLayout();
     this.initializeManagers();
 
+    // Initialize keyboard shortcuts
+    this.keyboardManager = new KeyboardManager({
+      getPostOrder: () => this.postOrder,
+      getPost: (postId: string) => this.posts.get(postId),
+      getMostVisiblePostId: () => this.visibilityManager.getMostVisiblePostId(),
+      toggleGlobalMute: () => this.setGlobalMuteState(!this.globalMuteState),
+    });
+
     // Setup scroll handler
     this.setupScrollHandler();
     
     // Setup card snapping if enabled
     this.setupCardSnapping();
-    
+
+    // Setup pull-to-refresh on mobile
+    this.setupPullToRefresh();
+
     // Setup infinite scroll
     this.setupInfiniteScroll();
     
@@ -603,6 +626,23 @@ export class FeedContainer {
     this.useHDMode = this.loadHDModePreference();
     this.shuffleMode = this.loadShuffleModePreference();
     this.globalMuteState = this.loadGlobalMuteState();
+    this.currentSort = this.loadSortOrderPreference();
+  }
+
+  private loadSortOrderPreference(): string {
+    try {
+      return localStorage.getItem('stashgifs-sort-order') || 'random';
+    } catch {
+      return 'random';
+    }
+  }
+
+  private saveSortOrderPreference(sort: string): void {
+    try {
+      localStorage.setItem('stashgifs-sort-order', sort);
+    } catch {
+      // Ignore storage errors
+    }
   }
 
   private getExcludedTagNames(): string[] {
@@ -687,6 +727,16 @@ export class FeedContainer {
     }
 
     delete filters.excludedTagIds;
+  }
+
+  private applySortOrderToFilters(filters: FilterOptions): void {
+    if (this.currentSort === 'random' || !this.currentSort) {
+      // Let the API generate a random seed (default behavior)
+      return;
+    }
+    // For non-random sorts, set sortSeed to the field name
+    // The StashAPI uses sortSeed as the 'sort' field in find_filter
+    filters.sortSeed = this.currentSort;
   }
 
   private applyOrientationFilterToFilters(filters: FilterOptions): void {
@@ -2300,6 +2350,135 @@ export class FeedContainer {
   }
 
   /**
+   * Create sort button with dropdown
+   */
+  private createSortButton(): HTMLElement {
+    const wrapper = document.createElement('div');
+    wrapper.style.position = 'relative';
+    wrapper.style.display = 'inline-flex';
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.title = 'Sort order';
+    button.setAttribute('aria-label', 'Sort order');
+    button.style.padding = '10px 12px';
+    button.style.borderRadius = THEME.radius.button;
+    button.style.border = `1px solid ${THEME.colors.border}`;
+    button.style.background = THEME.colors.backgroundSecondary;
+    button.style.color = THEME.colors.iconInactive;
+    button.style.cursor = 'pointer';
+    button.style.display = 'inline-flex';
+    button.style.alignItems = 'center';
+    button.style.justifyContent = 'center';
+    button.style.transition = 'background 0.2s ease, border-color 0.2s ease, color 0.2s ease';
+    button.innerHTML = SORT_SVG;
+
+    button.addEventListener('mouseenter', () => {
+      button.style.color = THEME.colors.textPrimary;
+      button.style.background = THEME.colors.surfaceHover;
+    });
+    button.addEventListener('mouseleave', () => {
+      if (!this.sortDropdown || this.sortDropdown.style.display === 'none') {
+        button.style.color = this.currentSort !== 'random' ? THEME.colors.accentPrimary : THEME.colors.iconInactive;
+        button.style.background = THEME.colors.backgroundSecondary;
+      }
+    });
+
+    // Highlight button when non-default sort is active
+    const updateButtonAppearance = () => {
+      if (this.currentSort !== 'random') {
+        button.style.color = THEME.colors.accentPrimary;
+        button.style.borderColor = THEME.colors.accentPrimary;
+      } else {
+        button.style.color = THEME.colors.iconInactive;
+        button.style.borderColor = THEME.colors.border;
+      }
+    };
+    updateButtonAppearance();
+
+    // Create dropdown
+    const dropdown = document.createElement('div');
+    dropdown.className = 'sort-dropdown';
+    dropdown.style.display = 'none';
+    dropdown.setAttribute('role', 'listbox');
+    dropdown.setAttribute('aria-label', 'Sort options');
+
+    const sortOptions: Array<{ value: string; label: string }> = [
+      { value: 'random', label: 'Random' },
+      { value: 'date', label: 'Newest' },
+      { value: 'rating', label: 'Rating' },
+      { value: 'play_count', label: 'Most Viewed' },
+    ];
+
+    const renderDropdownItems = () => {
+      dropdown.innerHTML = '';
+      for (const option of sortOptions) {
+        const item = document.createElement('div');
+        item.className = 'sort-dropdown__item' + (this.currentSort === option.value ? ' sort-dropdown__item--active' : '');
+        item.textContent = option.label;
+        item.setAttribute('role', 'option');
+        item.setAttribute('aria-selected', String(this.currentSort === option.value));
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (this.currentSort !== option.value) {
+            this.currentSort = option.value;
+            this.saveSortOrderPreference(option.value);
+            updateButtonAppearance();
+            renderDropdownItems();
+            this.closeSortDropdown();
+            this.refreshFeed().catch((err) => console.error('Failed to refresh feed after sort change', err));
+          } else {
+            this.closeSortDropdown();
+          }
+        });
+        dropdown.appendChild(item);
+      }
+    };
+    renderDropdownItems();
+
+    wrapper.appendChild(dropdown);
+    this.sortDropdown = dropdown;
+
+    // Toggle dropdown on click
+    button.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (dropdown.style.display === 'none') {
+        renderDropdownItems();
+        dropdown.style.display = 'block';
+        // Close on outside click
+        this.sortDropdownOutsideClickHandler = (ev: MouseEvent) => {
+          if (!wrapper.contains(ev.target as Node)) {
+            this.closeSortDropdown();
+          }
+        };
+        setTimeout(() => {
+          document.addEventListener('click', this.sortDropdownOutsideClickHandler!);
+        }, 0);
+      } else {
+        this.closeSortDropdown();
+      }
+    });
+
+    this.sortButton = button;
+    wrapper.appendChild(button);
+
+    return wrapper;
+  }
+
+  /**
+   * Close the sort dropdown
+   */
+  private closeSortDropdown(): void {
+    if (this.sortDropdown) {
+      this.sortDropdown.style.display = 'none';
+    }
+    if (this.sortDropdownOutsideClickHandler) {
+      document.removeEventListener('click', this.sortDropdownOutsideClickHandler);
+      this.sortDropdownOutsideClickHandler = undefined;
+    }
+  }
+
+  /**
    * Create settings button
    */
   private createSettingsButton(): HTMLButtonElement {
@@ -2637,6 +2816,10 @@ export class FeedContainer {
     // Add search area to container
     searchAndSettingsContainer.appendChild(searchArea);
     
+    // Create and add sort button to the right of search bar
+    const sortButtonEl = this.createSortButton();
+    searchAndSettingsContainer.appendChild(sortButtonEl);
+
     // Create and add settings button to the right of search bar
     const settingsButton = this.createSettingsButton();
     searchAndSettingsContainer.appendChild(settingsButton);
@@ -4038,6 +4221,9 @@ export class FeedContainer {
     if (!append) {
       this.refreshAutoplayAfterLayout();
     }
+
+    // Prune distant posts after a batch of new posts is added
+    this.cleanupDistantPosts();
   }
 
   /**
@@ -4101,6 +4287,86 @@ export class FeedContainer {
     
     // Reload feed with current filters
     await this.loadVideos(this.currentFilters, false, undefined, true);
+  }
+
+  /**
+   * Setup pull-to-refresh gesture on mobile
+   */
+  private setupPullToRefresh(): void {
+    if (!this.isMobileDevice) return;
+
+    let pullDistance = 0;
+
+    const scrollTarget = this.scrollContainer || window;
+
+    scrollTarget.addEventListener('touchstart', (e: Event) => {
+      const te = e as TouchEvent;
+      if (window.scrollY === 0 && this.scrollContainer.scrollTop === 0) {
+        this.pullStartY = te.touches[0].clientY;
+        this.isPulling = true;
+      }
+    }, { passive: true } as AddEventListenerOptions);
+
+    scrollTarget.addEventListener('touchmove', (e: Event) => {
+      const te = e as TouchEvent;
+      if (!this.isPulling) return;
+      if (window.scrollY > 0 || this.scrollContainer.scrollTop > 0) {
+        this.isPulling = false;
+        this.hidePullIndicator();
+        return;
+      }
+
+      pullDistance = te.touches[0].clientY - this.pullStartY;
+      if (pullDistance > 0) {
+        this.updatePullIndicator(Math.min(pullDistance / this.pullThreshold, 1));
+      } else {
+        this.hidePullIndicator();
+      }
+    }, { passive: true } as AddEventListenerOptions);
+
+    scrollTarget.addEventListener('touchend', () => {
+      if (this.isPulling && pullDistance >= this.pullThreshold) {
+        this.triggerPullRefresh();
+      } else {
+        this.hidePullIndicator();
+      }
+      this.isPulling = false;
+      pullDistance = 0;
+    }, { passive: true } as AddEventListenerOptions);
+  }
+
+  private updatePullIndicator(progress: number): void {
+    if (!this.pullToRefreshIndicator) {
+      this.pullToRefreshIndicator = document.createElement('div');
+      this.pullToRefreshIndicator.className = 'pull-to-refresh-indicator';
+      if (this.postsContainer) {
+        this.postsContainer.insertBefore(this.pullToRefreshIndicator, this.postsContainer.firstChild);
+      }
+    }
+
+    this.pullToRefreshIndicator.style.opacity = String(Math.min(progress, 1));
+    if (progress >= 1) {
+      this.pullToRefreshIndicator.textContent = 'Release to refresh';
+    } else {
+      this.pullToRefreshIndicator.textContent = 'Pull to refresh';
+    }
+  }
+
+  private hidePullIndicator(): void {
+    if (this.pullToRefreshIndicator) {
+      this.pullToRefreshIndicator.remove();
+      this.pullToRefreshIndicator = undefined;
+    }
+  }
+
+  private triggerPullRefresh(): void {
+    if (this.pullToRefreshIndicator) {
+      this.pullToRefreshIndicator.innerHTML = '<div class="spinner"></div>';
+      this.pullToRefreshIndicator.style.opacity = '1';
+    }
+    this.refreshFeed()
+      .catch((e) => console.error('Pull-to-refresh failed', e))
+      .finally(() => this.hidePullIndicator());
   }
 
   /**
@@ -4485,6 +4751,7 @@ export class FeedContainer {
 
     try {
       const currentFilters = filters || this.currentFilters || {};
+      this.applySortOrderToFilters(currentFilters);
       await this.updateExcludedTagIds();
       this.applyExcludedTagsToFilters(currentFilters);
       this.applyOrientationFilterToFilters(currentFilters);
@@ -5548,6 +5815,9 @@ export class FeedContainer {
    * Clear all posts
    */
   private clearPosts(): void {
+    // Cancel any in-flight poster prefetch requests
+    posterPreloader.cancelInflight();
+
     // Stop background preloading
     this.stopBackgroundPreloading();
     
@@ -6505,6 +6775,7 @@ export class FeedContainer {
       this.handleScrollVideoUnloading(timeDelta);
       this.handleFastScrolling();
       this.cancelOutOfViewPreloads();
+      this.debouncedCleanup();
 
       if (this.shouldSkipHeaderHandling()) {
         return;
@@ -7287,6 +7558,12 @@ export class FeedContainer {
     // Stop background preloading
     this.stopBackgroundPreloading();
     
+    // Clean up keyboard manager
+    if (this.keyboardManager) {
+      this.keyboardManager.destroy();
+      this.keyboardManager = undefined;
+    }
+
     // Clean up visibility manager
     this.visibilityManager.cleanup();
     

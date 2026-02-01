@@ -79,5 +79,8 @@ export const PAUSE_SVG = `<svg viewBox="${ICON_VIEWBOX}" width="24" height="24" 
 
 export const FULLSCREEN_SVG = `<svg viewBox="${ICON_VIEWBOX}" width="24" height="24" class="${ICON_SVG_CLASS}" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>`;
 
+// Sort icon (action size)
+export const SORT_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512" fill="currentColor" width="16" height="16" class="${ICON_SVG_CLASS}" aria-hidden="true"><path d="M137.4 41.4c12.5-12.5 32.8-12.5 45.3 0l128 128c9.2 9.2 11.9 22.9 6.9 34.9s-16.6 19.8-29.6 19.8H32c-12.9 0-24.6-7.8-29.6-19.8s-2.2-25.7 6.9-34.9l128-128zm0 429.3l-128-128c-9.2-9.2-11.9-22.9-6.9-34.9s16.6-19.8 29.6-19.8H288c12.9 0 24.6 7.8 29.6 19.8s2.2 25.7-6.9 34.9l-128 128c-12.5 12.5-32.8 12.5-45.3 0z"/></svg>`;
+
 // Verified checkmark icon (Twitter-style)
 export const VERIFIED_CHECKMARK_SVG = `<svg viewBox="${ICON_VIEWBOX}" class="${ICON_SVG_CLASS}" fill="currentColor" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet" aria-hidden="true"><path d="M12 1.75l2.35 1.19 2.6-.37 1.6 2.05 2.6.64.04 2.61 2.06 1.6-1.14 2.35 1.14 2.35-2.06 1.6-.04 2.61-2.6.64-1.6 2.05-2.6-.37L12 22.25l-2.35-1.19-2.6.37-1.6-2.05-2.6-.64-.04-2.61-2.06-1.6 1.14-2.35-1.14-2.35 2.06-1.6.04-2.61 2.6-.64 1.6-2.05 2.6.37L12 1.75z"/><path fill="#FFFFFF" d="M10.2 13.4l-1.9-1.9-1.4 1.4 3.3 3.3 6.6-6.6-1.4-1.4-5.2 5.2z"/></svg>`;
